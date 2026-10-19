@@ -7,7 +7,7 @@ Share the live video from a Hollyland Pyro H transmitter with anyone nearby. Run
 ## What it does
 
 - **Finds the transmitter for you.** It reads the address from the Mac's Wi-Fi and checks the usual RTSP ports, so there's nothing to look up or scan.
-- **Serves many viewers at once.** The transmitter only handles one or two connections. [MediaMTX](https://github.com/bluenviron/mediamtx) pulls the stream once and re-serves it to everyone.
+- **Serves many viewers at once.** The Pyro H serves one connection at a time. [MediaMTX](https://github.com/bluenviron/mediamtx) holds that one connection and re-serves the stream to everyone.
 - **Plays in any phone browser, with sound.** Low-delay WebRTC playback, with the audio converted to Opus so browsers can play it.
 - **Shows QR codes.** One opens the stream; an optional second one joins the phone to the right Wi-Fi. They appear in Terminal and on a page you can put on a screen, and are saved as a PNG to AirDrop or print.
 - **Also gives you RTSP, RTMP and HLS links** for VLC, OBS or other software.
@@ -113,6 +113,8 @@ The step-by-step manual version, with stream measurements and more, is in [the f
 | Phones can't open the link | Put the phone on the same network as the `Sharing on` address, and allow `mediamtx` in System Settings → Network → Firewall |
 | Picture but no sound on the phone | Browsers start muted. Tap the speaker icon |
 | Picture breaks up | Move the Mac closer to the transmitter, or use a wired network for viewers |
+| Stream freezes for a moment, and Terminal shows `connection reset by peer` | Something else connected to the transmitter. The Pyro H serves one connection at a time and drops the old one when a new one arrives. Connect VLC, OBS or other computers to the Mac's addresses, never straight to the transmitter. Holly Share reconnects by itself |
+| Terminal shows `TCP timeout` or `i/o timeout` | The Mac lost the transmitter's Wi-Fi for a moment. Holly Share reconnects by itself. If it keeps happening, move the Mac closer to the transmitter |
 
 ## Tested with
 

@@ -229,9 +229,23 @@ printf '%s\n' "$page" > "$RUN_DIR/share.html"
 
 # --- 6. Start MediaMTX ------------------------------------------------------
 info "Starting MediaMTX..."
+# Own process group (set -m), so Ctrl+C reaches only this script, which then
+# stops the audio converter before MediaMTX instead of both at once.
+set -m
 (cd "$RUN_DIR" && exec mediamtx "$CONF") &   # run there so its auto-generated cert stays out of this folder
 MTX_PID=$!
-trap 'echo; info "Stopping..."; kill $MTX_PID 2>/dev/null; wait $MTX_PID 2>/dev/null; ok "Stopped."; exit 0' INT TERM
+set +m
+
+stop() {
+  trap - INT TERM HUP
+  echo; info "Stopping..."
+  pkill -KILL -f "rtsp://127.0.0.1:8554/live" 2>/dev/null || true
+  kill $MTX_PID 2>/dev/null || true
+  wait $MTX_PID 2>/dev/null || true
+  ok "Stopped."
+  exit 0
+}
+trap stop INT TERM HUP
 
 ready() { curl -fs "http://127.0.0.1:9997/v3/paths/get/$1" 2>/dev/null | grep -q '"ready":true'; }
 for _ in $(seq 1 30); do
