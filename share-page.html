@@ -1,0 +1,54 @@
+<!doctype html>
+<!--
+  share-page.html: the page holly-share.sh shows with the QR codes.
+  Change any text or style here. Keep the names in double curly braces below:
+  the script swaps them for the real QR codes and links.
+    WATCH_QR   QR code that opens the stream     WATCH_URL  its link
+    WIFI_QR    QR code that joins the Wi-Fi       WIFI_NAME  the network's name
+    HLS_URL    fallback link for browsers         RTSP_URL   link for VLC or OBS
+  Anything with class="wifi-only" shows only when you run with --ssid.
+  Delete this file to get the default back.
+-->
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Watch the Camera</title>
+<style>
+  :root { --bg:#f6f5f2; --card:#fff; --ink:#1b1b1b; --muted:#6b6b6b; --accent:#d4502a; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#141414; --card:#1f1f1f; --ink:#f2f2f2; --muted:#9a9a9a; } }
+  * { box-sizing:border-box }
+  body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.4 -apple-system,system-ui,sans-serif;
+         min-height:100vh; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:24px 16px; }
+  h1 { font-size:clamp(28px,5vw,48px); margin:0 0 4px; letter-spacing:-.02em; text-align:center }
+  .sub { color:var(--muted); margin:0 0 32px; text-align:center }
+  main { width:100%; display:flex; gap:32px; flex-wrap:wrap; justify-content:center; align-items:flex-start }
+  section { background:var(--card); border-radius:20px; padding:28px; width:min(400px,100%); text-align:center;
+            box-shadow:0 1px 3px rgba(0,0,0,.08) }
+  h2 { margin:0 0 20px; font-size:22px; display:flex; align-items:center; justify-content:center; gap:10px }
+  .step { background:var(--accent); color:#fff; border-radius:50%; width:30px; height:30px; display:none; place-items:center; font-size:16px }
+  .wifi-only { display:none }
+  .has-wifi .wifi-only { display:block }
+  .has-wifi .step { display:inline-grid }
+  svg { width:100%; height:auto; background:#fff; border-radius:12px }
+  .url { font:15px ui-monospace,Menlo,monospace; color:var(--muted); word-break:break-all; margin:16px 0 0 }
+  footer { margin-top:32px; color:var(--muted); font-size:14px; text-align:center; max-width:720px }
+  .credit { margin:16px 0 0; color:var(--muted); font-size:13px; text-align:center }
+  .credit a { color:inherit }
+</style></head>
+<body class="{{WIFI_CLASS}}">
+<h1>Watch the camera</h1>
+<p class="sub">Scan with your phone's camera. Tap the speaker icon for sound.</p>
+<main>
+  <section class="wifi-only">
+    <h2><span class="step">1</span>Join the Wi-Fi</h2>
+    {{WIFI_QR}}
+    <p class="url">{{WIFI_NAME}}</p>
+  </section>
+  <section>
+    <h2><span class="step">2</span>Open the stream</h2>
+    {{WATCH_QR}}
+    <p class="url">{{WATCH_URL}}</p>
+  </section>
+</main>
+<footer>Not loading? Try {{HLS_URL}} (a few seconds more delay)<br>VLC: {{RTSP_URL}}</footer>
+<p class="credit">Made possible by <a href="https://fainimade.com">Faini Made</a> · <a href="https://github.com/titleunknown/holly-share">Open source on GitHub</a></p>
+</body></html>
