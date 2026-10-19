@@ -3,4 +3,4 @@
 # Join the transmitter's Wi-Fi first. Press Ctrl+C in this window to stop.
 
 cd "$(dirname "$0")" || exit 1
-exec ./holly-share.sh "$@"
+exec bash ./holly-share.sh "$@"

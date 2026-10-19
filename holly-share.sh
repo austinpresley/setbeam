@@ -12,8 +12,8 @@
 #   ./holly-share.sh --no-open               # don't open the QR page
 #
 # Needs: brew install ffmpeg mediamtx qrencode
-# The QR page's text is in share-page.html next to this script (made on first run).
-# Stop with Ctrl+C.
+# The QR page's text is in share-page.html, and the same options without Terminal
+# are in holly-share.conf, both next to this script (made on first run). Stop with Ctrl+C.
 
 set -euo pipefail
 
@@ -35,13 +35,54 @@ info() { printf '\033[36m→\033[0m %s\n' "$*"; }
 ok()   { printf '\033[32m✓\033[0m %s\n' "$*"; }
 warn() { printf '\033[33m!\033[0m %s\n' "$*"; }
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Settings for double-click users, in holly-share.conf next to the script.
+# Written on first run; command-line options override it.
+SETTINGS="$SCRIPT_DIR/holly-share.conf"
+if [ ! -f "$SETTINGS" ]; then
+  cat > "$SETTINGS" <<'EOF'
+# Holly Share settings. Remove the # at the start of a line to use it.
+# Save this file, then start Holly Share again.
+
+# Add a "Join the Wi-Fi" QR code to the page. Use the network viewers should
+# join: the transmitter's hotspot, or your venue's Wi-Fi. Leave WIFI_PASS
+# empty for an open network.
+#SSID=My Wi-Fi Name
+#WIFI_PASS=my wifi password
+
+# Only if Holly Share can't find the transmitter by itself:
+#IP=192.168.218.10
+#PORT=5554
+
+# Only to choose the address viewers use (see README.md):
+#SHARE_IP=10.0.0.42
+EOF
+fi
+while IFS= read -r line || [ -n "$line" ]; do
+  line=${line%$'\r'}
+  key=${line%%=*}; val=${line#*=}
+  [ "$key" = "$line" ] && continue   # blank line or no "="
+  while [ "${key% }" != "$key" ]; do key=${key% }; done
+  while [ "${val# }" != "$val" ]; do val=${val# }; done
+  case "$key" in
+    SSID)      SSID=$val ;;
+    WIFI_PASS) WIFI_PASS=$val ;;
+    IP)        TX_IP=$val ;;
+    PORT)      TX_PORT=$val ;;
+    SHARE_IP)  SHARE_IP=$val ;;
+  esac
+done < "$SETTINGS"
+
+need() { [ $# -ge 2 ] || die "$1 needs a value after it (try --help)"; }
+
 while [ $# -gt 0 ]; do
   case "$1" in
-    --ip)        TX_IP="$2"; shift 2 ;;
-    --port)      TX_PORT="$2"; shift 2 ;;
-    --share-ip)  SHARE_IP="$2"; shift 2 ;;
-    --ssid)      SSID="$2"; shift 2 ;;
-    --wifi-pass) WIFI_PASS="$2"; shift 2 ;;
+    --ip)        need "$@"; TX_IP="$2"; shift 2 ;;
+    --port)      need "$@"; TX_PORT="$2"; shift 2 ;;
+    --share-ip)  need "$@"; SHARE_IP="$2"; shift 2 ;;
+    --ssid)      need "$@"; SSID="$2"; shift 2 ;;
+    --wifi-pass) need "$@"; WIFI_PASS="$2"; shift 2 ;;
     --no-open)   OPEN_PAGE=0; shift ;;
     -h|--help)   sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *)           die "Unknown option: $1 (try --help)" ;;
@@ -115,10 +156,15 @@ for t in ffmpeg mediamtx qrencode nc; do
 done
 [ -z "$missing" ] || die "Missing:$missing — install with: brew install$missing"
 
-for p in 8554 8888 8889 1935; do
-  if lsof -nP -iTCP:"$p" -sTCP:LISTEN >/dev/null 2>&1; then
-    die "Port $p is already in use (another MediaMTX? try: brew services stop mediamtx; pkill mediamtx)"
-  fi
+in_use() {
+  die "Port $1 is already in use. Is Holly Share already running in another Terminal window? Close it and try again.
+  (Still stuck? Run: brew services stop mediamtx; pkill mediamtx)"
+}
+for p in 8554 8888 8889 1935 9997; do
+  lsof -nP -iTCP:"$p" -sTCP:LISTEN >/dev/null 2>&1 && in_use "TCP $p"
+done
+for p in 8000 8001 8189; do
+  lsof -nP -iUDP:"$p" >/dev/null 2>&1 && in_use "UDP $p"
 done
 
 # --- 2. Find the transmitter ------------------------------------------------
@@ -129,7 +175,8 @@ HOTSPOT_IP=$(ipconfig getifaddr "$WIFI_IF" 2>/dev/null || true)
 
 if [ -z "$TX_IP" ]; then
   TX_IP=$(ipconfig getoption "$WIFI_IF" router 2>/dev/null || true)
-  [ -n "$TX_IP" ] || die "Wi-Fi ($WIFI_IF) has no router. Join the transmitter's hotspot, or pass --ip."
+  [ -n "$TX_IP" ] || die "This Mac's Wi-Fi isn't on the transmitter's network.
+  Join the transmitter's Wi-Fi (not the receiver's) and try again."
 fi
 
 rtsp_ok() {
@@ -137,29 +184,42 @@ rtsp_ok() {
     | nc -G 2 -w 2 "$1" "$2" 2>/dev/null | head -1 | grep -q 'RTSP/1.0 200'
 }
 
+no_stream() {
+  die "No video stream found at $1.
+  - Is this Mac's Wi-Fi on the transmitter's network? Not the receiver's, and not your usual Wi-Fi.
+  - The transmitter allows one connection. Close the Hollyland app on phones and disconnect other devices.
+  - Turn the transmitter off and on, rejoin its Wi-Fi, and try again.
+  Still stuck? See Troubleshooting in README.md."
+}
+
 info "Looking for RTSP on $TX_IP..."
 if [ -n "$TX_PORT" ]; then
-  rtsp_ok "$TX_IP" "$TX_PORT" || die "No RTSP answer on $TX_IP:$TX_PORT"
+  rtsp_ok "$TX_IP" "$TX_PORT" || no_stream "$TX_IP:$TX_PORT"
 else
   for p in $PORTS_TO_TRY; do
     if rtsp_ok "$TX_IP" "$p"; then TX_PORT=$p; break; fi
   done
-  [ -n "$TX_PORT" ] || die "No RTSP on $TX_IP (tried $PORTS_TO_TRY). Scan with: sudo nmap -p- -T4 --open $TX_IP, then pass --port"
+  [ -n "$TX_PORT" ] || no_stream "$TX_IP (ports $PORTS_TO_TRY)"
 fi
 ok "Transmitter stream: rtsp://$TX_IP:$TX_PORT/live"
 
 # --- 3. Pick the address viewers will use ----------------------------------
-# Prefer a wired/LAN interface (viewers stay off the transmitter's hotspot);
-# fall back to the hotspot address.
+# Prefer a wired/LAN interface (viewers stay off the transmitter's hotspot),
+# the one with the default route if there are several; skip VPNs, VMs and
+# Internet Sharing bridges; fall back to the hotspot address.
 ADDRS=$(ifconfig | awk '/^[a-z]/{i=$1; sub(":","",i)} /inet /{print i, $2}' \
   | grep -v '^lo' | grep -v ' 169\.254\.' || true)
+DEFAULT_IF=$(route -n get default 2>/dev/null | awk '/interface:/{print $2}' || true)
 
 if [ -z "$SHARE_IP" ]; then
-  SHARE_IP=$(echo "$ADDRS" | awk -v w="$WIFI_IF" \
-    '$1!=w && $1!~/^utun/ && $2!~/^100\./ {print $2; exit}' || true)
+  SHARE_IP=$(echo "$ADDRS" | awk -v w="$WIFI_IF" -v d="$DEFAULT_IF" '
+    $1==w || $1~/^(utun|bridge|vmenet|anpi|awdl|llw)/ || $2~/^100\./ {next}
+    $1==d {best=$2; exit}
+    first=="" {first=$2}
+    END {print (best!="" ? best : first)}' || true)
   SHARE_IP=${SHARE_IP:-$HOTSPOT_IP}
 fi
-[ -n "$SHARE_IP" ] || die "Couldn't work out this Mac's IP. Pass --share-ip."
+[ -n "$SHARE_IP" ] || die "Couldn't work out this Mac's address. Set SHARE_IP in holly-share.conf."
 
 SHARE_IF=$(echo "$ADDRS" | awk -v s="$SHARE_IP" '$2==s {print $1; exit}' || true)
 ON_HOTSPOT=0
@@ -178,6 +238,8 @@ logLevel: warn
 api: yes
 apiAddress: 127.0.0.1:9997
 hlsVariant: mpegts
+srt: no
+moq: no
 paths:
   cam:
     source: rtsp://$TX_IP:$TX_PORT/live
@@ -198,7 +260,11 @@ html_escape() { local s=$1; s=${s//&/&amp;}; s=${s//</&lt;}; s=${s//>/&gt;}; pri
 
 WIFI_QR=""
 if [ -n "$SSID" ]; then
-  WIFI_QR="WIFI:T:WPA;S:$(wifi_escape "$SSID");P:$(wifi_escape "$WIFI_PASS");;"
+  if [ -n "$WIFI_PASS" ]; then
+    WIFI_QR="WIFI:T:WPA;S:$(wifi_escape "$SSID");P:$(wifi_escape "$WIFI_PASS");;"
+  else
+    WIFI_QR="WIFI:T:nopass;S:$(wifi_escape "$SSID");;"
+  fi
 fi
 
 qrencode -t PNG -s 12 -m 2 -o "$RUN_DIR/watch-qr.png" "$WATCH_URL"
@@ -208,7 +274,6 @@ WIFI_SVG=""
 
 # The page's text and look live in share-page.html next to this script, so
 # they can be edited without touching the script. First run writes the default.
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TEMPLATE="$SCRIPT_DIR/share-page.html"
 if [ ! -f "$TEMPLATE" ]; then
   write_default_template > "$TEMPLATE"
@@ -247,13 +312,20 @@ stop() {
 }
 trap stop INT TERM HUP
 
-ready() { curl -fs "http://127.0.0.1:9997/v3/paths/get/$1" 2>/dev/null | grep -q '"ready":true'; }
+# "available" replaced "ready" in newer MediaMTX; accept either.
+ready() { curl -fs "http://127.0.0.1:9997/v3/paths/get/$1" 2>/dev/null | grep -qE '"(available|ready)":true'; }
 for _ in $(seq 1 30); do
   kill -0 $MTX_PID 2>/dev/null || die "MediaMTX exited — see the errors above."
   ready cam && ready live && break
   sleep 0.5
 done
-if ready live; then ok "Stream is live"; else warn "Stream not ready yet — it may take a few more seconds."; fi
+if ready live; then
+  ok "Stream is live"
+else
+  warn "No video from the transmitter yet. If phones show an error:"
+  warn "  close the Hollyland app on phones and disconnect other devices (the transmitter allows one connection),"
+  warn "  then press Ctrl+C here and start Holly Share again."
+fi
 
 # --- 7. Show it -------------------------------------------------------------
 echo

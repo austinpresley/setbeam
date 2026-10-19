@@ -46,13 +46,21 @@ Phones must be on the same network as the Mac. Terminal shows a `Sharing on` lin
 - `en0` is usually the Mac's Wi-Fi. It means the Mac is only on the transmitter's hotspot, so phones join that hotspot too. It's 2.4 GHz and each viewer adds about 3 Mbps, so keep it to a few people.
 - Any other name, such as a wired or USB network adapter, means phones join the normal Wi-Fi on that network. This handles more viewers.
 
-To add a join-Wi-Fi QR code, give the name and password of the network viewers should join:
+To add a join-Wi-Fi QR code, give the name and password of the network viewers should join. The easy way, with no Terminal commands:
+
+1. Start Holly Share once. It creates `holly-share.conf` in the `holly-share` folder.
+2. Open `holly-share.conf` in TextEdit. On the `SSID=` and `WIFI_PASS=` lines, delete the `#` at the start and put in the network's name and password. Leave `WIFI_PASS=` empty for an open network.
+3. Save, then start Holly Share again.
+
+Or give them in Terminal:
 
 ```bash
 ~/holly-share/holly-share.sh --ssid "CAMERA-WIFI-NAME" --wifi-pass "PASSWORD"
 ```
 
 ### Options
+
+Each option also has a line in `holly-share.conf`: `SSID`, `WIFI_PASS`, `IP`, `PORT` and `SHARE_IP`. An option typed in Terminal wins over the file.
 
 | Option | What it does |
 | --- | --- |
@@ -107,9 +115,9 @@ The step-by-step manual version, with stream measurements and more, is in [the f
 | `Missing: ffmpeg mediamtx qrencode` | Run `Install.command`, or `brew install ffmpeg mediamtx qrencode` |
 | `command not found: brew` | Run the "Next steps" commands Homebrew printed at the end of its install, then open a new Terminal window |
 | `permission denied` | Run `chmod +x ~/holly-share/*.command ~/holly-share/holly-share.sh` |
-| `Wi-Fi (en0) has no router` | Join the transmitter's Wi-Fi first, or pass `--ip` |
-| `No RTSP on …` | Your model may use another port. Find it with `sudo nmap -p- -T4 --open <transmitter IP>`, then pass `--port` |
-| `Port 8554 is already in use` | MediaMTX is already running. Run `brew services stop mediamtx; pkill mediamtx` |
+| `This Mac's Wi-Fi isn't on the transmitter's network` | Join the transmitter's Wi-Fi. Kits with a receiver have more than one Hollyland network, and only the transmitter's carries the stream |
+| `No video stream found at …` | Check the Mac is on the transmitter's Wi-Fi, not the receiver's or your usual Wi-Fi. Close the Hollyland app on phones, since the transmitter allows one connection. If it still fails, turn the transmitter off and on. Other models may use another port: find it with `sudo nmap -p- -T4 --open <transmitter IP>`, then set `PORT` in `holly-share.conf` or pass `--port` |
+| `Port … is already in use` | Holly Share is probably already running in another Terminal window. Close it. If that doesn't help, run `brew services stop mediamtx; pkill mediamtx` |
 | Phones can't open the link | Put the phone on the same network as the `Sharing on` address, and allow `mediamtx` in System Settings → Network → Firewall |
 | Picture but no sound on the phone | Browsers start muted. Tap the speaker icon |
 | Picture breaks up | Move the Mac closer to the transmitter, or use a wired network for viewers |
