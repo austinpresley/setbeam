@@ -10,7 +10,7 @@ not the controller for the new app.
   process ownership, and the media runtime. Its interface separates local monitoring
   from audience sharing. Tests cross that same interface.
 - `SetbeamApp` owns SwiftUI/AppKit presentation, saved settings, QR generation,
-  local web hosting, and native window lifetime. UI code observes the session
+  local web hosting, native preview presentation, and native window lifetime. UI code observes the session
   state instead of constructing media commands.
 - Bundled viewer resources own browser playback and accurate audience states.
   They use the received media rather than contacting the transmitter.
@@ -26,11 +26,10 @@ processes. Local monitoring has a private playable output. Audience sharing
 uses a separate output so Hold and Stop can change audience media without
 closing the camera source.
 
-The initial browser transport is WebRTC. The Mac uses the same local playback
-path for its preview and floating window. Guest permission grants read access
+The initial browser transport is WebRTC. The Mac decodes the private local RTSP relay once into JPEG frames at 24 fps and presents the same native image in its main and floating windows. A separately decoded PCM feed supplies optional local sound through AVAudioEngine. Audio-device initialization stays off the UI thread and has an operator-visible timeout. Guest permission grants read access
 only to the audience output. Control and publishing credentials are private.
 
-Each run has a private directory and explicit process ownership. Runtime
+Each run has a private directory and explicit process ownership. Packaged helpers run in owned process groups through a bundled supervisor that watches the app and terminates its group after parent exit, including Force Quit. The controller also cleans the group after an unexpected supervisor exit. Runtime
 state stays outside the signed app bundle and repository. Dependency versions,
 source provenance, and build flags are recorded with the bundle tooling.
 

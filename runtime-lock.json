@@ -1,0 +1,50 @@
+{
+  "architecture": "arm64",
+  "minimumMacOS": "14.0",
+  "dependencies": [
+    {
+      "name": "ffmpeg",
+      "version": "9.0.2",
+      "archive": "ffmpeg-9.0.2.tar.xz",
+      "url": "https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz",
+      "sha256": "8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e",
+      "license": "LGPL-2.1-or-later"
+    },
+    {
+      "name": "opus",
+      "version": "1.6.1",
+      "archive": "opus-1.6.1.tar.gz",
+      "url": "https://downloads.xiph.org/releases/opus/opus-1.6.1.tar.gz",
+      "sha256": "6ffcb593207be92584df15b32466ed64bbec99109f007c82205f0194572411a1",
+      "license": "BSD-3-Clause"
+    },
+    {
+      "name": "mediamtx",
+      "version": "1.21.2",
+      "archive": "mediamtx_v1.21.2_darwin_arm64.tar.gz",
+      "url": "https://github.com/bluenviron/mediamtx/releases/download/v1.21.2/mediamtx_v1.21.2_darwin_arm64.tar.gz",
+      "sha256": "7d0d0c5c11527cbd10bde1c3d728864eb0334a9b653566cd73c0259750cbf093",
+      "license": "MIT"
+    }
+  ],
+  "ffmpegSignature": {
+    "fingerprint": "FCF986EA15E6E293A5644F10B4322F04D67658D8",
+    "result": "verified 2026-10-20 using official release key and detached signature"
+  },
+  "reader": {
+    "url": "https://raw.githubusercontent.com/bluenviron/mediamtx/v1.21.2/internal/servers/webrtc/reader.js",
+    "sha256": "a802f229b803c33713d4c69c4cc0d480108a5bf384947aeee4aaf04268bf85c1"
+  },
+  "sourceMaterials": [
+    {
+      "archive": "ffmpeg-9.0.2.tar.xz.asc",
+      "url": "https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz.asc",
+      "sha256": "d617fd94ea354dadd2a8bb16243d37c44e1e9729b06b6ad58fe30bfb0fa943f2"
+    },
+    {
+      "archive": "ffmpeg-devel.asc",
+      "url": "https://ffmpeg.org/ffmpeg-devel.asc",
+      "sha256": "397b3becedcd5a98769967ff1ff8501ddc89f8368b8f766e4701377d7dbaabe5"
+    }
+  ]
+}

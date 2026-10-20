@@ -9,3 +9,5 @@ runtime/
 *.xcuserstate
 *.xcuserdatad/
 *.local.json
+__pycache__/
+*.pyc

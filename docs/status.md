@@ -1,32 +1,41 @@
 # Setbeam status
 
-Updated: 2026-10-20.
+Updated: 2026-10-20. Version 0.1.0, build 1.
 
 ## Current checkpoint
 
-The user-authorized GitHub fork and local checkout exist. The execution plan,
-design reference, upstream attribution, and hardware research are recorded.
-Native app implementation and media-runtime checks are next.
+A self-contained Apple Silicon developer prototype is implemented. Real sample video plays in the native window and the shared floating preview, and the browser viewer receives H.264 video and Opus audio. Hold and Stop preserve local monitoring. This is the first stopping checkpoint in `plan.md`.
 
 ## Milestones
 
-- [x] Concrete plan with acceptance checks.
-- [x] Fork and project record.
-- [ ] Bundled media runtime.
-- [ ] Working sample-to-preview and browser path.
-- [ ] Native main window and floating preview.
-- [ ] Viewer QR, status, Hold/Resume/Stop.
-- [ ] Generic network and capture inputs.
-- [ ] Failure checks and self-contained prototype archive.
+- [x] Concrete plan with goals and acceptance checks.
+- [x] GitHub fork and Project Vault checkout.
+- [x] Pinned, bundled media runtime with source archives and notices.
+- [x] Actual sample-to-native-preview and browser path.
+- [x] Native main window and floating preview sharing one decoder.
+- [x] Viewer QR, playback status, Hold/Resume/Stop, and frame export.
+- [x] Generic RTSP adapter verified against a real authenticated local source.
+- [x] Capture adapter and device selection implemented, physical capture test pending.
+- [x] Helper recovery, server failure detection, and normal/Force Quit cleanup checks.
+- [ ] Physical transmitter, capture, phone/Safari, and LAN tests.
+- [ ] Native sound output verification on a responding audio device.
+- [ ] Public signing/notarization, Intel builds, and release distribution.
 
-## Evidence
+## Evidence and limits
 
-- Fork parent: `titleunknown/holly-share`.
-- Original reviewed commit: `3fcf772273d6f3db3423b2eb39f5db70ee601519`.
-- Design: `design/mockup.html`, with generated sample-image notes beside it.
-- Physical device checks: not run.
+See `verification-2026-10-20.md` for checks and results. No physical transmitter or capture device was used. The named Hollyland and Accsoon profiles remain unverified test targets.
 
-## Remaining human evidence
+The native renderer uses one FFmpeg JPEG decode at 24 fps shared by both windows. This avoids the stalled WKWebView WebRTC transport observed on this host. It is a prototype implementation; GPU rendering, frame pacing, power use, audio/video synchronization, and latency need measurement before a production release.
 
-No physical transmitter is assumed to be connected or powered. SDK access and
-model-specific input compatibility remain open until verified.
+Core Audio stalled opening the development Mac's output device. The app now opens audio off the UI thread, times out with a useful message, and keeps video and controls responsive. Outgoing audio and Hold silence passed media checks; audible local output did not pass.
+
+The browser viewer was checked in T3's Chromium browser on this Mac. Phone reachability, Safari, Wi-Fi range, multi-viewer capacity, and device-specific recovery remain unverified. Sharing uses HTTP on a selected local interface with private, read-only session links. No internet relay is implemented.
+
+## Next work
+
+1. Record the exact variants and firmware of Austin's three systems; establish a vendor-app baseline and test a receiver capture route.
+2. Prove a usable direct input or SDK route per model before adding automatic discovery or a compatibility claim. RTMP/SRT ingestion is not implemented in this checkpoint.
+3. Verify iPhone/Safari playback and a second device on the selected LAN. Resolve the WebKit transport issue with that evidence if it affects the browser viewer.
+4. Verify local sound against a working output device, then measure and tune local A/V timing and preview latency.
+5. Add a GPU video renderer if profiling warrants it, finish accessibility/appearance/keyboard checks, and test long sessions, network changes, occupied-port races, sleep/wake, and larger viewer counts.
+6. Choose an authorized signing identity, notarize a release, and verify the minimum macOS target on physical machines.
