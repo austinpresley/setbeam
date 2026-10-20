@@ -1,0 +1,26 @@
+# Local preview and wider wireless-video support
+
+Researched 2026-10-20 against first-party manuals, product pages, and developer documentation. This proposes an extension to Holly Share. No hardware was connected, vendor contacted, downloaded script executed, dependency installed, or live configuration changed.
+
+A local floating preview is a sensible addition. It should reuse the stream already received by the Mac, so previewing does not create another connection to the transmitter. Holly Share already has local `cam` and `live` relay paths. [Existing pipeline](https://github.com/titleunknown/holly-share/blob/3fcf772273d6f3db3423b2eb39f5db70ee601519/holly-share.sh#L228-L250)
+
+Wider compatibility should depend on each model's documented input method. Vendor-app monitoring does not establish that a third-party Mac app can pull a generic RTSP URL.
+
+| Model or family | Evidence and practical integration route | Status |
+| --- | --- | --- |
+| Hollyland Pyro H | Holly Share pulls the transmitter's `/live` RTSP stream and lists the Pyro H as its tested model. | Existing project's claim, not independently hardware-tested here. [Source and test scope](https://github.com/titleunknown/holly-share/blob/3fcf772273d6f3db3423b2eb39f5db70ee601519/README.md#L95-L129) |
+| Hollyland Mars 400S Pro | Its manual documents a receiver connected to a laptop through a Type-C-to-LAN adapter, laptop DHCP, then `rtsp://192.168.218.25:5554`. This is a receiver network route, not proof of transmitter Wi-Fi RTSP. | Documented candidate for a complete-URL input. See printed EN-08 in the [official manual](https://download.hollyland.com/User_manual/MARS%20400S%20PRO/Mars%20400S%20Pro%20User%20Manual%EF%BC%88English%EF%BC%89v1.0.0.pdf#page=11). |
+| Accsoon CineView HE | The receiver supplies UVC video over USB-C to a computer without another capture adapter. | Documented candidate for a USB capture input. [Accsoon HE documentation](https://accsoon.com/cineview-he/) |
+| Accsoon CineView 2 SDI | The receiver has UVC output. The manual separately describes SEE-app monitoring and RTMP push. | Documented USB capture candidate. App-based pushing is a separate route. See printed pp. 14-15 in the [official manual](https://accsoon.com/wp-content/uploads/2025/02/CineView-2-SDI-User-Manual-EN-CN-v2.0.pdf#page=8). |
+| Accsoon CineView Master 4K | The manual lists Apple Silicon MacBooks among wireless compatible devices, and documents SEE monitoring plus app-initiated RTMP/SRT push. Receiver video outputs are HDMI/SDI; its transmitter USB video output is described for iPhone/iPad. | Consider a SEE-app-to-local-relay bridge, or receiver HDMI/SDI capture. No generic direct RTSP endpoint was established. See printed pp. 7-8, 23-26 in the [official manual](https://accsoon.com/wp-content/uploads/2024/09/CineView-Master-4K-User-Manual.pdf). |
+| Accsoon CineView Nano, HE, SE, Quad, 2 SDI | Accsoon explicitly lists these in its SDK request program. The public request page does not establish macOS build targets or redistribution terms. | Potential SDK adapters, pending access, platform, and licensing confirmation. [SDK program](https://accsoon.com/sdk-launch-request/) |
+
+For other systems with HDMI/SDI receiver output, a compatible capture device is a useful fallback. This avoids depending on the radio protocol. FFmpeg supports macOS AVFoundation capture-device enumeration and selection; capture formats, audio, encoding cost, and latency still need testing. [FFmpeg input documentation](https://ffmpeg.org/ffmpeg-devices.html#avfoundation)
+
+I would build one source-selection flow with three input kinds: a complete network-stream URL, a USB/capture device, and a vendor SDK adapter. Model profiles can then supply connection instructions and tested defaults. Normalize each input once, then feed the main preview, resizable always-on-top window, and optional viewer relay. Give the floating preview mute, resize, close, and connection status. These are proposed product choices, not claims about current Holly Share capabilities.
+
+Start with Pyro H, the documented Mars receiver RTSP route, and HE/2 SDI UVC. Defer a promise of direct Accsoon Wi-Fi support until the SDK provides a supported Mac target and usable access to video/audio. MediaMTX can accept RTSP, RTMP, and SRT, so an app-mediated push bridge is technically plausible, but its local destination support, network routing, and added delay remain untested. [Supported MediaMTX inputs](https://mediamtx.org/docs/kickoff/introduction)
+
+Do not treat Accsoon's CineMon partnership as proof of a Mac CineView SDK. CineMon's own documentation says its SeeMo SDK integration is iPad-only and describes SeeMo devices as proprietary rather than UVC. That is a different device family and integration. [CineMon input documentation](https://docs.cinemon.app/docs/video-input-options/)
+
+Before marking any profile supported, record the exact model, firmware, Mac architecture, connection method, delivered resolution/frame rate, audio behavior, measured end-to-end delay, reconnect behavior, and interaction with vendor apps or hardware receivers. Remaining evidence gaps are physical tests and Accsoon SDK platform/licensing details. No blanket Hollyland or Accsoon compatibility claim is justified by the sources reviewed.

@@ -1,2 +1,11 @@
 .DS_Store
 holly-share.conf
+.build/
+.swiftpm/
+build/
+dist/
+Vendor/
+runtime/
+*.xcuserstate
+*.xcuserdatad/
+*.local.json
