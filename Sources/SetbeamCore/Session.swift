@@ -11,20 +11,20 @@ public enum SetbeamError: LocalizedError, Equatable {
     }
 }
 
-public enum CameraSource: Equatable, Sendable {
+public enum VideoSource: Equatable, Sendable {
     case sample
     case network(String)
     case capture(video: Int, audio: Int?)
 
     public var label: String {
         switch self {
-        case .sample: return "Sample camera"
+        case .sample: return "Sample feed"
         case .network(let address): return Self.safeAddress(address)
         case .capture: return "USB / capture device"
         }
     }
 
-    public func validated() throws -> CameraSource {
+    public func validated() throws -> VideoSource {
         switch self {
         case .sample: return self
         case .network(let address):
@@ -34,7 +34,7 @@ public enum CameraSource: Equatable, Sendable {
                   let host = components.host, !host.isEmpty,
                   components.fragment == nil,
                   components.port.map({ (1...65535).contains($0) }) ?? true else {
-                throw SetbeamError.invalidSource("Enter a complete RTSP camera address, including its stream path.")
+                throw SetbeamError.invalidSource("Enter a complete RTSP stream address, including its stream path.")
             }
             return self
         case .capture(let video, let audio):
@@ -46,9 +46,9 @@ public enum CameraSource: Equatable, Sendable {
     }
 
     public static func safeAddress(_ address: String) -> String {
-        guard var components = URLComponents(string: address) else { return "Network camera" }
+        guard var components = URLComponents(string: address) else { return "Network stream" }
         components.user = nil; components.password = nil; components.query = nil; components.fragment = nil
-        return components.string ?? "Network camera"
+        return components.string ?? "Network stream"
     }
 }
 
@@ -68,7 +68,7 @@ public struct SessionState: Equatable, Sendable {
     public mutating func beginMonitoring() { monitoring = true; sourceAvailable = false }
     public mutating func updateSource(available: Bool) { sourceAvailable = monitoring && available }
     public mutating func startSharing() throws {
-        guard monitoring else { throw SetbeamError.unavailable("Connect a camera before sharing.") }
+        guard monitoring else { throw SetbeamError.unavailable("Connect a source before sharing.") }
         sharing = true; holding = false
     }
     public mutating func setHold(_ value: Bool) throws {

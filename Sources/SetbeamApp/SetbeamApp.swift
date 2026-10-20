@@ -14,7 +14,7 @@ import AppKit
             .commands {
                 CommandGroup(replacing: .appInfo) { Button("About Setbeam") { model.sheet = .about } }
                 CommandGroup(replacing: .newItem) {}
-                CommandMenu("Camera") {
+                CommandMenu("Feed") {
                     Button(model.pipVisible ? "Hide Floating Preview" : "Show Floating Preview") { model.togglePiP() }.keyboardShortcut("p", modifiers: [.command, .shift]).disabled(model.preview == nil)
                     Button("Save Frame") { model.saveFrame() }.keyboardShortcut("s", modifiers: [.command, .shift]).disabled(!model.state.sourceAvailable)
                     Divider()
@@ -22,7 +22,7 @@ import AppKit
                     Button("Connection Settings…") { model.loadPrivateSettings(); model.sheet = .connection }.keyboardShortcut(",", modifiers: .command)
                 }
             }
-        MenuBarExtra("Setbeam", systemImage: model.state.sharing ? "dot.radiowaves.left.and.right" : "video") {
+        MenuBarExtra("Setbeam", systemImage: model.state.sharing ? "dot.radiowaves.left.and.right" : "rectangle.on.rectangle") {
             SetbeamMenu(model: model)
         }
     }

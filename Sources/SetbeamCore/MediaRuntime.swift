@@ -23,7 +23,7 @@ public actor MediaRuntime {
     private var mediaServer: ManagedChild?
     private var sourcePublisher: ManagedChild?
     private var audiencePublisher: ManagedChild?
-    private var source: CameraSource = .sample
+    private var source: VideoSource = .sample
     private var sourceArguments: [String] = []
     private var rtspPort: UInt16 = 0, apiPort: UInt16 = 0, webPort: UInt16 = 0, icePort: UInt16 = 0
     private var publisherPassword = MediaRuntime.secret(), previewPassword = MediaRuntime.secret(), adminPassword = MediaRuntime.secret()
@@ -37,7 +37,7 @@ public actor MediaRuntime {
     public init(paths: RuntimePaths) { self.paths = paths }
     private static func secret() -> String { UUID().uuidString.replacingOccurrences(of: "-", with: "") + UUID().uuidString.replacingOccurrences(of: "-", with: "") }
 
-    public func prepare(source candidate: CameraSource, viewerAddress: String) async throws -> RuntimeSnapshot {
+    public func prepare(source candidate: VideoSource, viewerAddress: String) async throws -> RuntimeSnapshot {
         await shutdown()
         source = try candidate.validated(); self.viewerAddress = viewerAddress
         for executable in ["mediamtx", "ffmpeg", "ffprobe"] {
@@ -68,7 +68,7 @@ public actor MediaRuntime {
             }
             _ = try await api("/v3/config/global/get")
             sourceArguments = makeSourceArguments()
-            sourcePublisher = try child("Camera input", "ffmpeg", sourceArguments)
+            sourcePublisher = try child("Source input", "ffmpeg", sourceArguments)
             sourceFailures = 0; audienceFailures = 0
             nextSourceRetry = .distantPast; nextAudienceRetry = .distantPast
             return await snapshot()
@@ -81,8 +81,8 @@ public actor MediaRuntime {
         let permissions: [[String: String]] = [
             ["action": "publish", "path": "local"], ["action": "publish", "path": "live"],
             ["action": "read", "path": "source"], ["action": "read", "path": "local"], ["action": "read", "path": "live"]]
-        var camera: [String: Any] = ["source": "publisher"]
-        if case .network(let address) = source { camera = ["source": address, "rtspTransport": "tcp"] }
+        var upstream: [String: Any] = ["source": "publisher"]
+        if case .network(let address) = source { upstream = ["source": address, "rtspTransport": "tcp"] }
         return [
             "logLevel": "warn", "api": true, "apiAddress": "127.0.0.1:\(apiPort)",
             "rtsp": true, "rtspAddress": "127.0.0.1:\(rtspPort)", "rtspTransports": ["tcp"],
@@ -94,7 +94,7 @@ public actor MediaRuntime {
             "webrtcAllowOrigins": ["*"],
             "authMethod": "internal", "authInternalUsers": users(publisherPermissions: permissions),
             "pathDefaults": ["source": "publisher", "overridePublisher": false],
-            "paths": ["source": camera, "local": [:], "live": [:]]
+            "paths": ["source": upstream, "local": [:], "live": [:]]
         ]
     }
 
@@ -158,7 +158,7 @@ public actor MediaRuntime {
     }
 
     public func startSharing() async throws -> RuntimeSnapshot {
-        guard mediaServer?.isRunning == true else { throw SetbeamError.unavailable("Connect a camera before sharing.") }
+        guard mediaServer?.isRunning == true else { throw SetbeamError.unavailable("Connect a source before sharing.") }
         guestPassword = MediaRuntime.secret()
         _ = try await api("/v3/config/global/patch", method: "PATCH", object: ["authInternalUsers": users()])
         sharing = true; holding = false; audienceFailures = 0
@@ -192,7 +192,7 @@ public actor MediaRuntime {
         if mediaServer?.isRunning == true, sourcePublisher?.isRunning != true, Date() >= nextSourceRetry {
             problem = sourcePublisher?.recentError
             sourceFailures += 1; nextSourceRetry = Date().addingTimeInterval(min(10, pow(1.6, Double(sourceFailures))))
-            sourcePublisher = try? child("Camera input", "ffmpeg", sourceArguments)
+            sourcePublisher = try? child("Source input", "ffmpeg", sourceArguments)
         }
         if sharing, mediaServer?.isRunning == true, audiencePublisher?.isRunning != true, Date() >= nextAudienceRetry {
             audienceFailures += 1; nextAudienceRetry = Date().addingTimeInterval(min(10, pow(1.6, Double(audienceFailures))))
@@ -212,7 +212,7 @@ public actor MediaRuntime {
         let frame = try child("Save frame", "ffmpeg", ["-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-rtsp_transport", "tcp", "-i", publisherURL("local"), "-map", "0:v:0", "-frames:v", "1", "-q:v", "2", destination.path])
         let deadline = Date().addingTimeInterval(8)
         while frame.isRunning && Date() < deadline { try await Task.sleep(nanoseconds: 50_000_000) }
-        if frame.isRunning { frame.stop(); throw SetbeamError.runtime("The camera did not provide a frame in time.") }
+        if frame.isRunning { frame.stop(); throw SetbeamError.runtime("The source did not provide a frame in time.") }
         guard frame.terminationStatus == 0, ((try? FileManager.default.attributesOfItem(atPath: destination.path)[.size]) as? Int ?? 0) > 0 else { throw SetbeamError.runtime("Could not save a frame. \(frame.recentError)") }
     }
 

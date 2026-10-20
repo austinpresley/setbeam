@@ -3,11 +3,13 @@
 Read `docs/status.md` and `docs/plan.md` before implementation work. Read
 `docs/architecture.md` before changing media flow or module interfaces.
 
+Treat computer-display and camera feeds as peer use cases. Read `CONTEXT.md` when changing product terms or setup flows.
+
 ## Product invariants
 
-- Receive a camera once; local preview, floating preview, and sharing read the Mac's feed.
+- Receive each source once; local preview, floating preview, and sharing read the Mac's feed.
 - Stop Sharing leaves local monitoring available.
-- Hold suppresses camera video and audio in the outgoing media, while local monitoring continues.
+- Hold suppresses source video and audio in the outgoing media, while local monitoring continues.
 - Label sample media explicitly. Mark hardware compatibility only with recorded physical evidence in `docs/hardware-tests.md`.
 - Viewer access is read-only. Publishing and administration stay private.
 - Supervise owned processes and clean up their process groups. Match no processes by global command-line patterns.

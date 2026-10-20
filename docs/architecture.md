@@ -1,6 +1,6 @@
 # Architecture
 
-Setbeam is a native macOS application built around one received camera feed.
+Setbeam is a native macOS application built around one received video feed.
 Holly Share provides the original RTSP-relay reference; its Bash launcher is
 not the controller for the new app.
 
@@ -16,15 +16,20 @@ not the controller for the new app.
   They use the received media rather than contacting the transmitter.
 
 The real source adapters are a labeled sample, a complete RTSP URL, and a
-compatible capture device. Named transmitter profiles describe verified
-connection methods; a brand name is not a protocol implementation.
+compatible capture device. Transmission-system labels identify hardware under test. Support requires recorded
+connection evidence; a brand name is not a protocol implementation.
+
+Computer displays, including DigiTech applications such as Capture One, and
+camera feeds are peer source use cases. The transport and input describe how
+the feed reaches Setbeam, independently of what appears in it. Direct capture
+of the receiving Mac's own screen is a separate feature and is not implemented.
 
 ## Media flow
 
 The media runtime starts an app-owned MediaMTX instance and supervised FFmpeg
 processes. Local monitoring has a private playable output. Audience sharing
 uses a separate output so Hold and Stop can change audience media without
-closing the camera source.
+closing the source input.
 
 The initial browser transport is WebRTC. The Mac decodes the private local RTSP relay once into JPEG frames at 24 fps and presents the same native image in its main and floating windows. A separately decoded PCM feed supplies optional local sound through AVAudioEngine. Audio-device initialization stays off the UI thread and has an operator-visible timeout. Guest permission grants read access
 only to the audience output. Control and publishing credentials are private.

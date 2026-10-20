@@ -10,7 +10,7 @@ struct CaptureChoice: Identifiable { let id: Int; let name: String; let audio: B
 @MainActor final class SessionModel: ObservableObject {
     @Published var title: String { didSet { if !integration { defaults.set(title, forKey: "sessionTitle") }; publishGatewayState() } }
     @Published var state = SessionState()
-    @Published var source: CameraSource = .sample
+    @Published var source: VideoSource = .sample
     @Published var preview: PlaybackDescriptor?
     @Published var viewerURL: URL?
     @Published var viewers: [ViewerActivity] = []
@@ -29,7 +29,7 @@ struct CaptureChoice: Identifiable { let id: Int; let name: String; let audio: B
     @Published var captureVideo: Int
     @Published var captureAudio: Int
     @Published var captureAudioEnabled: Bool
-    @Published var cameraSystem: String
+    @Published var transmissionSystem: String
     @Published var captureDevices: [CaptureChoice] = []
     @Published var listingDevices = false
     @Published var nativePreviewPlaying = false
@@ -58,17 +58,18 @@ struct CaptureChoice: Identifiable { let id: Int; let name: String; let audio: B
         sourceKind = integration ? "sample" : defaults.string(forKey: "sourceKind") ?? "sample"
         captureVideo = defaults.integer(forKey: "captureVideo"); captureAudio = defaults.integer(forKey: "captureAudio")
         captureAudioEnabled = defaults.bool(forKey: "captureAudioEnabled")
-        cameraSystem = defaults.string(forKey: "cameraSystem") ?? "Generic input"
+        transmissionSystem = defaults.string(forKey: "transmissionSystem") ?? defaults.string(forKey: "cameraSystem") ?? "Generic input"
+        // Keep the existing network-camera Keychain account so saved credentials remain accessible.
         // Credentials are fetched only when the user opens connection settings or explicitly reconnects a saved input.
     }
 
-    var sourceLabel: String { source == .sample ? "Sample camera · fictional studio portrait" : cameraSystem == "Generic input" ? source.label : cameraSystem }
+    var sourceLabel: String { source == .sample ? "Sample feed · fictional studio portrait" : transmissionSystem == "Generic input" ? source.label : transmissionSystem }
     var viewerNetworkLabel: String { networks.first(where: { $0.address == viewerAddress })?.label ?? viewerAddress }
     var statusLabel: String {
         if busy { return "Connecting" }
         if let _ = error, !state.monitoring { return "Needs attention" }
         if state.sharing { switch state.audience { case .holding: return "On hold"; case .reconnecting: return "Reconnecting"; default: return "Sharing" } }
-        return state.sourceAvailable ? "Preview only" : state.monitoring ? "Waiting for camera" : "Not connected"
+        return state.sourceAvailable ? "Preview only" : state.monitoring ? "Waiting for source" : "Not connected"
     }
     var verifiedViewers: Int { viewers.filter(\.playing).count }
 
@@ -94,7 +95,7 @@ struct CaptureChoice: Identifiable { let id: Int; let name: String; let audio: B
 
     func connect(networkURL: String? = nil, remember: Bool = false) {
         guard !busy else { return }
-        let chosen: CameraSource
+        let chosen: VideoSource
         switch sourceKind {
         case "network":
             let address = networkURL ?? (defaults.bool(forKey: "rememberNetwork") ? SecureSettings.read("network-camera") : nil) ?? savedNetworkURL
@@ -112,10 +113,10 @@ struct CaptureChoice: Identifiable { let id: Int; let name: String; let audio: B
                 try localPlayer.start(url: await runtime.localRTSP())
                 if !integration {
                     defaults.set(sourceKind, forKey: "sourceKind"); defaults.set(viewerAddress, forKey: "viewerAddress")
-                    defaults.set(cameraSystem, forKey: "cameraSystem"); defaults.set(wifiSSID, forKey: "wifiSSID")
+                    defaults.set(transmissionSystem, forKey: "transmissionSystem"); defaults.set(wifiSSID, forKey: "wifiSSID")
                     defaults.set(captureVideo, forKey: "captureVideo"); defaults.set(captureAudio, forKey: "captureAudio"); defaults.set(captureAudioEnabled, forKey: "captureAudioEnabled")
                     if case .network(let address) = chosen {
-                        savedNetworkURL = CameraSource.safeAddress(address); defaults.set(savedNetworkURL, forKey: "networkURL")
+                        savedNetworkURL = VideoSource.safeAddress(address); defaults.set(savedNetworkURL, forKey: "networkURL")
                         defaults.set(remember, forKey: "rememberNetwork")
                         if remember { try SecureSettings.store(address, account: "network-camera") }
                     }
@@ -210,7 +211,7 @@ struct CaptureChoice: Identifiable { let id: Int; let name: String; let audio: B
     }
     private func acquirePowerAssertion() {
         guard powerAssertion == 0 else { return }
-        _ = IOPMAssertionCreateWithName(kIOPMAssertionTypePreventUserIdleSystemSleep as CFString, IOPMAssertionLevel(kIOPMAssertionLevelOn), "Setbeam camera sharing" as CFString, &powerAssertion)
+        _ = IOPMAssertionCreateWithName(kIOPMAssertionTypePreventUserIdleSystemSleep as CFString, IOPMAssertionLevel(kIOPMAssertionLevelOn), "Setbeam feed sharing" as CFString, &powerAssertion)
     }
     private func releasePowerAssertion() { if powerAssertion != 0 { IOPMAssertionRelease(powerAssertion); powerAssertion = 0 } }
     func shutdown() async {

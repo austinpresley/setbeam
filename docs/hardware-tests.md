@@ -12,4 +12,10 @@ user-reported; exact variants and firmware remain to be recorded.
 For every pass or failure, record model, variant, firmware, Mac architecture,
 connection route, input format, audio, measured delay, source-loss recovery,
 and interaction with other receivers or vendor apps. Record simultaneous
-camera operation separately.
+source operation separately.
+
+## Source-content coverage
+
+For each viable connection route, test both a computer display and camera video. A DigiTech screen such as Capture One is a primary workflow, not a special camera mode. Record computer output resolution and refresh rate, source aspect ratio, small-text legibility, fine image detail, optional audio, and behavior after display sleep or an output-format change. These physical checks are not yet run.
+
+Direct capture of the receiving Mac's own screen is separate from receiving a computer display through a transmitter or capture input. It is not implemented in this checkpoint.

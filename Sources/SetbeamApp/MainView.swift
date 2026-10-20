@@ -9,10 +9,10 @@ struct MainView: View {
             VStack(alignment: .leading, spacing: 21) {
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 7) {
-                        Text(model.title.isEmpty ? "Camera" : model.title).font(.system(size: 23, weight: .semibold)).lineLimit(1)
+                        Text(model.title.isEmpty ? "Feed" : model.title).font(.system(size: 23, weight: .semibold)).lineLimit(1)
                         Button { model.loadPrivateSettings(); model.sheet = .connection } label: {
                             HStack(spacing: 5) { Text(model.sourceLabel).lineLimit(1); Image(systemName: "chevron.down").font(.system(size: 9, weight: .medium)) }.font(.caption).foregroundStyle(.secondary)
-                        }.buttonStyle(.plain).help("Camera and viewing network")
+                        }.buttonStyle(.plain).help("Source and viewing network")
                     }
                     Spacer(minLength: 16)
                     VStack(alignment: .trailing, spacing: 7) {
@@ -31,7 +31,7 @@ struct MainView: View {
                                 HStack { Label(model.source == .sample ? "Sample feed" : "Local preview", systemImage: "circle.fill").font(.system(size: 10)).labelStyle(.titleAndIcon).padding(.horizontal, 7).padding(.vertical, 4).background(.black.opacity(0.45), in: RoundedRectangle(cornerRadius: 5)); Spacer() }
                                 Spacer()
                                 HStack(alignment: .bottom) {
-                                    if !model.state.sourceAvailable && model.state.monitoring { Text("Waiting for camera video").font(.caption2).padding(7).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6)) }
+                                    if !model.state.sourceAvailable && model.state.monitoring { Text("Waiting for source video").font(.caption2).padding(7).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6)) }
                                     else if model.state.holding { Text("Audience on hold. Your preview stays live.").font(.caption2).foregroundStyle(.primary).padding(7).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6)) }
                                     Spacer()
                                     Button { model.localMuted.toggle() } label: { Image(systemName: model.localMuted ? "speaker.slash.fill" : "speaker.wave.2.fill").font(.caption).frame(width: 27, height: 27) }.buttonStyle(.plain).background(.thinMaterial, in: Circle()).help(model.localMuted ? "Enable local sound" : "Mute local preview")
@@ -59,7 +59,7 @@ struct MainView: View {
                         }
                     }.frame(maxWidth: .infinity)
                     VStack(spacing: 12) {
-                        Text(model.state.sharing ? "Scan to watch" : "Share your camera").font(.system(size: 14, weight: .semibold))
+                        Text(model.state.sharing ? "Scan to watch" : "Share this feed").font(.system(size: 14, weight: .semibold))
                         if model.state.sharing, let url = model.viewerURL {
                             QRView(payload: url.absoluteString, size: 156)
                             Text(model.wifiSSID.isEmpty ? "Viewers join the same network as this Mac." : "On \(model.wifiSSID)?\nScan with your phone to watch.").font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
@@ -85,7 +85,7 @@ struct MainView: View {
                 }
             }.padding(.horizontal, 24).padding(.vertical, 13).background(.bar)
         }.frame(minWidth: 740, idealWidth: 820, minHeight: 500)
-        .toolbar { ToolbarItem(placement: .primaryAction) { Button { model.loadPrivateSettings(); model.sheet = .connection } label: { Image(systemName: "ellipsis") }.help("Camera and connection settings") } }
+        .toolbar { ToolbarItem(placement: .primaryAction) { Button { model.loadPrivateSettings(); model.sheet = .connection } label: { Image(systemName: "ellipsis") }.help("Source and connection settings") } }
         .sheet(item: $model.sheet) { sheet in
             switch sheet {
             case .connection: ConnectionView(model: model)
@@ -100,7 +100,7 @@ struct MainView: View {
     private var connectionLabel: String {
         if model.verifiedViewers > 0 { return "Playback confirmed on \(model.verifiedViewers) \(model.verifiedViewers == 1 ? "viewer" : "viewers")" }
         if model.state.sharing { return "Waiting for a viewer to confirm playback" }
-        return model.nativePreviewPlaying ? "Local preview playing" : model.state.sourceAvailable ? "Camera received; connecting local preview" : "Waiting for camera video"
+        return model.nativePreviewPlaying ? "Local preview playing" : model.state.sourceAvailable ? "Feed received; connecting local preview" : "Waiting for source video"
     }
 }
 

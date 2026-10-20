@@ -1,6 +1,10 @@
 # Setbeam status
 
-Updated: 2026-10-20. Version 0.1.0, build 1.
+Updated: 2026-10-20. Version 0.1.0, build 2.
+
+## Product scope
+
+Setbeam receives and shares video feeds. Wireless computer displays used by DigiTechs, including a Capture One display, are a primary use case alongside camera feeds. The app uses source/feed terminology; its transmission-system label describes the hardware, not the image content. No physical computer-through-transmitter test has run, and direct capture of this Mac's desktop is not implemented.
 
 ## Current checkpoint
 
@@ -33,7 +37,7 @@ The browser viewer was checked in T3's Chromium browser on this Mac. Phone reach
 
 ## Next work
 
-1. Record the exact variants and firmware of Austin's three systems; establish a vendor-app baseline and test a receiver capture route.
+1. Test a DigiTech computer display through the intended transmission and capture route, including readable small text, fine image detail, aspect ratio, resolution/refresh changes, and reconnect behavior. Record the exact variants and firmware of Austin's three systems; establish a vendor-app baseline and test a receiver capture route.
 2. Prove a usable direct input or SDK route per model before adding automatic discovery or a compatibility claim. RTMP/SRT ingestion is not implemented in this checkpoint.
 3. Verify iPhone/Safari playback and a second device on the selected LAN. Resolve the WebKit transport issue with that evidence if it affects the browser viewer.
 4. Verify local sound against a working output device, then measure and tune local A/V timing and preview latency.

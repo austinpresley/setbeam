@@ -21,11 +21,11 @@ final class SessionTests: XCTestCase {
         state.updateSource(available: true); XCTAssertEqual(state.audience, .live)
     }
     func testSourceValidationAndRedaction() throws {
-        XCTAssertNoThrow(try CameraSource.network("rtsp://user:secret@192.0.2.4:5554/live").validated())
+        XCTAssertNoThrow(try VideoSource.network("rtsp://user:secret@192.0.2.4:5554/live").validated())
         for address in ["https://example.com", "rtsp:///live", "rtsp://camera/live\npaths: {}", "rtsp://camera:0/live"] {
-            XCTAssertThrowsError(try CameraSource.network(address).validated())
+            XCTAssertThrowsError(try VideoSource.network(address).validated())
         }
-        XCTAssertEqual(CameraSource.safeAddress("rtsp://user:secret@camera:5554/live?token=private"), "rtsp://camera:5554/live")
+        XCTAssertEqual(VideoSource.safeAddress("rtsp://user:secret@camera:5554/live?token=private"), "rtsp://camera:5554/live")
         let log = Redaction.text("Failed rtsp://publisher:private@127.0.0.1/live and http://camera/live?token=private")
         XCTAssertFalse(log.contains("private"))
     }

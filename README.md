@@ -1,19 +1,21 @@
 # Setbeam
 
-A native Mac app for monitoring a camera and sharing its picture with nearby browser viewers. Setbeam is Austin's fork of [Holly Share](https://github.com/titleunknown/holly-share) by Faini Made.
+A native Mac app for receiving, monitoring, and sharing video feeds with nearby browser viewers. Computer displays sent through wireless transmission systems are a primary DigiTech use case, alongside camera feeds. Setbeam is Austin's fork of [Holly Share](https://github.com/titleunknown/holly-share) by Faini Made.
 
-This is a working developer prototype for Apple Silicon. It bundles its media runtime and starts with an explicitly labeled sample camera. No Homebrew installation is required to run the app.
+This is a working developer prototype for Apple Silicon. It bundles its media runtime and starts with an explicitly labeled sample feed. No Homebrew installation is required to run the app.
 
 ## What works at this checkpoint
 
 - Native SwiftUI session window, a shared local picture, and a resizable floating preview.
 - Browser viewing through a session link and QR code, with actual playback heartbeats.
-- Hold replaces outgoing camera video and audio while the operator keeps monitoring. Stop Sharing also preserves monitoring.
+- Hold replaces outgoing source video and audio while the operator keeps monitoring. Stop Sharing also preserves monitoring.
 - Save Frame, optional Wi-Fi join QR, menu bar controls, and saved setup with optional Keychain credentials.
 - Full-URL H.264 RTSP input and an AVFoundation capture adapter. RTSP is exercised against a real local source; capture hardware is still untested.
-- Owned helper supervision, camera-helper recovery, authenticated control/publishing, and Force Quit cleanup.
+- Owned helper supervision, source-helper recovery, authenticated control/publishing, and Force Quit cleanup.
 
 Local sound startup is asynchronous and returns to mute with an explanation if the output device does not respond. On the development Mac, Core Audio stalled while opening the device. Native sound output therefore remains unverified. The outgoing stream contains audio, and Hold's outgoing silence is verified.
+
+A source might be a Capture One display, another computer output, or a camera connected to a transmission system. The connection route determines compatibility. Built-in capture of this Mac's own desktop is not implemented.
 
 ## Hardware targets
 

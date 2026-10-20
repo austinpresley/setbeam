@@ -9,7 +9,7 @@ async function checkSetbeamPlayback(expected = 'live', timeout = 20000) {
     const label = document.getElementById('state')?.textContent;
     if (expected === 'holding' && label === 'On hold' && video.muted && !video.srcObject) return {state:expected, muted:true};
     if (expected === 'stopped' && label === 'Sharing ended' && video.muted) return {state:expected, muted:true};
-    if (expected === 'live' && label === 'Live camera' && video.readyState >= 2 && !video.paused && video.currentTime > previous) {
+    if (expected === 'live' && label === 'Live feed' && video.readyState >= 2 && !video.paused && video.currentTime > previous) {
       return {state:expected, ready:video.readyState, time:video.currentTime};
     }
     previous = video.currentTime;

@@ -7,9 +7,9 @@ struct PlayerView: View {
         ZStack {
             Color(red: 0.12, green: 0.12, blue: 0.14)
             if let image = player.image {
-                Image(nsImage: image).resizable().aspectRatio(contentMode: .fit).accessibilityLabel("Live camera preview")
+                Image(nsImage: image).resizable().aspectRatio(contentMode: .fit).accessibilityLabel("Live feed preview")
             } else {
-                ProgressView("Connecting to camera").controlSize(.small).foregroundStyle(.secondary)
+                ProgressView("Connecting to source").controlSize(.small).foregroundStyle(.secondary)
             }
         }.clipped()
     }

@@ -11,10 +11,10 @@
   function update() {
     label.className = 'state ' + mode;
     sound.disabled = mode !== 'live';
-    if (mode === 'holding') { label.textContent = 'On hold'; show('Camera paused', 'The camera operator will resume shortly.'); }
+    if (mode === 'holding') { label.textContent = 'On hold'; show('Feed paused', 'The operator will resume shortly.'); }
     else if (mode === 'stopped') { label.textContent = 'Sharing ended'; show('Sharing has ended', 'You can keep this page open.'); }
-    else if (mode === 'live' && receivedTrack && Date.now() - lastFrameAt < 6000) { label.textContent = 'Live camera'; slate.hidden = true; }
-    else { label.textContent = 'Reconnecting'; show('Camera reconnecting', 'Keep this page open. The feed will return here.'); }
+    else if (mode === 'live' && receivedTrack && Date.now() - lastFrameAt < 6000) { label.textContent = 'Live feed'; slate.hidden = true; }
+    else { label.textContent = 'Reconnecting'; show('Feed reconnecting', 'Keep this page open. The feed will return here.'); }
     // Holding also silences an already-decoded audio buffer immediately. The server replaces the actual media too.
     video.muted = mode !== 'live' || sound.getAttribute('aria-pressed') !== 'true';
   }
@@ -48,7 +48,7 @@
   }
   async function init() {
     try { const response=await fetch('config.json',{cache:'no-store'});if(!response.ok)throw new Error();config=await response.json();await poll();setInterval(poll,1500); }
-    catch { show('This session is unavailable','Ask the camera operator for a new viewing link.');label.textContent='Not connected'; }
+    catch { show('This session is unavailable','Ask the operator for a new viewing link.');label.textContent='Not connected'; }
   }
   window.addEventListener('pagehide',() => reader?.close());init();
 })();

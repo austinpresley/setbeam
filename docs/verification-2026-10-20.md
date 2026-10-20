@@ -61,3 +61,9 @@ python3 scripts/check-native-preview.py /tmp/setbeam-preview.json \
 ```
 
 The two integration files are private temporary files. The session file contains a private viewing link. Do not commit or publish it. `check-force-quit.py` deliberately kills only the Setbeam app identified by that file; use it only for this disposable sample test.
+
+## Build 2 terminology and scope follow-up
+
+Computer displays sent through transmission systems are a primary DigiTech workflow alongside camera video. Build 2 uses source/feed wording in native setup, status, menus, accessibility labels, and the browser viewer. The input descriptor is now `VideoSource`; the saved transmission-system label reads the earlier preference as a fallback, and the existing Keychain account is retained.
+
+The four Swift tests and complete sample/RTSP media probe pass after the rename, and the release app builds without warnings. Native UI inspection confirms Connect a source, Network stream, Stream address, Transmission system, Share this feed, Live feed preview, and the Feed menu. No computer-display transmission or new hardware route was physically tested. The audio and release-signing limits above remain.

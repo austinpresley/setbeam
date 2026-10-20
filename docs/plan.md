@@ -4,9 +4,9 @@ Date: 2026-10-20. Austin authorized a fork of `titleunknown/holly-share`, the na
 
 ## Product goal
 
-Build a self-contained, native Mac app for local camera monitoring and sharing. The main window has a live camera preview, viewer QR code, connection status, and audience controls. A separate resizable floating preview remains available while other applications are in use. Viewers open a clean browser page without installing an app or creating an account.
+Build a self-contained, native Mac app for receiving, monitoring, and sharing video feeds. Computer displays sent through wireless transmission systems are a primary DigiTech workflow, alongside camera feeds. The main window has a live feed preview, viewer QR code, connection status, and audience controls. A separate resizable floating preview remains available while other applications are in use. Viewers open a clean browser page without installing an app or creating an account.
 
-Preserve a quiet, native macOS interface, clear first-run guidance, saved working settings, visible failure states, and recovery during an active session. Software dependencies ship with the app. A physical transmitter and appropriate network or capture connection remain necessary for real camera use.
+Preserve a quiet, native macOS interface, clear first-run guidance, saved working settings, visible failure states, and recovery during an active session. Software dependencies ship with the app. A physical transmitter and appropriate network or capture connection remain necessary for an external source.
 
 ## Initial hardware targets and evidence
 
@@ -46,10 +46,10 @@ Goal: live video and audio pass through the actual bundled runtime and play loca
 
 - Add an explicit sample source so development and recovery tests do not require a powered transmitter. Mark it as a sample everywhere it matters.
 - Define a small source interface with concrete sample, full-URL network, and capture adapters as their implementations become real.
-- Receive each camera once. Local preview, floating preview, and audience sharing read the Mac's received feed.
+- Receive each source once. Local preview, floating preview, and audience sharing read the Mac's received feed.
 - Validate source readiness and media progress rather than equating a running process with a working picture.
 
-Acceptance: actual encoded sample media reaches both the local preview and a browser player; audio tracks are present; a second preview does not open a second camera connection.
+Acceptance: actual encoded sample media reaches both the local preview and a browser player; audio tracks are present; a second preview does not open a second upstream connection.
 
 ## Step 4: Implement native monitoring
 
@@ -65,7 +65,7 @@ Acceptance: app launches, source can be selected, preview and PiP work, local mu
 
 ## Step 5: Implement the audience experience
 
-Goal: a nearby viewer can join and understand the state of the camera.
+Goal: a nearby viewer can join and understand the state of the feed.
 
 - Serve a bundled phone-friendly viewer page and its assets locally.
 - Generate native QR codes for the session URL and optional user-provided Wi-Fi join details.
@@ -80,18 +80,19 @@ Acceptance: a separate browser session opens the shared link, receives video, re
 Goal: the operator can control the audience without losing the local picture.
 
 - Start/stop sharing independently from local monitoring.
-- Hold replaces outgoing camera video with a safe holding output and suppresses outgoing camera audio. Merely hiding video in the phone page is insufficient.
+- Hold replaces outgoing source video with a safe holding output and suppresses outgoing source audio. Merely hiding video in the phone page is insufficient.
 - Keep local preview and PiP running during Hold and after audience sharing stops.
 - Resume through the same viewer page, with reconnection where required by the transport.
 - Add Save Frame from the received local feed if it can be implemented and verified without compromising the main path.
 
-Acceptance: capture the actual shared output during Hold and verify it contains no camera picture or camera audio; local media remains available. Stop Sharing leaves monitoring usable.
+Acceptance: capture the actual shared output during Hold and verify it contains no source picture or source audio; local media remains available. Stop Sharing leaves monitoring usable.
 
 ## Step 7: Add input and recovery evidence
 
 Goal: establish what works and make failures understandable.
 
 - Exercise a generic RTSP source with the complete URL rather than hardcoded device paths.
+- Physically test a computer display through the transmission/capture chain as a peer to a camera source. Check small text, fine image detail, aspect ratios, resolution/refresh changes, and reconnect behavior.
 - Implement and enumerate compatible USB/capture input routes without requesting camera/microphone access until needed.
 - Add targeted discovery only where the model's protocol is established. Do not change the Mac's Wi-Fi or transmitter firmware automatically.
 - Test source loss, child-process failure, occupied ports, repeated start/stop, and application quit. Add backoff and actionable errors.

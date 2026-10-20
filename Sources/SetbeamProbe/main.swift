@@ -62,8 +62,8 @@ import SetbeamCore
                 let holdAudio = try await audioPeak(runtime: runtime, tools: tools, directory: output, name: "hold-audio")
                 guard try Data(contentsOf: livePicture) != Data(contentsOf: holding) else { throw SetbeamError.runtime("Hold did not replace outgoing video.") }
                 guard await runtime.snapshot().sourceAvailable else { throw SetbeamError.runtime("Hold interrupted local media.") }
-                guard liveAudio > 100, holdAudio < 8 else { throw SetbeamError.runtime("Hold did not suppress the camera audio.") }
-                print("PASS: Hold replaces audience video and suppresses camera audio while local video continues")
+                guard liveAudio > 100, holdAudio < 8 else { throw SetbeamError.runtime("Hold did not suppress the source audio.") }
+                print("PASS: Hold replaces audience video and suppresses source audio while local video continues")
                 try await runtime.setHold(false)
                 try await Task.sleep(nanoseconds: 1_500_000_000)
                 await runtime.stopSharing()
@@ -81,8 +81,8 @@ import SetbeamCore
                     if snapshot.sourceAvailable, !(await runtime.processIDs()).contains(inputPID) { recovered = true; break }
                     try await Task.sleep(nanoseconds: 200_000_000)
                 }
-                guard recovered else { throw SetbeamError.runtime("Camera helper did not recover after a forced process failure.") }
-                print("PASS: a crashed camera helper restarts and delivers fresh frames")
+                guard recovered else { throw SetbeamError.runtime("Source helper did not recover after a forced process failure.") }
+                print("PASS: a crashed source helper restarts and delivers fresh frames")
                 let beforeServerFailure = await runtime.processIDs()
                 guard let serverPID = beforeServerFailure.first else { throw SetbeamError.runtime("No media server to exercise failure reporting.") }
                 kill(serverPID, SIGKILL)
