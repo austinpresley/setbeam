@@ -75,11 +75,11 @@ struct JoinCodesView: View {
                 HStack(alignment: .top, spacing: 28) {
                     if !model.wifiSSID.isEmpty { VStack(spacing: 13) { Text("1. Join Wi-Fi").font(.headline); QRView(payload: QRCode.wifi(ssid: model.wifiSSID, password: model.wifiPassword), size: 190); Text(model.wifiSSID).font(.caption).foregroundStyle(.secondary) } }
                     VStack(spacing: 13) { Text(model.wifiSSID.isEmpty ? "Scan to watch" : "2. Watch the camera").font(.headline); QRView(payload: url.absoluteString, size: 190); Text(model.title).font(.caption).foregroundStyle(.secondary) }
-                }
+                }.frame(maxWidth: .infinity)
                 if model.wifiSSID.isEmpty { Text("Viewers must be on the same reachable network as this Mac. Add optional Wi-Fi join details in connection settings.").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
             }
             HStack { Button("Copy viewing link") { model.copyLink() }; Spacer(); Button("Done") { model.sheet = nil }.keyboardShortcut(.defaultAction) }
-        }.padding(28).frame(minWidth: model.wifiSSID.isEmpty ? 300 : 475)
+        }.padding(28).frame(width: model.wifiSSID.isEmpty ? 340 : 475)
     }
 }
 
