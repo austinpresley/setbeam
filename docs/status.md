@@ -84,6 +84,14 @@ Ignore rules cover build products, downloaded dependencies, runtime state, local
 
 The cleaned source passed `scripts/check.sh`: 51 Swift tests, five viewer-controller checks, and the actual-media, source-recovery, and source-switching probes using `Vendor/bin`. The moved artwork generated all ten icon sizes and an ICNS identical to the approved Build 9 icon. Shell syntax, local documentation links, staged-file checks, and ignore-rule checks passed. These are automated checks; native UI, browser playback, and physical hardware were not retested during this cleanup. The hardware limitations below still apply.
 
+## GitHub README
+
+On 2026-10-21, the README was shortened into a product introduction with the approved icon and real native screenshots that follow GitHub's light/dark appearance. Both images are unmodified Build 8 sample-session captures of the layout retained in Build 9. Fictional sample media is labeled. Detailed build, setup, monitoring, sharing, and recovery instructions moved to [getting-started.md](getting-started.md). Hardware limits, developer-preview status, upstream attribution, and license links remain visible.
+
+GitHub's Markdown API preserved the themed picture markup. Rendered checks at 900- and 360-pixel widths confirmed loaded images, the correct theme-specific screenshot, working section navigation, and no horizontal overflow. All 25 local README/setup-guide links and image references passed, and both screenshot hashes match their recorded native captures. `scripts/check.sh` passed all 51 Swift tests, five viewer-controller checks, and the actual-media, source-recovery, and source-switching probes. These are documentation and automated checks; native app behavior and physical hardware were not retested for this change. The remaining evidence below is unchanged.
+
+The publication format check initially failed with `Invalid PNG: Assets/screenshots/main-dark.png`. Both screenshots contain JPEG data and were renamed to `.jpg`, with README and setup-guide references updated. The original image bytes are unchanged. All 26 local references and section anchors passed the final check, both 900×636 JPEGs decoded successfully, and whitespace and private-content scans passed.
+
 ## Remaining evidence and release work
 
 - The completed 120-second hardware soak failed its continuous criterion with 2 unavailable samples of 116. The two-hour check was explicitly deferred to Austin's next session. Long-session reliability remains open.
