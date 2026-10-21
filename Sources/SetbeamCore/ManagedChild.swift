@@ -73,7 +73,7 @@ public final class ManagedChild: @unchecked Sendable {
         progressText += text
         while let end = progressText.firstIndex(of: "\n") {
             let line = String(progressText[..<end]); progressText.removeSubrange(...end)
-            if line.hasPrefix("frame="), let frame = Int(line.dropFirst(6).trimmingCharacters(in: .whitespaces)), frame > lastFrame {
+            if line.hasPrefix("frame="), let frame = Int(line.dropFirst(6).trimmingCharacters(in: .whitespaces)), frame > 0, frame > lastFrame {
                 lastFrame = frame; frameTime = Date()
             }
         }

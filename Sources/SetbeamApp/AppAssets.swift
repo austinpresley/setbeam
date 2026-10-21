@@ -14,6 +14,7 @@ enum AppAssets {
         return RuntimePaths(tools: packaged ? Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers") : project.appendingPathComponent("Vendor/bin"), fixtures: packaged ? root.appendingPathComponent("Fixtures") : project.appendingPathComponent("Fixtures"))
     }
     static func resource(_ name: String) -> URL { root.appendingPathComponent(name) }
+    static var icon: NSImage? { NSImage(contentsOf: resource("Setbeam.icns")) }
     static func text(_ name: String) -> String { (try? String(contentsOf: resource(name), encoding: .utf8)) ?? "" }
     static var viewerAssets: [String: Data] {
         Dictionary(uniqueKeysWithValues: ["viewer.html", "viewer.css", "viewer.js", "reader.js"].compactMap { name in
@@ -57,5 +58,9 @@ enum SecureSettings {
             var add = query; add.merge(attributes) { _, new in new }; add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
             guard SecItemAdd(add as CFDictionary, nil) == errSecSuccess else { throw SetbeamError.runtime("Could not save the credential in Keychain.") }
         } else if update != errSecSuccess { throw SetbeamError.runtime("Could not update the credential in Keychain.") }
+    }
+    static func remove(_ account: String) {
+        SecItemDelete([kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
+                       kSecAttrAccount as String: account] as CFDictionary)
     }
 }

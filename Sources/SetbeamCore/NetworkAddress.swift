@@ -7,7 +7,22 @@ public struct NetworkAddress: Hashable, Identifiable, Sendable {
     public let address: String
     public var id: String { "\(interface):\(address)" }
     public var label: String { interface == "lo0" ? "This Mac only · \(address)" : "\(Self.details(interface).0) · \(address)" }
+    public var name: String { interface == "lo0" ? "This Mac only" : Self.details(interface).0 }
+    public var wireless: Bool { Self.details(interface).1 }
     public init(interface: String, address: String) { self.interface = interface; self.address = address }
+    public static func preferred(in networks: [NetworkAddress], interface: String? = nil) -> NetworkAddress? {
+        if let interface, let saved = networks.first(where: { $0.interface == interface }) { return saved }
+        if let store = SCDynamicStoreCreate(nil, "Setbeam" as CFString, nil, nil),
+           let global = SCDynamicStoreCopyValue(store, "State:/Network/Global/IPv4" as CFString) as? [String: Any],
+           let primary = global["PrimaryInterface"] as? String,
+           let network = networks.first(where: { $0.interface == primary }) { return network }
+        return networks.first
+    }
+
+    /// Wait for the chosen interface through an outage instead of moving viewers to another network.
+    public static func restoring(_ current: NetworkAddress, in networks: [NetworkAddress]) -> NetworkAddress {
+        networks.first(where: { $0.interface == current.interface }) ?? current
+    }
 
     public static func available() -> [NetworkAddress] {
         var interfaces: UnsafeMutablePointer<ifaddrs>?
@@ -56,5 +71,22 @@ public struct NetworkAddress: Hashable, Identifiable, Sendable {
         let read = withUnsafeMutablePointer(to: &address) { pointer in pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(fd, $0, &length) } }
         guard read == 0 else { throw SetbeamError.unavailable("Could not read a local media port.") }
         return UInt16(bigEndian: address.sin_port)
+    }
+    public static func freeRTPPorts() throws -> UInt16 {
+        for _ in 0..<30 {
+            let first = socket(AF_INET, SOCK_DGRAM, 0), second = socket(AF_INET, SOCK_DGRAM, 0)
+            guard first >= 0, second >= 0 else { if first >= 0 { close(first) }; if second >= 0 { close(second) }; break }
+            defer { close(first); close(second) }
+            func bindPort(_ fd: Int32, _ port: UInt16) -> Bool {
+                var address = sockaddr_in(); address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size); address.sin_family = sa_family_t(AF_INET); address.sin_addr.s_addr = inet_addr("127.0.0.1"); address.sin_port = port.bigEndian
+                return withUnsafePointer(to: &address) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) == 0 } }
+            }
+            guard bindPort(first, 0) else { continue }
+            var address = sockaddr_in(), length = socklen_t(MemoryLayout<sockaddr_in>.size)
+            let result = withUnsafeMutablePointer(to: &address) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(first, $0, &length) } }
+            let port = UInt16(bigEndian: address.sin_port)
+            if result == 0 && port < UInt16.max && bindPort(second, port + 1) { return port }
+        }
+        throw SetbeamError.unavailable("Could not reserve local video ports.")
     }
 }

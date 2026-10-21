@@ -1,45 +1,95 @@
 # Setbeam status
 
-Updated: 2026-10-20. Version 0.1.0, build 2.
+Updated: 2026-10-21. Version 0.2.0, build 9. Corrects the outgoing-status warnings while retaining the approved full-width layout. Final packaged checks pass. Earlier physical evidence retains the limits below.
 
 ## Product scope
 
-Setbeam receives and shares video feeds. Wireless computer displays used by DigiTechs, including a Capture One display, are a primary use case alongside camera feeds. The app uses source/feed terminology; its transmission-system label describes the hardware, not the image content. No physical computer-through-transmitter test has run, and direct capture of this Mac's desktop is not implemented.
+Setbeam receives, monitors, and shares video feeds. Computer displays used by DigiTechs and camera feeds are peer use cases. Direct capture of this Mac's desktop is not implemented.
 
-## Current checkpoint
+## Current behavior
 
-A self-contained Apple Silicon developer prototype is implemented. Real sample video plays in the native window and the shared floating preview, and the browser viewer receives H.264 video and Opus audio. Hold and Stop preserve local monitoring. This is the first stopping checkpoint in `plan.md`.
+Build 9 separates actual outgoing-media health from the outgoing thumbnail. Normal Start, Hold, and Resume changes show bounded preparation states rather than false reconnection warnings. Fresh output ends preparation immediately; real later loss and unavailable holding output remain visible. All 51 Swift tests, five viewer checks, and packaged media/recovery/source-switching probes pass. Native Start/Hold/Resume checks pass without the false banners. A new quick demo uses moving footage and a visible pointer without added captions. See [outgoing-status verification](verification-outgoing-status-2026-10-21.md).
 
-## Milestones
+Build 8 replaces the sharing sidebar and repeated healthy/audio text with a full-width local picture, unified source/sound/floating-preview/gear toolbar, and one sharing-status footer. QR invitations and outgoing-picture/audio/viewer details open in native popovers. Hold/Resume and Stop stay visible during sharing. Setup tests, network settings, capture audio routing, Save frame, and diagnostics move into the gear and standard menus. Recovery, changed addresses, and missing outgoing media remain visible when needed. All 42 Swift tests, five viewer checks, and packaged media/recovery/source-switching probes pass with an unchanged source snapshot, strict signature verification, and system-only dependencies. Native dark/light and compact checks pass. The finished app restored the saved physical Master 4K privately with advancing native frames and Mac sound muted. See [layout verification](verification-layout-2026-10-20.md).
 
-- [x] Concrete plan with goals and acceptance checks.
-- [x] GitHub fork and Project Vault checkout.
-- [x] Pinned, bundled media runtime with source archives and notices.
-- [x] Actual sample-to-native-preview and browser path.
-- [x] Native main window and floating preview sharing one decoder.
-- [x] Viewer QR, playback status, Hold/Resume/Stop, and frame export.
-- [x] Generic RTSP adapter verified against a real authenticated local source.
-- [x] Capture adapter and device selection implemented, physical capture test pending.
-- [x] Helper recovery, server failure detection, and normal/Force Quit cleanup checks.
-- [ ] Physical transmitter, capture, phone/Safari, and LAN tests.
-- [ ] Native sound output verification on a responding audio device.
-- [ ] Public signing/notarization, Intel builds, and release distribution.
+Build 7 adds safe source changes under Hold with a stable viewing link and return to the previous input, an actual outgoing-media thumbnail, Test my setup with other-device and listening checks, separate input/local/audience audio status, and active-sharing Quit protection. The source implementation passes all 33 core and 9 app Swift tests, 5 viewer-controller tests, and `scripts/check.sh`, including the new actual-media source-switching probe. Isolated native/Chromium switching, Hold/Resume, local-viewer exclusion, Quit cancel/confirm, and cleanup of all ten owned descendants pass. Physical phone and qualified transmitter power-cycle results are recorded below. See [safeguard verification](verification-safety-2026-10-20.md).
 
-## Evidence and limits
+Build 7's earlier dedicated sharing column and healthy-picture labels are superseded by the approved Build 8 layout. The previous 900×720 light and 760×560 dark checks remain recorded in [main-window verification](verification-main-window-2026-10-20.md).
 
-See `verification-2026-10-20.md` for checks and results. No physical transmitter or capture device was used. The named Hollyland and Accsoon profiles remain unverified test targets.
+The source chooser shows detected capture names and illustrations, advertised RTSP sources with explicit paths, the last proven setup, an explicitly labeled sample, and discovered CineView Master 4K units. Stream addresses, manual viewer network selection, input sound routing, incoming RTMP, and diagnostics are in Advanced.
 
-The native renderer uses one FFmpeg JPEG decode at 24 fps shared by both windows. This avoids the stalled WKWebView WebRTC transport observed on this host. It is a prototype implementation; GPU rendering, frame pacing, power use, audio/video synchronization, and latency need measurement before a production release.
+A setup is remembered after two seconds of sustained reception and fresh native playback. Complete network addresses and incoming credentials use Keychain. Capture inputs use persistent identities resolved inside bundled FFmpeg. The next launch restores the same source and floating preview privately. Sharing and Hold always start off.
 
-Core Audio stalled opening the development Mac's output device. The app now opens audio off the UI thread, times out with a useful message, and keeps video and controls responsive. Outgoing audio and Hold silence passed media checks; audible local output did not pass.
+Source stalls, helper failures, preview decoder failures, and server failures have bounded recovery. Healthy status requires fresh frames. Viewer counts distinguish opened pages from actual playback, and the same viewer page reconnects after audience media restarts. Hold suppresses outgoing source video/audio; Stop sharing preserves local monitoring.
 
-The browser viewer was checked in T3's Chromium browser on this Mac. Phone reachability, Safari, Wi-Fi range, multi-viewer capacity, and device-specific recovery remain unverified. Sharing uses HTTP on a selected local interface with private, read-only session links. No internet relay is implemented.
+Open viewers replace a peer after ten seconds without decoded video. Their state/configuration/heartbeat requests time out after five seconds, including body reads. Active sharing waits for the selected viewing interface through temporary network loss, preserving Hold, the viewing credential, and viewer server port. A changed IP address updates the viewing code and requires viewers at the old numeric address to rescan. Wi-Fi selection remains user controlled; automatic Wi-Fi association is not implemented.
 
-## Next work
+The main window, source chooser, physical guidance, native menus, floating preview, and phone-friendly viewer have been polished. Light/dark appearance, keyboard actions, accessible labels, copied-link feedback, join codes, and desktop/phone-size Chromium layouts were inspected. Viewing Wi-Fi metadata can be edited without interrupting the feed or rotating its viewing link.
 
-1. Test a DigiTech computer display through the intended transmission and capture route, including readable small text, fine image detail, aspect ratio, resolution/refresh changes, and reconnect behavior. Record the exact variants and firmware of Austin's three systems; establish a vendor-app baseline and test a receiver capture route.
-2. Prove a usable direct input or SDK route per model before adding automatic discovery or a compatibility claim. RTMP/SRT ingestion is not implemented in this checkpoint.
-3. Verify iPhone/Safari playback and a second device on the selected LAN. Resolve the WebKit transport issue with that evidence if it affects the browser viewer.
-4. Verify local sound against a working output device, then measure and tune local A/V timing and preview latency.
-5. Add a GPU video renderer if profiling warrants it, finish accessibility/appearance/keyboard checks, and test long sessions, network changes, occupied-port races, sleep/wake, and larger viewer counts.
-6. Choose an authorized signing identity, notarize a release, and verify the minimum macOS target on physical machines.
+While connecting or recovering, the preview shows one stage label, a native activity indicator, and small progress marks. Direct Accsoon reception distinguishes monitor preparation, finding the selected transmitter, its connection acknowledgement, waiting for picture, and opening native playback. Generic network, incoming, capture, and sample inputs use the three observable stages without claiming transmitter discovery. Stages follow runtime signals rather than elapsed time. Missing Accsoon source video retains its physical guidance. The indicator clears only when reception and native playback are both fresh.
+
+The build 7 floating preview adds pinch/scroll inspection and bounded drag-to-pan, with double-click or 0 to restore the whole picture. A separate hover strip stays outside the picture and displays the zoom percentage while magnified. It moves above the preview when there is no room below. Native sample checks passed its hover, scroll, pan, reset, minimum-size badge, and close/reopen behavior. Real routed mouse checks also passed ordinary window movement, edge/corner resizing, zoom, pan, and reset after correcting borderless AppKit handling. Eight new app geometry tests pass; `scripts/check.sh` passed before the final window-handling corrections, and the packaging owner is rerunning the final packaged check. Physical trackpad pinch and display/Space combinations remain open. The verified combined package is recorded below. See [PiP verification](verification-pip-2026-10-20.md).
+
+## Approved layout review
+
+The Build 7 layout review compared an actual isolated sample-session screenshot with the full-width monitor proposal. It included light/dark, Hold, Private, and settings examples plus the reason each visible control stays. Its browser controls and 360-/728-pixel previews passed inspection. Austin approved the privately delivered review and requested implementation. Build 8 is the native implementation. The review exports are archived locally outside the source files. No new hardware compatibility is implied.
+
+## Physical Master 4K result
+
+The exact tested unit is Accsoon CineView Master 4K. The same saved UID has reported product IDs 21 and 24, with firmware 3.30/raw 798; the earlier hardware status was raw 256/0x0100. Austin confirmed the physical unit is unchanged. Both observed product IDs are now recognized, with the product-24 live video, audio, Hold, and recovery route verified separately in the field record. Its direct RTMS4 input works through Accsoon_11D5 on this Apple Silicon Mac. Wi-Fi receives the source while Ethernet retains internet access and serves viewers. No vendor binary is bundled.
+
+A real 1920×1080p60 computer display passed direct reception, legible frame export, main/floating playback, Chromium playback, Hold/Resume/Stop, proven setup restoration, helper recovery, and Wi-Fi rejoin. The AAC 48 kHz stereo input produced Opus and a live browser audio track. A killed input helper recovered fresh native frames in 4.3 seconds, preserving the saved source and private state. A deliberate Wi-Fi interruption also recovered the same source after rejoining its network.
+
+The build 6 receiver check passed direct video/audio conversion, Hold/Stop, and three forced source-helper recoveries in 2.51, 2.97, and 3.01 seconds with Hold and the viewing credential retained. A following 120.5-second check recorded 118 fresh source/audience samples with zero outages. Wi-Fi selection was unchanged. This is short physical-source evidence with injected software failures, not a long session or transmitter power-cycle test.
+
+Accsoon SEE 1.9.3 was installed and its agreement accepted with Austin's explicit approval. Its device list stayed empty on this Ethernet-plus-Wi-Fi Mac, so a vendor-picture baseline did not pass. The tested Setbeam route is direct reception, independent of SEE. A real no-input event was observed, and Setbeam correctly asks for a camera/computer picture when stream arrays are empty.
+
+Build 7 verified the same confirmed unit with product ID 24: real 1920×1080 computer-display export, H.264/Opus conversion, silent outgoing Hold, local monitoring through Hold/Stop, and three source-helper recoveries in 2.37, 2.60, and 2.32 seconds. The completed 120-second continuous-run criterion failed with 2 unavailable samples of 116; recovery occurred, but the cause and duration of those readings were not independently measured.
+
+A physical phone in Safari passed sample video and audible tone, 30-second lock/wake recovery, silent Hold, and automatic same-page Resume with sound. The real transmitter picture also played on that phone. After physical transmitter OFF/ON, macOS switched Wi-Fi to the regular LAN. Manually rejoining the transmitter's Wi-Fi restored the same source, fresh main/outgoing frames, and the same phone page without app Retry or browser reload. The viewing link remained unchanged. This is recovery after a manual Wi-Fi rejoin; automatic association is not implemented. Phone model and OS version were not supplied.
+
+## Verification and packaging
+
+Build 9 is `dist/Setbeam-0.2.0-build9-macOS-arm64/Setbeam.app`. Its final frozen source, packaged-runtime checks, signatures, resource hashes, and system-only dependencies pass. It opened privately with the same saved Master 4K and Mac sound muted. The physical source was unavailable at that checkpoint, so fresh hardware playback is not claimed for this build. The ad-hoc signed developer distribution and existing hardware limits are unchanged. See [verification](verification-outgoing-status-2026-10-21.md).
+
+The private Build 9 delivery completed remote verification and contains the app archive, a 33-second quick click-through with moving sample footage and a visible pointer, and notes/footage attribution. The new video has no added captions and supersedes the earlier captioned walkthrough for the requested demo.
+
+Build 8 is `dist/Setbeam-0.2.0-build8-macOS-arm64/Setbeam.app`. The final release source remained unchanged through packaging and `scripts/check.sh` against its packaged helpers and fixtures. Native release QA passed 900×636 dark/light, 640×472 light, first-run/private monitoring, invitations/join codes, audio details, and process cleanup. Force Quit stopped all ten sharing descendants; normal private Quit stopped all six. After quitting the old private build, the distribution app launched from `/tmp`, restored the same saved Master 4K, and was left monitoring privately with sound muted. The app is ad-hoc signed, self-contained, and not notarized. Exact hashes and final delivery evidence are in [layout verification](verification-layout-2026-10-20.md).
+
+Private Build 8 delivery completed with remote verification. The delivery folder contains the finished app archive, build notes, and labeled native sample screenshots in dark/light appearances.
+
+A 46-second native walkthrough was privately delivered with remote verification. It records the actual Build 8 sample session, with captions and pauses trimmed, showing Private, sharing/invitations, source and sound popovers, actual outgoing Hold, Resume, Stop, and the gear menu. The sample app was quit afterward; the production monitor was untouched. No app code or hardware claims changed.
+
+All 42 Swift tests, comprising 33 core and 9 app tests, five viewer-controller checks, and `scripts/check.sh` with the final app's packaged helpers and fixtures pass. Connection-stage tests cover discovery, actual acknowledgement, fresh media, loss/recovery, and generic input routes. The actual-media probe covers sample, authenticated RTSP and RTMP, stable incoming destination restoration, actual silent Hold, read-only viewer restrictions, stopped/stalled source recovery, media-server recovery retaining the viewer credential and Hold, and owned-process cleanup. New RTSP/RTMP tests start offline and recover twice after sender loss while retaining audience intent and credentials.
+
+Build 6 packaged Chromium checks recovered a frozen video track in 12.157 seconds and hung state requests in 14.120 seconds on the same page without an operator click. Native Hold, browser silence/closed playback, server recovery and Resume, and cleanup of all eight owned helpers after Force Quit passed. These are injected software checks, not physical phone or network-loss tests.
+
+Build 6 normal Quit stopped the app and all eight owned descendants. Native automatic restoration after quitting an active held session restored the saved picture and floating preview with sharing and Hold off. The distribution app is self-contained, ad-hoc signed, and verified against system-only dynamic dependencies. Private delivery is recorded in the build 3 verification record.
+
+Build 6 launched from `/tmp` and restored the same proven Master 4K privately with sharing and Hold off. Fresh main/floating native playback passed. The previous floating-preview preference was restored, and the finished app was left monitoring the source privately. Packaging and delivery are recorded in the recovery verification record.
+
+Build 7 is `dist/Setbeam-0.2.0-build7-macOS-arm64/Setbeam.app`. The final source/test snapshot remained unchanged during packaging. Strict signature verification, bundled viewer hashes, and system-only dependencies pass. Launched from `/tmp` with isolated sample preferences, it produced fresh native/outgoing pictures and audio tracks; Force Quit cleaned up all ten owned descendants. The final app then restored the saved physical Master 4K privately with Picture ready and sharing off. See [main-window verification](verification-main-window-2026-10-20.md), [PiP verification](verification-pip-2026-10-20.md), and [safeguard verification](verification-safety-2026-10-20.md).
+
+Private build 7 delivery completed with remote verification. Its delivery folder contains the earlier app archive and build notes. It was left monitoring the saved physical source privately at that checkpoint, and is now superseded by Build 8. Full build 7 packaging and delivery evidence is in [main-window verification](verification-main-window-2026-10-20.md).
+
+## Current branding
+
+Austin selected round 3, variant 1, Silver, as the interim Setbeam logo. `Assets/Setbeam.png` preserves the approved artwork; `scripts/make-icon.swift` generates its standard icon representations. Build 3 contained the correct ICNS, but About's system-provided application icon returned a generic placeholder in the screenshot session. Build 4 loads the bundled icon directly for About and assigns that image to the application icon at startup. Native visual inspection and a comparison against the decoded bundled icon pass. All 26 Swift tests and `scripts/check.sh`, including media integration, were rerun successfully. This correction adds no physical hardware evidence.
+
+## Repository cleanup
+
+On 2026-10-21, unused mockups, icon concepts, and review exports were archived locally under the ignored `build/` directory. The approved icon source is `Assets/Setbeam.png`; sample-image provenance stays with `Fixtures/`. The original `holly-share.sh` launcher, installer, page template, and reference documents now live together under `docs/upstream/`. Upstream and dependency notices remain intact.
+
+Ignore rules cover build products, downloaded dependencies, runtime state, local credentials/settings, editor state, logs, and design experiments. Private delivery URLs were removed from the checked-in verification records. Source, tests, required assets, build scripts, and project documentation remain versioned.
+
+The cleaned source passed `scripts/check.sh`: 51 Swift tests, five viewer-controller checks, and the actual-media, source-recovery, and source-switching probes using `Vendor/bin`. The moved artwork generated all ten icon sizes and an ICNS identical to the approved Build 9 icon. Shell syntax, local documentation links, staged-file checks, and ignore-rule checks passed. These are automated checks; native UI, browser playback, and physical hardware were not retested during this cleanup. The hardware limitations below still apply.
+
+## Remaining evidence and release work
+
+- The completed 120-second hardware soak failed its continuous criterion with 2 unavailable samples of 116. The two-hour check was explicitly deferred to Austin's next session. Long-session reliability remains open.
+- Native audible output and A/V timing remain unverified. This Mac falls back to mute when its audio device does not respond; video and encoded source/audience audio continue. Audible sample sound passed on the phone; real-source audible sound and A/V timing remain open.
+- Physical trackpad pinch, additional displays/Spaces, full VoiceOver, camera content, source format changes, latency, range, capacity, and coexistence with receivers/vendor apps remain untested. One phone result does not establish all phone models or OS versions.
+- Hollyland models, physical USB/HDMI capture, other Master 4K firmware, Intel builds, and older macOS versions remain unverified. The build targets Apple Silicon macOS 14 or later and was tested on macOS 27.
+- Developer ID signing/notarization and a public release remain separate work.
+
+See [hardware-tests.md](hardware-tests.md), [experience-plan.md](experience-plan.md), [experience verification](verification-experience-2026-10-20.md), [recovery verification](verification-recovery-2026-10-20.md), and [architecture.md](architecture.md).

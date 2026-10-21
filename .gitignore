@@ -1,13 +1,43 @@
+# macOS and editor state
 .DS_Store
-holly-share.conf
-.build/
-.swiftpm/
-build/
-dist/
-Vendor/
-runtime/
+._*
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
 *.xcuserstate
 *.xcuserdatad/
+
+# Local configuration and credentials
+holly-share.conf
+.env
+.env.*
+!.env.example
+!.env.*.example
 *.local.json
+*.local.yaml
+*.local.yml
+*.p12
+*.p8
+*.key
+*.pem
+*.mobileprovision
+
+# Generated builds, downloaded dependencies, and runtime state
+/.build/
+/.swiftpm/
+/build/
+/dist/
+/Vendor/
+/runtime/
 __pycache__/
 *.pyc
+*.log
+*.profraw
+*.profdata
+
+# Local experiments and review exports; approved artwork lives in Assets/
+/design/
+/scratch/
+/local-artifacts/

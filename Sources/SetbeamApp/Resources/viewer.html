@@ -1,5 +1,11 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="referrer" content="no-referrer"><title>Setbeam</title><link rel="stylesheet" href="viewer.css"></head><body>
-<header><h1 id="title">Feed</h1><p>Setbeam <span id="sample" hidden>· Sample feed</span></p><div class="state" id="state" role="status">Connecting</div></header>
-<main><div class="picture"><video id="video" autoplay playsinline muted></video><div class="slate" id="slate"><strong id="slate-title">Connecting to the feed</strong><span id="slate-copy">Your picture will appear here.</span></div></div><div class="controls"><button id="sound" type="button" aria-pressed="false">Enable sound</button><button id="fullscreen" type="button">Full screen</button></div><p class="hint">Keep this page open if the feed reconnects.</p></main>
-<footer>Local feed sharing</footer><script src="reader.js"></script><script src="viewer.js"></script></body></html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="referrer" content="no-referrer"><meta name="theme-color" content="#101012"><title>Setbeam</title><link rel="stylesheet" href="viewer.css"></head>
+<body>
+<header><div><h1 id="title">Feed</h1><p>Setbeam <span id="sample" hidden>· Sample feed</span></p></div><div class="state" id="state" role="status" aria-live="polite">Connecting</div></header>
+<main>
+<div class="picture" id="picture"><video id="video" autoplay playsinline muted aria-label="Shared feed"></video><div class="slate" id="slate"><strong id="slate-title">Connecting to the feed</strong><span id="slate-copy">Your picture will appear here.</span><button id="retry" type="button" hidden>Try again</button></div></div>
+<div class="controls"><button id="sound" type="button" aria-pressed="false" disabled>Enable sound</button><button id="fullscreen" type="button">Full screen</button></div>
+<p class="hint" id="network-hint">Stay on the same network as the operator. Your picture reconnects automatically.</p>
+</main><footer>Setbeam</footer><script src="reader.js"></script><script src="viewer.js"></script>
+</body></html>

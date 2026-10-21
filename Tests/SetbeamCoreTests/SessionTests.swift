@@ -15,7 +15,7 @@ final class SessionTests: XCTestCase {
         state.end(); XCTAssertFalse(state.monitoring)
     }
     func testInterruptedSourceKeepsAudienceSessionIntent() throws {
-        var state = SessionState(); state.beginMonitoring(); state.updateSource(available: true); try state.startSharing()
+        var state = SessionState(); state.beginMonitoring(); state.updateSource(available: true); try state.startSharing(); state.updateAudience(available: true)
         state.updateSource(available: false)
         XCTAssertEqual(state.audience, .reconnecting); XCTAssertTrue(state.sharing)
         state.updateSource(available: true); XCTAssertEqual(state.audience, .live)

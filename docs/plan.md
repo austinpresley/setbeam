@@ -4,7 +4,7 @@ Date: 2026-10-20. Austin authorized a fork of `titleunknown/holly-share`, the na
 
 ## Product goal
 
-Build a self-contained, native Mac app for receiving, monitoring, and sharing video feeds. Computer displays sent through wireless transmission systems are a primary DigiTech workflow, alongside camera feeds. The main window has a live feed preview, viewer QR code, connection status, and audience controls. A separate resizable floating preview remains available while other applications are in use. Viewers open a clean browser page without installing an app or creating an account.
+Build a self-contained, native Mac app for receiving, monitoring, and sharing video feeds. Computer displays sent through wireless transmission systems are a primary DigiTech workflow, alongside camera feeds. The main window has a live feed preview, sharing status, and audience controls; invitations and detailed status open from their controls. A separate resizable floating preview remains available while other applications are in use. Viewers open a clean browser page without installing an app or creating an account.
 
 Preserve a quiet, native macOS interface, clear first-run guidance, saved working settings, visible failure states, and recovery during an active session. Software dependencies ship with the app. A physical transmitter and appropriate network or capture connection remain necessary for an external source.
 
@@ -119,3 +119,21 @@ Acceptance: a self-contained app archive launches from its own directory, runs t
 Reach a coherent developer prototype with the actual bundled media path, a native interface, local/floating preview, browser viewing, audience Hold/Resume/Stop, and meaningful recovery tests. Use the sample and generic inputs to verify the software independently. Document proprietary protocol work, physical-device checks, Intel support, and public notarized release work that remain open.
 
 This checkpoint is not a promise that all three owned transmitters already work directly over Wi-Fi. If access to one of them is required, continue all independent work and report the exact model-specific test or SDK dependency.
+
+## Build 3 experience checkpoint
+
+The complete setup and polish pass is recorded in [experience-plan.md](experience-plan.md). It adds detected device identities and illustrations, necessary physical guidance, proven private restoration, Advanced disclosure, automatic same-source recovery, honest frame freshness, clear audience control, workspace restoration, and viewer joining with actual playback feedback.
+
+The CineView Master 4K firmware 3.30 now has a physically tested direct RTMS4 route, independent of Accsoon SEE. Computer-display video, encoded audio, native/floating/browser playback, Hold/Resume/Stop, source loss, helper recovery, and Wi-Fi rejoin are recorded in [hardware-tests.md](hardware-tests.md). Other transmitters and physical capture routes remain unverified. Native audible sound still needs a responsive output device. Build 3 packaging and regression evidence is recorded separately in [verification-experience-2026-10-20.md](verification-experience-2026-10-20.md).
+
+## Build 6 recovery checkpoint
+
+Austin requested stronger Master 4K stability and automatic reconnect for supported inputs and viewers. Wi-Fi selection must remain user controlled by default. The recovery pass adds frozen-peer detection, bounded viewer requests, same-port gateway restart, preservation of sharing and Hold through temporary viewing-interface loss, and immediate recovery of failed Accsoon receivers. Real-media RTSP/RTMP outage tests and browser failure injection are recorded in [recovery verification](verification-recovery-2026-10-20.md). Physical power cycles, format changes, phone/Safari behavior, and long sessions still need separate evidence.
+
+## Build 8 approved layout checkpoint
+
+Austin approved the full-width monitor mockup and requested the native implementation. The unified toolbar uses symbols for local sound, floating preview, and settings. Invitations and detailed source/audience status open on demand. Hold/Resume and Stop remain visible, with recovery and changed-address feedback shown when needed. Native and packaging evidence is in [layout verification](verification-layout-2026-10-20.md). Existing media-flow safeguards and physical-test limits remain in force.
+
+## Build 9 outgoing-status correction
+
+Austin reported the repeated outgoing-reconnection text and requested a quick, uncaptioned click-through with a visible pointer and moving sample video. Build 9 distinguishes explicit audience preparation from actual outgoing loss and keeps thumbnail readiness separate. The reproduction, regression tests, packaged checks, and recorded demo are in [outgoing-status verification](verification-outgoing-status-2026-10-21.md).

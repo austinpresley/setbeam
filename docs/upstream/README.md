@@ -1,5 +1,7 @@
 # Holly Share
 
+This directory preserves the original Holly Share launcher and its supporting files as a reference. Setbeam's native app uses the source and build scripts at the repository root. The instructions below describe the original launcher.
+
 Share the live video from a Hollyland Pyro H transmitter with anyone nearby. Run one thing on a Mac, and people watch in their phone's browser by scanning a QR code. No app, no account, no internet needed.
 
 ![The QR page Holly Share shows: one code to join the Wi-Fi, one to open the stream](docs/share-page.png)
@@ -134,7 +136,7 @@ Issues and pull requests are welcome. The script is plain bash and runs on the b
 
 ## License
 
-[MIT](LICENSE) © 2026 Faini Made.
+[MIT](../../LICENSE) © 2026 Faini Made.
 
 Holly Share installs and runs these tools but doesn't include them. Each has its own license: [FFmpeg](https://ffmpeg.org/legal.html) (LGPL/GPL), [MediaMTX](https://github.com/bluenviron/mediamtx) (MIT), [qrencode](https://fukuchi.org/works/qrencode/) (LGPL) and [Homebrew](https://github.com/Homebrew/brew) (BSD-2-Clause).
 

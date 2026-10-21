@@ -42,7 +42,8 @@ if [[ ! -f Vendor/opus/lib/libopus.a || "${SETBEAM_REBUILD_OPUS:-0}" == 1 ]]; th
   ) > build/logs/opus-build.log 2>&1
 fi
 cp Vendor/sources/opus-1.6.1/COPYING Vendor/licenses/Opus-BSD.txt
-if [[ ! -x Vendor/bin/ffmpeg || "${SETBEAM_REBUILD_FFMPEG:-0}" == 1 ]]; then
+python3 scripts/patch-avfoundation.py Vendor/sources/ffmpeg-9.0.2
+if [[ ! -x Vendor/bin/ffmpeg || "${SETBEAM_REBUILD_FFMPEG:-0}" == 1 ]] || ! Vendor/bin/ffmpeg -hide_banner -h demuxer=avfoundation 2>&1 | grep -q video_device_unique_id || ! Vendor/bin/ffmpeg -hide_banner -demuxers 2>&1 | grep -q ' hevc '; then
   (
     cd Vendor/sources/ffmpeg-9.0.2
     [[ ! -f Makefile ]] || make clean
@@ -55,9 +56,9 @@ if [[ ! -x Vendor/bin/ffmpeg || "${SETBEAM_REBUILD_FFMPEG:-0}" == 1 ]]; then
       --enable-ffmpeg --enable-ffprobe --enable-pthreads --enable-avfoundation \
       --enable-videotoolbox --enable-libopus --enable-zlib --pkg-config-flags=--static \
       --enable-indev=lavfi,avfoundation \
-      --enable-demuxer=rtsp,rtp,mov,matroska,rawvideo,image2,image2pipe,h264 \
-      --enable-muxer=rtsp,rtp,mov,mp4,matroska,image2,image2pipe,null,framecrc,framemd5,pcm_s16le \
-      --enable-protocol=file,pipe,tcp,udp,rtp,http \
+      --enable-demuxer=rtsp,rtp,sdp,mov,matroska,rawvideo,image2,image2pipe,h264,hevc,aac \
+      --enable-muxer=rtsp,rtp,mov,mp4,flv,matroska,image2,image2pipe,null,framecrc,framemd5,pcm_s16le \
+      --enable-protocol=file,pipe,tcp,udp,rtp,http,rtmp \
       --enable-decoder=h264,hevc,aac,aac_latm,opus,libopus,rawvideo,wrapped_avframe,mjpeg,png,pcm_s16le,pcm_s24le,pcm_s32le,pcm_f32le,pcm_f64le \
       --enable-encoder=h264_videotoolbox,libopus,aac,mjpeg,png,wrapped_avframe,pcm_s16le,rawvideo \
       --enable-parser=h264,hevc,aac,aac_latm,opus,mjpeg,png \
@@ -71,6 +72,7 @@ fi
 cp Vendor/sources/ffmpeg-9.0.2/COPYING.LGPLv2.1 Vendor/licenses/FFmpeg-LGPL-2.1.txt
 cp runtime-lock.json Vendor/licenses/runtime-lock.json
 cp scripts/build-runtime.sh Vendor/licenses/build-runtime.sh
+cp scripts/patch-avfoundation.py Vendor/licenses/patch-avfoundation.py
 if [[ -f build/logs/ffmpeg-build.log ]] && grep -q 'was built for newer.*version' build/logs/ffmpeg-build.log; then
   echo 'Mixed deployment targets in the media runtime; rebuild Opus and FFmpeg.' >&2
   exit 1

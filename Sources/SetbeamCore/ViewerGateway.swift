@@ -7,8 +7,11 @@ public struct ViewerSession: Sendable {
     public var sample: Bool
     public var state: AudienceState
     public var playback: PlaybackDescriptor
-    public init(token: String, title: String, sample: Bool, state: AudienceState, playback: PlaybackDescriptor) {
+    public var revision: Int
+    public var wifiSSID: String
+    public init(token: String, title: String, sample: Bool, state: AudienceState, playback: PlaybackDescriptor, revision: Int = 0, wifiSSID: String = "") {
         self.token = token; self.title = title; self.sample = sample; self.state = state; self.playback = playback
+        self.revision = revision; self.wifiSSID = wifiSSID
     }
 }
 
@@ -16,6 +19,8 @@ public struct ViewerActivity: Sendable, Identifiable {
     public let id: String
     public let label: String
     public let playing: Bool
+    public let onThisMac: Bool
+    public let revision: Int
     public let lastSeen: Date
 }
 
@@ -28,6 +33,7 @@ public final class ViewerGateway: @unchecked Sendable {
     private var session: ViewerSession?
     private var activity: [String: ViewerActivity] = [:]
     private var running = false
+    private var generation = UUID()
     public init(assets: [String: Data]) { self.assets = assets }
     public func update(_ session: ViewerSession) {
         lock.lock(); defer { lock.unlock() }
@@ -37,42 +43,71 @@ public final class ViewerGateway: @unchecked Sendable {
     public var viewers: [ViewerActivity] {
         lock.lock(); defer { lock.unlock() }
         activity = activity.filter { Date().timeIntervalSince($0.value.lastSeen) < 12 }
-        return activity.values.sorted { $0.id < $1.id }
+        return activity.values.map { item in
+            ViewerActivity(id: item.id, label: item.label, playing: item.playing && item.revision == session?.revision && session?.state == .live && Date().timeIntervalSince(item.lastSeen) < 5, onThisMac: item.onThisMac, revision: item.revision, lastSeen: item.lastSeen)
+        }.sorted { $0.id < $1.id }
     }
     public var isRunning: Bool { lock.lock(); defer { lock.unlock() }; return running }
 
-    public func start(address: String) async throws -> UInt16 {
+    public func start(address: String, port: UInt16 = 0) async throws -> UInt16 {
+        let previous = lock.withLock { listener }
         stop()
+        let current = lock.withLock { generation }
+        // Cancellation releases the bound socket asynchronously on Network's queue.
+        if let previous {
+            for _ in 0..<100 {
+                if case .cancelled = previous.state { break }
+                try await Task.sleep(nanoseconds: 10_000_000)
+            }
+        }
         return try await withCheckedThrowingContinuation { continuation in
             let completion = ListenerStart(continuation)
             do {
                 let parameters = NWParameters.tcp
+                parameters.allowLocalEndpointReuse = true
                 parameters.requiredLocalEndpoint = .hostPort(host: .init(address), port: .any)
-                let listener = try NWListener(using: parameters, on: .any)
-                self.listener = listener
+                let listener = try NWListener(using: parameters, on: NWEndpoint.Port(rawValue: port)!)
+                let accepted = lock.withLock {
+                    guard generation == current else { return false }
+                    self.listener = listener; return true
+                }
+                guard accepted else { throw SetbeamError.unavailable("Viewer server was replaced.") }
                 listener.stateUpdateHandler = { [weak self, weak listener] state in
                     guard let self else { return }
+                    self.lock.lock()
+                    guard self.generation == current else {
+                        self.lock.unlock()
+                        completion.finish(.failure(SetbeamError.unavailable("Viewer server was replaced.")))
+                        return
+                    }
+                    defer { self.lock.unlock() }
                     switch state {
                     case .ready:
-                        self.lock.lock(); self.running = true; self.lock.unlock()
+                        self.running = true
                         completion.finish(.success(listener?.port?.rawValue ?? 0))
                     case .failed(let error):
-                        self.lock.lock(); self.running = false; self.lock.unlock()
+                        self.running = false
                         completion.finish(.failure(error))
                     case .cancelled:
-                        self.lock.lock(); self.running = false; self.lock.unlock()
+                        self.running = false
                         completion.finish(.failure(SetbeamError.unavailable("Viewer server stopped before it was ready.")))
                     default: break
                     }
                 }
                 listener.newConnectionHandler = { [weak self] connection in self?.accept(connection) }
                 listener.start(queue: queue)
+                queue.asyncAfter(deadline: .now() + 5) { [weak listener] in
+                    if completion.finish(.failure(SetbeamError.unavailable("The viewing network is not ready. Setbeam will retry."))) {
+                        listener?.cancel()
+                    }
+                }
             } catch { completion.finish(.failure(error)) }
         }
     }
     public func stop() {
-        listener?.cancel(); listener = nil
-        lock.lock(); running = false; activity.removeAll(); lock.unlock()
+        lock.lock(); generation = UUID(); let previous = listener; listener = nil
+        running = false; activity.removeAll(); lock.unlock()
+        previous?.cancel()
     }
     private func accept(_ connection: NWConnection) {
         connection.start(queue: queue)
@@ -118,9 +153,13 @@ public final class ViewerGateway: @unchecked Sendable {
             if let data = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
                let id = data["id"] as? String, (8...64).contains(id.count), id.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-") }) {
                 let label = (data["mobile"] as? Bool ?? false) ? "Phone / tablet browser" : "Desktop browser"
+                let host: String
+                if case .hostPort(let endpoint, _) = connection.endpoint { host = String(describing: endpoint) }
+                else { host = "" }
+                let local = host == "127.0.0.1" || host == "::1" || NetworkAddress.available().contains { $0.address == host }
                 lock.lock()
                 if activity.count < 64 || activity[id] != nil {
-                    activity[id] = ViewerActivity(id: id, label: label, playing: data["playing"] as? Bool ?? false, lastSeen: Date())
+                    activity[id] = ViewerActivity(id: id, label: label, playing: data["playing"] as? Bool ?? false, onThisMac: local, revision: data["revision"] as? Int ?? -1, lastSeen: Date())
                 }
                 lock.unlock()
             }
@@ -132,7 +171,8 @@ public final class ViewerGateway: @unchecked Sendable {
                 "whepURL": current.playback.whepURL, "user": current.playback.user, "pass": current.playback.password]); return
         }
         if suffix == "state.json" {
-            sendJSON(connection, ["state": current.state.rawValue, "title": current.title, "sample": current.sample]); return
+            sendJSON(connection, ["state": current.state.rawValue, "title": current.title, "sample": current.sample,
+                                  "revision": current.revision, "wifiSSID": current.wifiSSID]); return
         }
         let file = suffix.isEmpty ? "viewer.html" : suffix
         guard let data = assets[file], ["viewer.html", "viewer.js", "viewer.css", "reader.js"].contains(file) else { send(connection, code: 404, mime: "text/plain", body: Data()); return }
@@ -154,8 +194,9 @@ private final class ListenerStart: @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: CheckedContinuation<UInt16, Error>?
     init(_ continuation: CheckedContinuation<UInt16, Error>) { self.continuation = continuation }
-    func finish(_ result: Result<UInt16, Error>) {
+    @discardableResult func finish(_ result: Result<UInt16, Error>) -> Bool {
         lock.lock(); let pending = continuation; continuation = nil; lock.unlock()
         pending?.resume(with: result)
+        return pending != nil
     }
 }

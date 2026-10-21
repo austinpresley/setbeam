@@ -17,8 +17,16 @@ import SetbeamCore
     private var directory: URL?
     private var generation = UUID()
     private var lastFrameAt = Date.distantPast
+    private var videoStartedAt = Date.distantPast
     private var frameCount = 0
     private var nextRetry = Date.distantPast
+    private var sourceReady = false
+    private let audioEnabled: Bool
+    private let width: Int
+    private let frameRate: Int
+    init(audioEnabled: Bool = true, width: Int = 1280, frameRate: Int = 24) {
+        self.audioEnabled = audioEnabled; self.width = width; self.frameRate = frameRate
+    }
     var onPlaybackState: ((Bool, String?) -> Void)?
     var onSoundUnavailable: ((String) -> Void)?
     var muted = true { didSet { if oldValue != muted { configureAudio() } } }
@@ -32,6 +40,8 @@ import SetbeamCore
     }
     private func startVideo() throws {
         guard let url, let directory else { return }
+        generation = UUID(); video?.stop(); video = nil
+        lastFrameAt = .distantPast; videoStartedAt = Date()
         let current = generation
         let frames = JPEGFrames { [weak self] cgImage in
             Task { @MainActor in
@@ -43,14 +53,14 @@ import SetbeamCore
         jpeg = frames
         video = try ManagedChild(name: "Native preview", executable: AppAssets.runtimePaths.tools.appendingPathComponent("ffmpeg"),
             arguments: ["-nostdin", "-hide_banner", "-loglevel", "error", "-analyzeduration", "500000", "-probesize", "1000000", "-rtsp_transport", "tcp", "-i", url,
-                "-map", "0:v:0", "-an", "-vf", "fps=24,scale=1280:-2", "-c:v", "mjpeg", "-q:v", "5", "-threads", "2", "-f", "image2pipe", "pipe:1"],
+                "-map", "0:v:0", "-an", "-vf", "fps=\(frameRate),scale=\(width):-2", "-c:v", "mjpeg", "-pix_fmt", "yuvj420p", "-q:v", "5", "-threads", "2", "-f", "image2pipe", "pipe:1"],
             directory: directory, onOutput: { frames.consume($0) })
     }
     private func configureAudio() {
         audioGeneration = UUID(); let current = audioGeneration
         audioStartup?.cancel(); audioStartup = nil
         audio?.stop(); audio = nil; audioSink?.stop(); audioSink = nil
-        guard !muted, let url, let directory else { return }
+        guard audioEnabled, !muted, sourceReady, Date().timeIntervalSince(lastFrameAt) < 2, let url, let directory else { return }
         guard !audioOpening else { onSoundUnavailable?("The audio device is still opening. Video monitoring continues."); return }
         audioOpening = true
         let sink = PreviewAudio(); audioSink = sink
@@ -76,17 +86,19 @@ import SetbeamCore
         }
     }
     func checkHealth(sourceAvailable: Bool) {
-        let playing = Date().timeIntervalSince(lastFrameAt) < 2
+        sourceReady = sourceAvailable
+        let playing = image != nil && Date().timeIntervalSince(lastFrameAt) < 2
         onPlaybackState?(playing, playing ? nil : video?.recentError)
+        if audioEnabled && sourceAvailable && playing && !muted && audio == nil && !audioOpening { configureAudio() }
         if !muted, let audio, !audio.isRunning {
             onSoundUnavailable?("This input did not provide local sound. Video monitoring continues.")
         }
-        if sourceAvailable, video?.isRunning != true, url != nil, Date() >= nextRetry {
+        if sourceAvailable, (video?.isRunning != true || Date().timeIntervalSince(max(lastFrameAt, videoStartedAt)) > 8), url != nil, Date() >= nextRetry {
             nextRetry = Date().addingTimeInterval(3)
             try? startVideo()
         }
         let args = CommandLine.arguments
-        if let index = args.firstIndex(of: "--native-preview-file"), index + 1 < args.count {
+        if audioEnabled, let index = args.firstIndex(of: "--native-preview-file"), index + 1 < args.count {
             let floating = NSApp.windows.first { $0.title == "Setbeam Preview" }
             let value: [String: Any] = ["playing": playing, "ready": playing ? 4 : 0, "time": Double(frameCount) / 24, "frames": frameCount, "renderer": "native-jpeg", "decoderRunning": video?.isRunning ?? false,
                 "muted": muted, "audioOpening": audioOpening, "audioSamplesScheduled": audioSink?.scheduledSampleCount ?? 0,
@@ -97,12 +109,16 @@ import SetbeamCore
             }
         }
     }
+    func retry() {
+        guard url != nil else { return }; nextRetry = .distantPast
+        try? startVideo(); configureAudio()
+    }
     func stop() {
         audioGeneration = UUID(); audioStartup?.cancel(); audioStartup = nil
         generation = UUID(); video?.stop(); video = nil; jpeg = nil
         audio?.stop(); audio = nil; audioSink?.stop(); audioSink = nil
         if let directory { try? FileManager.default.removeItem(at: directory) }
-        directory = nil; url = nil; image = nil; lastFrameAt = .distantPast; frameCount = 0
+        directory = nil; url = nil; image = nil; lastFrameAt = .distantPast; frameCount = 0; sourceReady = false
     }
 }
 

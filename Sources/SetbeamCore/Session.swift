@@ -15,13 +15,21 @@ public enum VideoSource: Equatable, Sendable {
     case sample
     case network(String)
     case capture(video: Int, audio: Int?)
+    case captureDevice(videoID: String, audioID: String?)
+    case incoming(port: UInt16, key: String)
+    case accsoon(uid: UInt32)
 
     public var label: String {
         switch self {
         case .sample: return "Sample feed"
         case .network(let address): return Self.safeAddress(address)
-        case .capture: return "USB / capture device"
+        case .capture, .captureDevice: return "USB / capture device"
+        case .incoming: return "Incoming stream"
+        case .accsoon: return "Accsoon CineView Master 4K"
         }
+    }
+    public var isCapture: Bool {
+        switch self { case .capture, .captureDevice: return true; default: return false }
     }
 
     public func validated() throws -> VideoSource {
@@ -42,6 +50,19 @@ public enum VideoSource: Equatable, Sendable {
                 throw SetbeamError.invalidSource("Choose a valid capture device index.")
             }
             return self
+        case .captureDevice(let videoID, let audioID):
+            guard !videoID.isEmpty, audioID.map({ !$0.isEmpty }) ?? true else {
+                throw SetbeamError.invalidSource("Choose a capture device.")
+            }
+            return self
+        case .incoming(let port, let key):
+            guard port > 1024, key.count >= 24, key.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber) }) else {
+                throw SetbeamError.invalidSource("Choose an available input port and a private stream key.")
+            }
+            return self
+        case .accsoon(let uid):
+            guard uid != 0 else { throw SetbeamError.invalidSource("Choose a discovered Accsoon transmitter.") }
+            return self
         }
     }
 
@@ -59,14 +80,16 @@ public struct SessionState: Equatable, Sendable {
     public private(set) var sharing = false
     public private(set) var holding = false
     public private(set) var sourceAvailable = false
+    public private(set) var audienceAvailable = false
     public init() {}
     public var audience: AudienceState {
         if !sharing { return .stopped }
         if holding { return .holding }
-        return sourceAvailable ? .live : .reconnecting
+        return sourceAvailable && audienceAvailable ? .live : .reconnecting
     }
     public mutating func beginMonitoring() { monitoring = true; sourceAvailable = false }
     public mutating func updateSource(available: Bool) { sourceAvailable = monitoring && available }
+    public mutating func updateAudience(available: Bool) { audienceAvailable = sharing && available }
     public mutating func startSharing() throws {
         guard monitoring else { throw SetbeamError.unavailable("Connect a source before sharing.") }
         sharing = true; holding = false
@@ -75,7 +98,7 @@ public struct SessionState: Equatable, Sendable {
         guard sharing else { throw SetbeamError.unavailable("Start sharing before holding the audience.") }
         holding = value
     }
-    public mutating func stopSharing() { sharing = false; holding = false }
+    public mutating func stopSharing() { sharing = false; holding = false; audienceAvailable = false }
     public mutating func end() { self = SessionState() }
 }
 

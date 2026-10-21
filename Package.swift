@@ -15,7 +15,8 @@ let package = Package(
         .executableTarget(name: "SetbeamApp", dependencies: ["SetbeamCore"], resources: [.copy("Resources")]),
         .executableTarget(name: "SetbeamProbe", dependencies: ["SetbeamCore"]),
         .executableTarget(name: "SetbeamSupervisor"),
-        .testTarget(name: "SetbeamCoreTests", dependencies: ["SetbeamCore"])
+        .testTarget(name: "SetbeamCoreTests", dependencies: ["SetbeamCore"]),
+        .testTarget(name: "SetbeamAppTests", dependencies: ["SetbeamApp"])
     ],
     swiftLanguageModes: [.v5]
 )
