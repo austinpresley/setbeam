@@ -88,6 +88,7 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
     private let transmitterWiFi = TransmitterWiFi()
     private var rejoinPolicy = TransmitterRejoinPolicy()
     private var rejoinInFlight = false
+    private var rejoinAttempt: (permit: RejoinPermit, ssid: String)?
     private var observers: [NSObjectProtocol] = []
     private lazy var floating = FloatingPreviewWindow(model: self)
 
@@ -315,6 +316,7 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
         do { chosen = try candidate.source(address: address).validated() }
         catch { self.error = error.localizedDescription; return }
         busy = true; error = nil; permissionDenied = false; screenPermissionDenied = false; pendingScreenPermission = nil; sheet = nil
+        rejoinAttempt?.permit.revoke()
         Task {
             if candidate.kind == .macScreen && !MacScreenCapture.requestPermission() {
                 pendingScreenPermission = (candidate, remember)
@@ -574,6 +576,7 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
     func setTransmitterRejoin(_ enabled: Bool, password: String) {
         guard let ssid = setup?.sourceWiFi, !ssid.isEmpty else { return }
         transmitterRejoin = enabled; rejoinPolicy = TransmitterRejoinPolicy(); rejoinProblem = nil
+        rejoinAttempt?.permit.revoke()
         if !integration { defaults.set(enabled, forKey: "transmitterWiFiRejoin") }
         do { if password.isEmpty { SecureSettings.remove("source-wifi-\(ssid)") } else { try SecureSettings.store(password, account: "source-wifi-\(ssid)") } }
         catch { self.error = "The transmitter Wi-Fi password could not be saved." }
@@ -583,10 +586,12 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
         SessionLog.shared.record("wifi.rejoin.setting", ["enabled": enabled])
     }
     private func rejoinTransmitterIfNeeded() {
-        guard let setup, setup.kind == .accsoon, !setup.sourceWiFi.isEmpty, !shuttingDown else { return }
-        let visible = wirelessDevices.contains { $0.id == setup.wirelessUID }
         // Sharing over Wi-Fi depends on the current network; switching it would end viewing.
         let sharingOverWiFi = state.sharing && viewerInterface == transmitterWiFi.interfaceName
+        if let attempt = rejoinAttempt, !transmitterRejoin || shuttingDown || sharingOverWiFi || localReady
+            || setup?.kind != .accsoon || setup?.sourceWiFi != attempt.ssid { attempt.permit.revoke() }
+        guard let setup, setup.kind == .accsoon, !setup.sourceWiFi.isEmpty, !shuttingDown else { return }
+        let visible = wirelessDevices.contains { $0.id == setup.wirelessUID }
         guard rejoinPolicy.observe(enabled: transmitterRejoin, transmitterVisible: visible, pictureLive: localReady,
                                    blocked: busy || rejoinInFlight || sharingOverWiFi, now: Date()) else { return }
         let ssid = setup.sourceWiFi
@@ -596,11 +601,12 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
             return
         }
         rejoinInFlight = true
+        let permit = RejoinPermit(); rejoinAttempt = (permit, ssid)
         SessionLog.shared.record("wifi.rejoin.attempt", ["network": ssid])
         let password = SecureSettings.read("source-wifi-\(ssid)")
         Task {
-            let result = await TransmitterWiFi.join(ssid: ssid, password: password)
-            rejoinInFlight = false; rejoinProblem = result.message
+            let result = await TransmitterWiFi.join(ssid: ssid, password: password, permit: permit)
+            rejoinInFlight = false; rejoinAttempt = nil; rejoinProblem = result.message
             SessionLog.shared.record("wifi.rejoin.result", ["network": ssid, "result": result.logValue])
         }
     }
