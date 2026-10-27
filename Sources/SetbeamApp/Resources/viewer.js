@@ -6,9 +6,13 @@
   const retry = document.getElementById('retry');
   const awake = document.getElementById('awake');
   const awakeVideo = document.getElementById('keepawake');
-  let reader, mode = 'reconnecting', config, revision = -1, lastTime = -1, lastFrameAt = 0;
+  let reader, mode = 'connecting', config, revision = -1, lastTime = -1, lastFrameAt = 0;
   let receivedTrack = false, pollRunning = false, playBlocked = false, unavailable = false;
-  let readerStartedAt = 0, readerGeneration = 0;
+  let readerStartedAt = 0, readerGeneration = 0, hasAudio = false, everPlayed = false;
+  const player = document.getElementById('player');
+  const help = document.getElementById('help');
+  const pip = document.getElementById('pip');
+  const fullscreen = document.getElementById('fullscreen');
   // Pushed state replaces 1.5 s polling while the stream stays healthy. Polling remains the fallback.
   let events, eventsAt = 0, eventsHeard = false, eventsRetryAt = 0, applying = Promise.resolve(), pushes = 0;
   let heartbeatAt = 0, reportedPlaying;
@@ -18,47 +22,99 @@
   const stalled = () => !document.hidden && !playBlocked && Date.now() - (lastFrameAt || readerStartedAt) > 10000;
   // A stream must deliver its first state quickly and a keepalive about every 10 s after that.
   const streaming = () => events && events.readyState !== 2 && Date.now() - eventsAt <= (eventsHeard ? 25000 : 5000);
-  function show(title, copy) {
+  function text(element, value) { if (element.textContent !== value) element.textContent = value; }
+  function action(button, name) {
+    if (button.getAttribute('aria-label') !== name) {
+      button.setAttribute('aria-label', name); button.setAttribute('title', name);
+    }
+  }
+  function show(title, copy, symbol) {
     slate.hidden = false;
-    document.getElementById('slate-title').textContent = title;
-    document.getElementById('slate-copy').textContent = copy;
+    text(document.getElementById('slate-title'), title);
+    text(document.getElementById('slate-copy'), copy);
+    document.getElementById('slate-icon').setAttribute('href', '#i-' + symbol);
+    document.getElementById('slate-icon').parentElement.toggleAttribute('hidden', playBlocked && mode === 'live' && !unavailable);
+  }
+  function pipSupported() {
+    return !!(document.pictureInPictureEnabled && video.requestPictureInPicture) ||
+      !!video.webkitSupportsPresentationMode?.('picture-in-picture');
   }
   function update() {
-    label.className = 'state ' + (playing() ? 'live' : mode === 'live' ? 'reconnecting' : mode);
-    sound.disabled = !playing();
-    retry.hidden = !playBlocked && !unavailable;
-    if (unavailable) { label.textContent = 'Session unavailable'; show('This viewing link is unavailable', 'Ask the operator for the current viewing code.'); }
-    else if (mode === 'holding') { label.textContent = 'On hold'; show('Audience on hold', 'The operator is still monitoring. Your picture will return here when sharing resumes.'); }
-    else if (mode === 'stopped') { label.textContent = 'Sharing ended'; show('Sharing has ended', 'Ask the operator for a new code when sharing starts again.'); }
-    else if (playBlocked) { label.textContent = 'Ready to play'; show('Your picture is ready', 'Tap Try again to start playback.'); }
-    else if (playing()) { label.textContent = 'Live feed'; slate.hidden = true; }
-    else { label.textContent = 'Reconnecting'; show('Waiting for the picture', 'Keep this page open. Your picture reconnects automatically.'); }
-    video.muted = mode !== 'live' || sound.getAttribute('aria-pressed') !== 'true';
+    const live = playing(), waiting = everPlayed ? 'reconnecting' : 'connecting';
+    const state = unavailable ? 'unavailable' : playBlocked && mode === 'live' ? 'blocked' : mode === 'live' && !live ? waiting : mode;
+    label.className = 'state ' + state;
+    player.className = 'player ' + state;
+    sound.hidden = !hasAudio; sound.disabled = !live;
+    pip.hidden = !pipSupported(); pip.disabled = !live;
+    retry.hidden = !(playBlocked && mode === 'live') && !unavailable;
+    action(retry, unavailable ? 'Reconnect' : 'Play feed');
+    document.getElementById('retry-icon').setAttribute('href', unavailable ? '#i-loader' : '#i-play');
+    if (unavailable) { text(label, 'Session unavailable'); show('This viewing link is unavailable', 'Ask the operator for the current code.', 'link-off'); }
+    else if (mode === 'holding') { text(label, 'On hold'); show('On hold', 'Your picture returns when sharing resumes.', 'pause'); }
+    else if (mode === 'stopped') { text(label, 'Sharing ended'); show('Sharing ended', 'Ask the operator for a new code.', 'end'); }
+    else if (playBlocked && mode === 'live') { text(label, 'Ready to play'); show('Your picture is ready', 'Tap to watch.', 'play'); }
+    else if (live) { text(label, 'Live feed'); slate.hidden = true; }
+    else { text(label, everPlayed ? 'Reconnecting' : 'Connecting'); show('Waiting for the picture', everPlayed ? 'Keep this page open. Stay on the viewing network.' : 'Waiting for the picture.', 'loader'); }
+    video.muted = mode !== 'live' || unavailable || sound.getAttribute('aria-pressed') !== 'true';
     const ended = mode === 'stopped' || unavailable;
     if (ended && keepAwake) releaseAwake();
     awake.disabled = ended;
-    // The operator's viewer count follows playback promptly without polling.
-    if (streaming() && playing() !== reportedPlaying) heartbeat();
+    if (streaming() && live !== reportedPlaying) heartbeat();
   }
+  function exitPip() {
+    try {
+      if (document.pictureInPictureElement === video) document.exitPictureInPicture()?.catch?.(() => {});
+      if (video.webkitPresentationMode === 'picture-in-picture') video.webkitSetPresentationMode('inline');
+    } catch { /* Detaching media below still suppresses the source. */ }
+  }
+  function observeAudio(stream, generation) {
+    const updateAudio = () => {
+      if (generation !== readerGeneration) return;
+      const tracks = stream.getAudioTracks();
+      // WebRTC can negotiate an audio receiver even for a video-only publisher.
+      hasAudio = tracks.some(track => track.readyState !== 'ended' && !track.muted);
+      update();
+    };
+    const watch = track => {
+      track.addEventListener('ended', updateAudio, {once: true});
+      track.addEventListener('mute', updateAudio); track.addEventListener('unmute', updateAudio);
+    };
+    stream.addEventListener('addtrack', event => { watch(event.track); updateAudio(); });
+    stream.addEventListener('removetrack', updateAudio);
+    stream.getAudioTracks().forEach(watch);
+    updateAudio();
+  }
+  function aspectRatio() {
+    if (video.videoWidth > 0 && video.videoHeight > 0) {
+      player.style.setProperty('--feed-ratio', video.videoWidth / video.videoHeight);
+    }
+  }
+  video.addEventListener('loadedmetadata', aspectRatio); video.addEventListener('resize', aspectRatio);
   function closeReader() {
-    readerGeneration++;
+    readerGeneration++; exitPip(); hasAudio = false;
+    if (video.webkitDisplayingFullscreen) { try { video.webkitExitFullscreen(); } catch {} }
     reader?.close(); reader = undefined; receivedTrack = false; lastFrameAt = 0; lastTime = -1;
     video.srcObject = null; video.muted = true;
   }
-  function play() { return video.play().then(() => { playBlocked = false; update(); }).catch(() => { playBlocked = true; update(); }); }
+  function play() {
+    const generation = readerGeneration;
+    return video.play().then(() => { if (generation === readerGeneration) { playBlocked = false; update(); } })
+      .catch(() => { if (generation === readerGeneration) { playBlocked = true; update(); } });
+  }
   function startReader() {
     closeReader(); playBlocked = false; readerStartedAt = Date.now();
     const generation = readerGeneration;
     reader = new MediaMTXWebRTCReader({url: config.whepURL, user: config.user, pass: config.pass,
       onTrack: event => {
         if (generation !== readerGeneration) return;
-        video.srcObject = event.streams[0]; receivedTrack = true; play();
+        video.srcObject = event.streams[0]; receivedTrack = true;
+        observeAudio(event.streams[0], generation); aspectRatio(); play();
       },
       onError: () => { if (generation === readerGeneration) { receivedTrack = false; update(); } }});
   }
   function frame() {
     if (video.currentTime !== lastTime && !video.paused && video.readyState >= 2) {
-      lastTime = video.currentTime; lastFrameAt = Date.now(); update();
+      lastTime = video.currentTime; lastFrameAt = Date.now(); everPlayed = true; update();
     }
   }
   if (video.requestVideoFrameCallback) {
@@ -95,19 +151,59 @@
     awakeVideo.pause(); awake.setAttribute('aria-pressed', 'false');
   }
 
-  sound.addEventListener('click', () => {
+  function toggleSound() {
+    if (sound.hidden || sound.disabled) return;
     const enabled = sound.getAttribute('aria-pressed') !== 'true';
-    sound.setAttribute('aria-pressed', String(enabled)); sound.textContent = enabled ? 'Mute sound' : 'Enable sound';
+    sound.setAttribute('aria-pressed', String(enabled)); action(sound, enabled ? 'Mute' : 'Unmute');
+    document.getElementById('sound-icon').setAttribute('href', enabled ? '#i-volume' : '#i-volume-x');
     engageAwake(); update(); play();
+  }
+  function closeHelp() { document.getElementById('help-panel').hidden = true; help.setAttribute('aria-expanded', 'false'); }
+  function fullscreenState() {
+    const expanded = document.fullscreenElement === player || video.webkitDisplayingFullscreen;
+    action(fullscreen, expanded ? 'Exit full screen' : 'Enter full screen');
+    document.getElementById('fullscreen-icon').setAttribute('href', expanded ? '#i-min' : '#i-max');
+  }
+  function toggleFullscreen() {
+    engageAwake(); closeHelp();
+    if (document.fullscreenElement) { document.exitFullscreen().catch(() => {}); return; }
+    if (video.webkitDisplayingFullscreen) { video.webkitExitFullscreen(); return; }
+    const native = () => { try { video.webkitEnterFullscreen?.(); } catch {} };
+    if (player.requestFullscreen) player.requestFullscreen().catch(native);
+    else native();
+  }
+  function pipState() {
+    pip.setAttribute('aria-pressed', String(document.pictureInPictureElement === video || video.webkitPresentationMode === 'picture-in-picture'));
+  }
+  pip.addEventListener('click', async () => {
+    engageAwake();
+    try {
+      if (document.pictureInPictureElement === video || video.webkitPresentationMode === 'picture-in-picture') exitPip();
+      else if (video.requestPictureInPicture) await video.requestPictureInPicture();
+      else video.webkitSetPresentationMode('picture-in-picture');
+    } catch { /* The browser can refuse PiP even when the API is present. */ }
+    pipState();
   });
+  video.addEventListener('enterpictureinpicture', pipState); video.addEventListener('leavepictureinpicture', pipState);
+  video.addEventListener('webkitpresentationmodechanged', pipState);
+  document.addEventListener('fullscreenchange', fullscreenState);
+  video.addEventListener('webkitbeginfullscreen', fullscreenState); video.addEventListener('webkitendfullscreen', fullscreenState);
+  sound.addEventListener('click', toggleSound);
   retry.addEventListener('click', () => { engageAwake(); if (unavailable) { unavailable = false; config = undefined; poll(); } else { play(); } });
   awake.addEventListener('click', () => { if (keepAwake) releaseAwake(); else engageAwake(); });
   document.getElementById('picture').addEventListener('click', engageAwake);
-  document.getElementById('fullscreen').addEventListener('click', () => {
-    engageAwake();
-    const picture = document.getElementById('picture');
-    if (picture.requestFullscreen) picture.requestFullscreen().catch(() => {});
-    else if (video.webkitEnterFullscreen) video.webkitEnterFullscreen();
+  document.getElementById('picture').addEventListener('dblclick', event => { if (!event.target.closest('button')) toggleFullscreen(); });
+  fullscreen.addEventListener('click', toggleFullscreen);
+  help.addEventListener('click', () => {
+    const panel = document.getElementById('help-panel'); panel.hidden = !panel.hidden;
+    help.setAttribute('aria-expanded', String(!panel.hidden));
+  });
+  document.addEventListener('click', event => { if (!help.contains(event.target) && !document.getElementById('help-panel').contains(event.target)) closeHelp(); });
+  document.addEventListener('keydown', event => {
+    if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey || event.repeat || event.target.closest?.('input,textarea,select,[contenteditable]')) return;
+    if (event.key.toLowerCase() === 'm') { event.preventDefault(); toggleSound(); }
+    if (event.key.toLowerCase() === 'f') { event.preventDefault(); toggleFullscreen(); }
+    if (event.key === 'Escape') closeHelp();
   });
   async function request(url, options = {}) {
     const controller = new AbortController();
@@ -130,9 +226,9 @@
       if (!refreshed.ok) throw new Error('Connection unavailable');
       config = refreshed.body;
     }
-    document.getElementById('title').textContent = state.title; document.title = state.title + ' · Setbeam';
+    text(document.getElementById('title'), state.title); document.title = state.title + ' · Setbeam';
     document.getElementById('sample').hidden = !state.sample;
-    document.getElementById('network-hint').textContent = state.wifiSSID ? 'Stay on ' + state.wifiSSID + '. Your picture reconnects automatically.' : 'Stay on the same network as the operator. Your picture reconnects automatically.';
+    text(document.getElementById('network-hint'), state.wifiSSID ? 'Stay on ' + state.wifiSSID + '.' : 'Stay on the same network as the operator.');
     if (mode === 'live' && (previous !== 'live' || revision !== state.revision || !reader || stalled())) startReader();
     else if (mode !== 'live') closeReader();
     revision = state.revision;

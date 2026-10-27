@@ -289,9 +289,9 @@ public final class ViewerGateway: @unchecked Sendable {
     }
     private func respond(_ connection: NWConnection, method: String, path: String, body: Data) {
         lock.lock(); let current = session; lock.unlock()
-        guard let current else { send(connection, code: 404, mime: "text/plain", body: Data()); return }
+        guard let current else { unavailable(connection, method: method, path: path); return }
         let prefix = "/s/\(current.token)/"
-        guard path.hasPrefix(prefix) else { send(connection, code: 404, mime: "text/plain", body: Data("Session unavailable".utf8)); return }
+        guard path.hasPrefix(prefix) else { unavailable(connection, method: method, path: path); return }
         let suffix = String(path.dropFirst(prefix.count))
         if suffix == "heartbeat", method == "POST" {
             if let data = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
@@ -320,6 +320,14 @@ public final class ViewerGateway: @unchecked Sendable {
         guard let data = assets[file], ["viewer.html", "viewer.js", "viewer.css", "reader.js", "keepawake.js"].contains(file) else { send(connection, code: 404, mime: "text/plain", body: Data()); return }
         let mime = file.hasSuffix(".html") ? "text/html; charset=utf-8" : file.hasSuffix(".css") ? "text/css; charset=utf-8" : "text/javascript; charset=utf-8"
         send(connection, code: 200, mime: mime, body: data)
+    }
+    private func unavailable(_ connection: NWConnection, method: String, path: String) {
+        if method == "GET", path.hasPrefix("/s/"), path.hasSuffix("/") || path.hasSuffix("/viewer.html"),
+           let page = assets["expired.html"] {
+            send(connection, code: 404, mime: "text/html; charset=utf-8", body: page)
+        } else {
+            send(connection, code: 404, mime: "text/plain", body: Data("Session unavailable".utf8))
+        }
     }
     private func sendJSON(_ connection: NWConnection, _ object: [String: Any]) {
         send(connection, code: 200, mime: "application/json", body: (try? JSONSerialization.data(withJSONObject: object)) ?? Data("{}".utf8))

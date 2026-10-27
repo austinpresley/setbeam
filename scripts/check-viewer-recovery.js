@@ -12,15 +12,24 @@ function browser(options = {}) {
   function element(id) {
     if (!elements.has(id)) elements.set(id, {
       hidden: false, textContent: '', paused: false, readyState: 4, currentTime: 0, muted: true, plays: 0,
-      attributes: {}, addEventListener(name, fn) { listeners[id + ':' + name] = fn; },
+      style: {setProperty(name, value) { this[name] = value; }}, parentElement: {attributes: {}, toggleAttribute(name, enabled) { if (enabled) this.attributes[name] = ''; else delete this.attributes[name]; }}, writes: 0,
+      attributes: {}, contains(target) { return target === this; }, addEventListener(name, fn) { listeners[id + ':' + name] = fn; },
       getAttribute(name) { return this.attributes[name]; }, setAttribute(name, value) { this.attributes[name] = value; },
-      play() { this.paused = false; this.plays++; return Promise.resolve(); }, pause() { this.paused = true; }
+      play() { this.plays++; if (id === 'video' && options.autoplayBlocked) return Promise.reject(new Error('Autoplay blocked')); this.paused = false; return Promise.resolve(); }, pause() { this.paused = true; }
     });
-    return elements.get(id);
+    const el = elements.get(id);
+    if (!Object.getOwnPropertyDescriptor(el, 'textContent').get) {
+      let value = el.textContent;
+      Object.defineProperty(el, 'textContent', {get() { return value; }, set(next) { value = next; this.writes++; }});
+    }
+    return el;
   }
+  const audioListeners = {};
+  const audio = {readyState: 'live', muted: !!options.mutedAudio, addEventListener(name, fn) { audioListeners[name] = fn; }};
+  const stream = {tracks: options.silent ? [] : [audio], getAudioTracks() { return this.tracks; }, addEventListener(name, fn) { listeners['stream:' + name] = fn; }};
   const state = {state: 'live', title: 'Recovery test', revision: 1};
   const context = {
-    document: {getElementById: element, hidden: false, addEventListener(name, fn) { listeners[name] = fn; }},
+    document: {getElementById: element, pictureInPictureEnabled: !!options.pip, hidden: false, addEventListener(name, fn) { listeners[name] = fn; }},
     navigator: {userAgent: 'test'}, crypto: {randomUUID: () => 'viewer-test'},
     Date: class extends Date { static now() { return now; } },
     AbortController,
@@ -44,6 +53,11 @@ function browser(options = {}) {
         ? {whepURL: 'http://localhost/live/whep', user: 'guest', pass: 'synthetic'} : state});
     }
   };
+  element('video').videoWidth = 1920; element('video').videoHeight = 1200;
+  element('player').requestFullscreen = () => { context.document.fullscreenElement = element('player'); return Promise.resolve(); };
+  context.document.exitFullscreen = () => { context.document.fullscreenElement = null; return Promise.resolve(); };
+  element('video').requestPictureInPicture = () => { context.document.pictureInPictureElement = element('video'); return Promise.resolve(); };
+  context.document.exitPictureInPicture = () => { context.document.pictureInPictureElement = null; return Promise.resolve(); };
   context.window = {addEventListener(name, fn) { listeners[name] = fn; }};
   if (options.eventSource) context.EventSource = class {
     constructor(url) { this.url = url; this.readyState = 0; sources.push(this); }
@@ -57,7 +71,7 @@ function browser(options = {}) {
   vm.runInNewContext(controller, context);
   const settle = async () => { for (let n = 0; n < 30; n++) await Promise.resolve(); };
   return {
-    readers, state, elements, listeners, settle, sources, locks,
+    readers, state, elements, listeners, settle, sources, locks, context, stream, audio, audioListeners,
     get requests() { return requests; }, set hung(value) { hung = value; },
     deferNextState() { deferState = true; }, async releaseState() { releaseState(); await settle(); },
     count(url) { return urls.filter(value => value === url).length; },
@@ -72,7 +86,7 @@ function browser(options = {}) {
       interval(); await settle();
     },
     async track() {
-      readers.at(-1).config.onTrack({streams: [{}]}); await settle();
+      readers.at(-1).config.onTrack({streams: [stream]}); await settle();
       const video = element('video'); video.currentTime += 1; listeners['video:timeupdate']();
     }
   };
@@ -207,4 +221,77 @@ test('a slower poll cannot overwrite a newer pushed state', async () => {
   await b.releaseState();
   assert.equal(b.elements.get('state').textContent, 'On hold', 'the stale live response must not reopen media');
   assert.equal(b.readers.length, count);
+});
+
+test('first arrival connects, fresh playback changes the label once, and a real stall reconnects', async () => {
+  const b = browser(); await b.settle();
+  assert.equal(b.elements.get('state').textContent, 'Connecting');
+  await b.track(); const label = b.elements.get('state'), writes = label.writes;
+  for (let n = 0; n < 60; n++) b.frame();
+  assert.equal(label.writes, writes, 'decoded frames must not rewrite the live announcement');
+  await b.tick(7000);
+  assert.equal(label.textContent, 'Reconnecting');
+});
+
+test('the picture follows display dimensions and audio controls follow live track changes', async () => {
+  const b = browser({silent: true}); await b.settle(); await b.track();
+  assert.equal(b.elements.get('player').style['--feed-ratio'], 1.6);
+  assert.equal(b.elements.get('sound').hidden, true);
+  b.stream.tracks.push(b.audio); b.listeners['stream:addtrack']({track: b.audio});
+  assert.equal(b.elements.get('sound').hidden, false);
+  b.listeners['sound:click'](); await b.settle();
+  assert.equal(b.elements.get('sound').getAttribute('aria-label'), 'Mute');
+  assert.equal(b.elements.get('sound-icon').getAttribute('href'), '#i-volume');
+  b.audio.readyState = 'ended'; b.audioListeners.ended();
+  assert.equal(b.elements.get('sound').hidden, true);
+  b.elements.get('video').videoWidth = 1440; b.elements.get('video').videoHeight = 1080;
+  b.listeners['video:resize']();
+  assert.equal(b.elements.get('player').style['--feed-ratio'], 4 / 3);
+});
+
+test('fullscreen keeps the whole player and shortcuts ignore editable fields', async () => {
+  const b = browser(); await b.settle(); await b.track();
+  const key = (value, editable = false) => b.listeners.keydown({key: value, target: {closest: () => editable}, preventDefault() {}});
+  key('f', true); assert.equal(b.context.document.fullscreenElement, undefined);
+  key('f'); assert.equal(b.context.document.fullscreenElement, b.elements.get('player'));
+  b.listeners.fullscreenchange();
+  assert.equal(b.elements.get('fullscreen').getAttribute('aria-label'), 'Exit full screen');
+  key('m'); await b.settle(); assert.equal(b.elements.get('video').muted, false);
+  key('m', true); await b.settle(); assert.equal(b.elements.get('video').muted, false);
+  key('f'); assert.equal(b.context.document.fullscreenElement, null);
+});
+
+test('Hold closes picture in picture and detaches and mutes its source', async () => {
+  const b = browser({pip: true}); await b.settle(); await b.track();
+  assert.equal(b.elements.get('pip').hidden, false);
+  await b.listeners['pip:click']();
+  assert.equal(b.context.document.pictureInPictureElement, b.elements.get('video'));
+  b.state.state = 'holding'; await b.tick();
+  assert.equal(b.context.document.pictureInPictureElement, null);
+  assert.equal(b.elements.get('video').srcObject, null);
+  assert.equal(b.elements.get('video').muted, true);
+  assert.equal(b.elements.get('pip').disabled, true);
+});
+
+test('blocked autoplay offers Play feed, and Hold removes that action', async () => {
+  const b = browser({autoplayBlocked: true}); await b.settle(); await b.track();
+  assert.equal(b.elements.get('state').textContent, 'Ready to play');
+  assert.equal(b.elements.get('retry').hidden, false);
+  assert.equal(b.elements.get('retry').getAttribute('aria-label'), 'Play feed');
+  assert.equal(b.elements.get('state').className, 'state blocked');
+  assert.equal(b.elements.get('slate-icon').parentElement.attributes.hidden, '', 'SVG visibility must use the HTML hidden attribute');
+  b.state.state = 'holding'; await b.tick();
+  assert.equal(b.elements.get('retry').hidden, true);
+  assert.equal(b.elements.get('slate-icon').parentElement.attributes.hidden, undefined);
+  assert.equal(b.elements.get('state').textContent, 'On hold');
+});
+
+test('a negotiated audio receiver without audio packets offers no sound control', async () => {
+  const b = browser({mutedAudio: true}); await b.settle(); await b.track();
+  assert.equal(b.stream.getAudioTracks().length, 1, 'WebRTC can negotiate a track for a video-only feed');
+  assert.equal(b.elements.get('sound').hidden, true);
+  b.audio.muted = false; b.audioListeners.unmute();
+  assert.equal(b.elements.get('sound').hidden, false, 'real audio arriving exposes the control');
+  b.audio.muted = true; b.audioListeners.mute();
+  assert.equal(b.elements.get('sound').hidden, true);
 });

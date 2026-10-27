@@ -17,7 +17,7 @@ enum AppAssets {
     static var icon: NSImage? { NSImage(contentsOf: resource("Setbeam.icns")) }
     static func text(_ name: String) -> String { (try? String(contentsOf: resource(name), encoding: .utf8)) ?? "" }
     static var viewerAssets: [String: Data] {
-        Dictionary(uniqueKeysWithValues: ["viewer.html", "viewer.css", "viewer.js", "reader.js", "keepawake.js"].compactMap { name in
+        Dictionary(uniqueKeysWithValues: ["viewer.html", "expired.html", "viewer.css", "viewer.js", "reader.js", "keepawake.js"].compactMap { name in
             (try? Data(contentsOf: resource(name))).map { (name, $0) }
         })
     }

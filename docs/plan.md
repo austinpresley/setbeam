@@ -166,3 +166,7 @@ On 2026-10-26 Austin asked for the improvements from the app review: the local m
 - An opt-in transmitter Wi-Fi rejoin follows separately, because its association step needs Location access and the physical transmitter to verify.
 
 Acceptance uses the actual-media format probe (source codec preserved on the private relay, Baseline on the audience output, viewer quality change at the same credential), the Accsoon RTP route simulated with in-band HEVC parameter sets, power-assertion observation in the packaged app, session-log redaction and rotation tests, viewer-controller and gateway tests, and a Chromium-based browser check. Physical phone screen sleep, a physical capture device, and the Master 4K passthrough on hardware remain separate evidence.
+
+## Build 14 approved browser viewer
+
+Austin approved the interactive viewer mockup and requested full send. Implement the picture-first layout with a persistent feed name/Sample/status strip inside the full-screen player, familiar icon controls, original source aspect ratio, clear Hold/recovery/play/ended states, and generic unavailable-link navigation. Preserve Build 12 pushed state and keep-awake behavior. Prove actual sample playback, full screen, PiP and Hold/Resume/Stop, expired-code navigation, a synthetic non-16:9 video-only stream, and packaged regressions before delivering and merging the fork PR. Native phone presentation and physical qualifications remain separate. Evidence is recorded in [viewer verification](verification-viewer-2026-10-27.md).
