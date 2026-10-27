@@ -35,6 +35,8 @@ Connection route, model, and firmware matter. See [hardware tests](hardware-test
 
 ## Monitor on your Mac
 
+Your monitor shows the picture as received. Transmitter and network streams are not re-encoded for local monitoring, and only the viewers' copy is converted for browsers. The Mac's display stays awake while a live picture is visible in the main window or floating preview.
+
 The speaker control changes sound on this Mac. The adjacent picture-in-picture control opens the resizable floating preview. Zoom or pan there to inspect detail; double-click or press `0` to restore the whole picture.
 
 The gear menu contains **Test my setup**, viewing-network settings, capture audio routing when applicable, **Save frame**, Advanced, and diagnostics.
@@ -47,6 +49,8 @@ Click **Start sharing**, then open the QR control in the footer. Viewers can sca
 
 Viewers need network access to the Mac. Ethernet can serve viewers while Wi-Fi receives a transmitter. Optional viewing Wi-Fi details add a join code without changing the Mac's Wi-Fi connection.
 
+Each viewer receives a separate copy of the picture. With several phones on one Wi-Fi network, choose a lighter **Viewer picture** in Advanced (12, 6, or 3 Mbps per viewer). Your local monitor is unaffected. Open viewer pages reconnect at the new rate.
+
 Viewer pages and signaling use local HTTP. Use a trusted local network and keep the viewing link private. It grants read-only viewing access. Setbeam has no internet relay or remote account service.
 
 ## Hold, resume, or stop
@@ -58,6 +62,8 @@ Viewer pages and signaling use local HTTP. Use a trusted local network and keep 
 The selected source and open viewer pages retry after interruptions. Temporary viewing-network loss preserves sharing and Hold while Setbeam waits for the same interface. Wi-Fi selection stays under your control.
 
 If the Mac receives a different IP address, viewers need the updated viewing code. Stopping sharing or quitting ends the audience session. Reopening the app restores private monitoring.
+
+To see what happened during a dropout, choose **Show session log** in Advanced. The log records connection, recovery, and sharing events with timestamps. It leaves out stream addresses, keys, and viewing links.
 
 See [project status](status.md) for remaining work, [the execution plan](plan.md) for scope, and [architecture](architecture.md) for implementation details.
 

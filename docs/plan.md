@@ -154,3 +154,15 @@ Acceptance uses real bundled-media tests, independent recovery without status re
 Austin chose the existing numeric-IP session invitations and approved an optional Show/Hide QR codes panel to the right of the picture. Wi-Fi sits above the feed code, with each section using half the picture height. The main window widens when room permits and collapses when hidden. No permanent printed-link mechanism or online lookup is added.
 
 Acceptance covers exact decoding of both native codes, adding/editing viewing Wi-Fi without replacing the session link, persistent presentation through other controls and Hold, removal of the viewing code after Stop, refresh after Start, default and compact native layouts, on-screen window expansion, the existing packaged regression checks, and delivery of the finished developer build. Results are recorded in [QR panel verification](verification-qr-panel-2026-10-23.md). Physical phone scanning and Wi-Fi association remain separate checks.
+
+## Build 12 monitoring fidelity and on-set reliability
+
+On 2026-10-26 Austin asked for the improvements from the app review: the local monitor should show the received picture rather than a re-encode, viewers should have their own bounded encode, capture devices should keep their own cadence, and the on-set reliability and viewer-page items should be fixed. Mac screen capture is a separate change.
+
+- Local monitoring relays the received encoding. Only the audience output is normalized for browsers, at a per-viewer ceiling of 12, 6, or 3 Mbps chosen in Advanced. Raw capture input is encoded once at monitoring quality.
+- Capture devices open at their active size and highest cadence instead of a fixed 30 fps.
+- The display stays awake while a live local picture is visible. A redacted, size-bounded session log records transitions, recoveries, and the readiness inputs behind each outage.
+- Viewer pages receive state as server-sent events and heartbeat about every 3 seconds, falling back to polling. A Keep screen on control uses the Screen Wake Lock API where available and a muted looping clip otherwise.
+- An opt-in transmitter Wi-Fi rejoin follows separately, because its association step needs Location access and the physical transmitter to verify.
+
+Acceptance uses the actual-media format probe (source codec preserved on the private relay, Baseline on the audience output, viewer quality change at the same credential), the Accsoon RTP route simulated with in-band HEVC parameter sets, power-assertion observation in the packaged app, session-log redaction and rotation tests, viewer-controller and gateway tests, and a Chromium-based browser check. Physical phone screen sleep, a physical capture device, and the Master 4K passthrough on hardware remain separate evidence.
