@@ -186,7 +186,7 @@ public actor MediaRuntime {
         switch source {
         case .macScreen(let id):
             let display = try MacDisplay.resolve(id, in: MacDisplay.connected())
-            args += ["-fflags", "+genpts", "-f", "h264", "-framerate", String(display.frameRate), "-i", "pipe:0"]
+            args += Self.screenInputArguments(frameRate: display.frameRate)
         case .sample:
             args += ["-re", "-stream_loop", "-1", "-i", paths.fixtures.appendingPathComponent("Demo.mp4").path]
         case .network, .incoming:
@@ -230,6 +230,11 @@ public actor MediaRuntime {
         return args + publishArguments("local")
     }
 
+    /// The elementary-stream pipe carries no timestamps. Generated ones advanced one 90 kHz tick per
+    /// frame under stream copy, so stamp each frame by arrival from the constant-rate capture clock.
+    static func screenInputArguments(frameRate: Int) -> [String] {
+        ["-use_wallclock_as_timestamps", "1", "-f", "h264", "-framerate", String(frameRate), "-i", "pipe:0"]
+    }
     private var commonFFmpegArguments: [String] {
         ["-nostdin", "-hide_banner", "-loglevel", "warning", "-progress", "pipe:1", "-stats_period", "1"]
     }

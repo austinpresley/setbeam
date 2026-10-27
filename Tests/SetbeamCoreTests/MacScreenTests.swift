@@ -50,4 +50,12 @@ final class MacScreenTests: XCTestCase {
         let portrait = MacDisplay.dimensions(width: 2160, height: 3840)
         XCTAssertEqual(portrait.0, 1214); XCTAssertEqual(portrait.1, 2160)
     }
+
+    func testScreenPipeFramesAreStampedOnArrival() {
+        // +genpts under stream copy produced ~11 µs frame steps on the relay; arrival time gives 1/fps.
+        let arguments = MediaRuntime.screenInputArguments(frameRate: 60)
+        XCTAssertEqual(Array(arguments.prefix(2)), ["-use_wallclock_as_timestamps", "1"])
+        XCTAssertFalse(arguments.contains("+genpts"))
+        XCTAssertEqual(arguments.suffix(2), ["-i", "pipe:0"])
+    }
 }
