@@ -57,7 +57,7 @@ The source checks, isolated QA, and packaging do not add physical hardware compa
 
 While packaging, PR #3 merged as `8979d42`, introducing This Mac's screen and taking Build 13. The viewer change was rebased onto it and moved to Build 14. Only the status header and appended architecture notes conflicted. Both product changes and the existing screen-source evidence were preserved; no screen-capture behavior was changed by this PR. The combined build receives fresh automated and packaged verification below. Earlier 90-test and browser results above describe the pre-rebase candidate.
 
-## Final Build 14 evidence
+## Build 14 before the Wi-Fi rebase
 
 The combined `scripts/check.sh` run against Build 14's packaged helpers and fixtures passed 96 Swift tests, all 18 final viewer checks, the timestamped native bridge/file/RTSP checks, and every sample/RTSP/RTMP, Hold, credential, recovery, source-switching, and media-format probe. The total is 66 core and 30 app tests, including the inherited Mac screen-source tests. No thresholds or runtime behavior were changed to obtain these results.
 
@@ -69,3 +69,14 @@ Strict recursive signatures, system-only linked libraries, the frozen source/tes
 - Final source/test manifest SHA256: `e2655f359bd851bbd283d4ca4ecc43728a4da5cd73e809b9cfd46cba92360382`.
 
 The pre-rebase Build 13 candidate was moved out of `dist` and is not the delivered build.
+
+## Final combined Build 14
+
+PR #5 merged as `eab9e07` immediately before the first merge check. It adds optional transmitter Wi-Fi rejoin, off by default, and Location permission descriptions. The viewer was rebased again. The only conflict was the app metadata line: both new permission descriptions and Build 14 were retained. Viewer resources and tests remained byte-identical to the Sol-approved version. Neither Wi-Fi rejoin nor any device permission was enabled or exercised for this viewer task.
+
+The fresh combined packaged-helper/fixture `scripts/check.sh` run passed all 101 Swift tests, 18 viewer checks, and all preview/media/recovery/switching/format probes. A new isolated final app again supplied advancing 1280 by 720 Chromium video with audio and the Sample label. Stop detached/muted browser media while fresh native monitoring continued. Normal Quit removed all 11 owned processes. No QA app or viewing session remains active.
+
+The final strict signature, system-only dependencies, six resource comparisons, and frozen source/test manifest passed. The finished distribution is `dist/Setbeam-0.2.0-build14-macOS-arm64/Setbeam.app`. Earlier candidates were retained under ignored `build` paths and were not delivered.
+
+- Delivered executable SHA256: `01b5972d930a2b02fed41954d6fa436c7970b596c0215c648d9c469585081c7e`.
+- Delivered source/test manifest SHA256: `4bad63b554e8fe845c9216523c7de0dedaeaef67f6e63ad21bb31173bbc7596b`.
