@@ -6,7 +6,7 @@ const test = require('node:test');
 const controller = fs.readFileSync('Sources/SetbeamApp/Resources/viewer.js', 'utf8');
 
 function browser(options = {}) {
-  let now = 1_000, interval, requests = 0, hung = false;
+  let now = 1_000, interval, requests = 0, hung = false, deferState = false, releaseState;
   const timers = new Map(), readers = [], listeners = {}, urls = [], sources = [], locks = [];
   const elements = new Map();
   function element(id) {
@@ -32,6 +32,11 @@ function browser(options = {}) {
     },
     fetch(url, options = {}) {
       requests++; urls.push(url);
+      if (deferState && url === 'state.json') {
+        // Capture this response now and deliver it only when the test releases it.
+        deferState = false; const snapshot = {...state};
+        return new Promise(resolve => { releaseState = () => resolve({ok: true, status: 200, json: async () => snapshot}); });
+      }
       if (hung) return new Promise((resolve, reject) => {
         options.signal?.addEventListener('abort', () => reject(new Error('aborted')), {once: true});
       });
@@ -54,6 +59,7 @@ function browser(options = {}) {
   return {
     readers, state, elements, listeners, settle, sources, locks,
     get requests() { return requests; }, set hung(value) { hung = value; },
+    deferNextState() { deferState = true; }, async releaseState() { releaseState(); await settle(); },
     count(url) { return urls.filter(value => value === url).length; },
     async push(value = state) {
       const source = sources.at(-1); source.readyState = 1;
@@ -190,4 +196,15 @@ test('without Wake Lock a tap plays the muted fallback clip, and toggling or Sto
   assert.equal(clip.plays, 2); assert.equal(clip.paused, false);
   b.state.state = 'stopped'; await b.tick();
   assert.equal(clip.paused, true, 'an ended session releases the fallback');
+});
+
+test('a slower poll cannot overwrite a newer pushed state', async () => {
+  const b = browser({eventSource: true}); await b.settle(); await b.track(); await b.push();
+  b.deferNextState(); b.listeners.visibilitychange(); await b.settle();
+  await b.push({...b.state, state: 'holding'});
+  assert.equal(b.elements.get('state').textContent, 'On hold');
+  const count = b.readers.length;
+  await b.releaseState();
+  assert.equal(b.elements.get('state').textContent, 'On hold', 'the stale live response must not reopen media');
+  assert.equal(b.readers.length, count);
 });

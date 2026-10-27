@@ -10,7 +10,7 @@
   let receivedTrack = false, pollRunning = false, playBlocked = false, unavailable = false;
   let readerStartedAt = 0, readerGeneration = 0;
   // Pushed state replaces 1.5 s polling while the stream stays healthy. Polling remains the fallback.
-  let events, eventsAt = 0, eventsHeard = false, eventsRetryAt = 0, applying = Promise.resolve();
+  let events, eventsAt = 0, eventsHeard = false, eventsRetryAt = 0, applying = Promise.resolve(), pushes = 0;
   let heartbeatAt = 0, reportedPlaying;
   let keepAwake = false, wakeLock, wakeLockPending = false;
   const id = globalThis.crypto?.randomUUID?.() || Math.random().toString(36).slice(2) + Date.now().toString(36);
@@ -143,7 +143,7 @@
     const source = events = new EventSource('events?id=' + encodeURIComponent(id));
     source.onmessage = message => {
       if (source !== events) return;
-      eventsAt = Date.now(); eventsHeard = true;
+      eventsAt = Date.now(); eventsHeard = true; pushes++;
       let state; try { state = JSON.parse(message.data); } catch { return; }
       applying = applying.then(() => applyState(state)).catch(() => {
         if (mode !== 'holding' && mode !== 'stopped') mode = 'reconnecting';
@@ -163,10 +163,12 @@
         if (!response.ok) throw new Error('Connection unavailable');
         config = response.body; unavailable = false;
       }
+      const pushesBefore = pushes;
       const response = await request('state.json');
       if (response.status === 404) { mode = 'stopped'; closeReader(); update(); return; }
       if (!response.ok) throw new Error('Connection unavailable');
-      await applyState(response.body);
+      // A state pushed while this request was in flight is newer than its response.
+      if (pushes === pushesBefore) await applyState(response.body);
       await heartbeat();
       if (!events && typeof EventSource === 'function' && Date.now() >= eventsRetryAt) openEvents();
     } catch { if (mode !== 'holding' && mode !== 'stopped') mode = 'reconnecting'; update(); }
