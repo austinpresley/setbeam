@@ -67,7 +67,7 @@
   } else { video.addEventListener('timeupdate', frame); }
 
   // Keep the viewer's screen on after a tap. Wake Lock needs a secure context; plain-HTTP LAN
-  // pages fall back to a tiny muted looping clip, which phones treat as active playback.
+  // pages fall back to a tiny muted looping clip; some mobile browsers keep the screen on while it plays.
   function engageAwake() {
     if (keepAwake || mode === 'stopped' || unavailable) return;
     keepAwake = true; acquireAwake(); awake.setAttribute('aria-pressed', 'true');

@@ -30,6 +30,8 @@ public final class ViewerGateway: @unchecked Sendable {
     private let lock = NSLock()
     private let assets: [String: Data]
     private var listener: NWListener?
+    /// A stopped listener releases its socket asynchronously; a same-port start waits for it.
+    private var stoppedListener: NWListener?
     private var session: ViewerSession?
     private var activity: [String: ViewerActivity] = [:]
     private var running = false
@@ -94,8 +96,8 @@ public final class ViewerGateway: @unchecked Sendable {
             let completion = ListenerStart(continuation)
             let current = UUID()
             let previous = lock.withLock {
-                let previous = (listener, retry, startup)
-                generation = current; listenerAttempt = UUID()
+                let previous = (listener ?? stoppedListener, retry, startup)
+                generation = current; listenerAttempt = UUID(); stoppedListener = nil
                 desiredListener = (address, port); listener = nil; retry = nil
                 startup = completion; running = false
                 return previous
@@ -116,7 +118,7 @@ public final class ViewerGateway: @unchecked Sendable {
         let previous = lock.withLock {
             let previous = (listener, retry, startup, Array(streams.values))
             generation = UUID(); listenerAttempt = UUID(); desiredListener = nil
-            listener = nil; retry = nil; startup = nil
+            stoppedListener = listener; listener = nil; retry = nil; startup = nil
             running = false; activity.removeAll(); streams.removeAll()
             return previous
         }

@@ -1,6 +1,7 @@
-// A one-second silent black clip. Playing it keeps a phone screen awake where the Screen Wake Lock
-// API is unavailable, including this plain-HTTP LAN page. It is embedded as a data: URI because
-// Safari requires byte-range responses for URL-loaded video. Generated with the bundled FFmpeg 9.0.2:
+// A one-second silent black clip, the usual fallback for keeping a phone screen awake where the
+// Screen Wake Lock API is unavailable, including this plain-HTTP LAN page (not yet verified on a phone).
+// It is embedded as a data: URI because Safari requires byte-range responses for URL-loaded video.
+// Generated with the bundled FFmpeg 9.0.2:
 // ffmpeg -nostdin -y -f lavfi -i color=c=black:s=64x64:r=10:d=1
 //   -f lavfi -i "anullsrc=r=48000:cl=mono,aformat=sample_fmts=s16" -t 1 -map 0:v -map 1:a
 //   -c:v h264_videotoolbox -profile:v baseline -b:v 16k -pix_fmt yuv420p -c:a aac -b:a 16k
