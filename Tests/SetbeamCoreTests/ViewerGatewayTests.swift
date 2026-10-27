@@ -3,6 +3,39 @@ import Network
 @testable import SetbeamCore
 
 final class ViewerGatewayTests: XCTestCase {
+    func testExpiredNavigationHasAGenericSelfContainedPageWithoutGrantingAssetOrAPIAccess() async throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let page = try Data(contentsOf: root.appendingPathComponent("Sources/SetbeamApp/Resources/expired.html"))
+        let host = ViewerGateway(assets: ["expired.html": page, "viewer.html": Data("private viewer".utf8)])
+        let port = try await host.start(address: "127.0.0.1")
+        defer { host.stop() }
+        func request(_ suffix: String) async throws -> (Data, HTTPURLResponse) {
+            let (data, response) = try await URLSession.shared.data(from: URL(string: "http://127.0.0.1:\(port)" + suffix)!)
+            return (data, try XCTUnwrap(response as? HTTPURLResponse))
+        }
+        for configured in [false, true] {
+            if configured { host.update(session(token: "current-private-token")) }
+            for path in ["/s/old-token/", "/s/old-token/viewer.html"] {
+                let (data, response) = try await request(path)
+                XCTAssertEqual(response.statusCode, 404)
+                XCTAssertEqual(response.value(forHTTPHeaderField: "Content-Type"), "text/html; charset=utf-8")
+                XCTAssertEqual(response.value(forHTTPHeaderField: "Cache-Control"), "no-store")
+                XCTAssertEqual(data, page, "The same generic page must not disclose whether a session exists")
+                let html = String(decoding: data, as: UTF8.self)
+                XCTAssertTrue(html.contains("Ask the operator for the current code."))
+                XCTAssertFalse(html.contains("current-private-token"))
+                XCTAssertFalse(html.contains("src=")); XCTAssertFalse(html.contains("href="))
+            }
+        }
+        for path in ["/s/old-token/config.json", "/s/old-token/state.json", "/s/old-token/events", "/s/old-token/viewer.css"] {
+            let (data, response) = try await request(path)
+            XCTAssertEqual(response.statusCode, 404)
+            XCTAssertEqual(response.value(forHTTPHeaderField: "Content-Type"), "text/plain")
+            XCTAssertFalse(String(decoding: data, as: UTF8.self).contains("current-private-token"))
+        }
+        XCTAssertTrue(host.viewers.isEmpty)
+    }
+
     func testFailedListenerRecoversOnItsOwnWithTheSamePortAndSession() async throws {
         let factory = GatewayListenerFactory()
         let host = ViewerGateway(assets: [:], retryDelay: 0.05, listenerFactory: factory.make)
