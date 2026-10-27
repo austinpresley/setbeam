@@ -33,11 +33,23 @@ processes. Local monitoring has a private playable output. Audience sharing
 uses a separate output so Hold and Stop can change audience media without
 closing the source input.
 
-The browser transport is WebRTC. External inputs normalize to H.264 Baseline
-without B frames and optional 48 kHz stereo Opus. Encoding preserves source
-dimensions and cadence, rounding odd dimensions to even values for 4:2:0.
-Only the verified bundled sample copies its video. Observed media metadata must
-satisfy this contract before an output is considered ready.
+The private `local` relay carries the received encoding. Network, incoming,
+and Master 4K video is copied rather than re-encoded, so local monitoring shows
+the source's own picture without a second generation or encoder delay. Raw
+capture frames are encoded once at monitoring quality (H.264 High, 40 Mbps, no
+B frames). Source audio normalizes to 48 kHz stereo Opus. The relay is ready
+when MediaMTX observes exactly one H.264, H.265, or Motion JPEG picture with
+nonzero dimensions and optional Opus; the bundled decoder and audience encoder
+both accept those codecs.
+
+The browser transport is WebRTC. The audience `live` output is its own encode
+of the relay, made only while sharing: H.264 Baseline without B frames,
+preserving dimensions and cadence and rounding odd dimensions to even values
+for 4:2:0, with the relay's Opus copied. Each viewer receives a separate WebRTC
+copy, so the operator chooses a per-viewer ceiling of 12, 6, or 3 Mbps; a change
+restarts only the audience encode under the same viewing credential. Only the
+verified bundled sample copies its video to viewers. Observed `live` metadata
+must satisfy this browser contract before the audience output is ready.
 
 The separate bundled `setbeam-preview` helper links the pinned FFmpeg libraries
 and decodes the private local RTSP relay once. A versioned, bounded pipe carries
@@ -83,7 +95,10 @@ in `hardware-tests.md`.
 
 SourceSetup is the persistent connection identity. ProvenSetupStore saves only when the app's readiness gate has observed sustained incoming video and native decoded playback. Settings store names, stable capture IDs, and a credential-free address summary. Complete addresses and incoming keys use Keychain. Audience intent and session secrets are never restored from preferences.
 
-CaptureDiscovery supplies device names and persistent IDs. The bundled FFmpeg AVFoundation patch accepts exact IDs and resolves them inside the process, preventing a hot-plug enumeration race. Its pristine source archive, patch script, and build script ship with the app. Missing video or optional selected audio never falls back to a different device.
+CaptureDiscovery supplies device names, persistent IDs, and each device's
+active size with the highest cadence that size offers. The capture input
+requests exactly that mode, mirroring how the bundled AVFoundation input
+activates formats, instead of a fixed 30 fps. The bundled FFmpeg AVFoundation patch accepts exact IDs and resolves them inside the process, preventing a hot-plug enumeration race. Its pristine source archive, patch script, and build script ship with the app. Missing video or optional selected audio never falls back to a different device.
 
 The runtime recovers its owned server and source/audience processes, including running processes with stale video. Server recovery preserves the current credentials and audience Hold. An audience-publisher revision tells browser viewers to establish a new peer when media restarts. Native windows share one decoder, which also restarts on stalled output.
 
@@ -93,7 +108,7 @@ An active sharing session waits for its selected viewing interface through a tem
 
 AccsoonDiscovery recognizes the Master 4K's observed product IDs 21 and 24 from passive UDP beacons and bounded read-only status queries. The same physically identified firmware-3.30 unit has reported both IDs, and direct product-24 reception was verified separately. It retains identity, SSID, firmware, and valid stream arrays, and discards credential-bearing custom fields. Other product IDs remain unverified and appear with an explanation in the chooser. The app waits for a real HDMI/SDI input when the transmitter advertises no streams.
 
-AccsoonReceiver owns one UDP/TCP RTMS4 session for the selected unit. Bounded fragment assembly, acknowledgement, and retransmission feed standard loopback RTP HEVC and AAC. The HEVC packetizer caches at most 192 KiB of parameter sets and repeats missing sets at random-access pictures so a late local decoder can start. The bundled FFmpeg converts that one received feed to H.264 and Opus in the local relay. Native previews and sharing use the relay rather than opening additional transmitter sessions. Exact UID checks prevent substitution of another unit.
+AccsoonReceiver owns one UDP/TCP RTMS4 session for the selected unit. Bounded fragment assembly, acknowledgement, and retransmission feed standard loopback RTP HEVC and AAC. The HEVC packetizer caches at most 192 KiB of parameter sets and repeats missing sets at random-access pictures so a late local decoder can start. The local relay carries that one received HEVC picture unchanged with Opus audio; the audience output converts it to H.264 only while sharing. Native previews and sharing use the relay rather than opening additional transmitter sessions. Exact UID checks prevent substitution of another unit.
 
 RuntimeSnapshot includes an observational ConnectionStage. Server readiness, discovery of the selected UID, a current receiver's connection acknowledgement, and fresh local relay video determine its stage. SessionModel keeps that stage visible until native decoded playback is also fresh. Generic inputs omit transmitter-only steps. Stage presentation does not start extra receivers or change retry timing, and old receiver counters cannot advance a disconnected session.
 
@@ -107,6 +122,23 @@ sharing can continue through Ethernet. The input credential can be restored
 independently of private audience session credentials. The SEE bridge is
 unverified; direct Master 4K reception is the physically tested route. No vendor
 binary is bundled.
+
+## Session log and power
+
+SessionLog writes a private, size-bounded JSON-lines timeline to
+`~/Library/Logs/Setbeam/session.log`, rotating at 1 MB and keeping three older
+files. It records lifecycle commands, process restarts with the decoded exit
+status and a redacted error tail, connection stages, viewer counts, and each
+source or audience readiness change with the inputs behind it: relay
+availability, decodable metadata, receiver state, and frame age. Every string
+passes through Redaction, which removes URL credentials, query secrets,
+key/pass parameters, viewing-link tokens, and long secret-like runs. Nothing is
+written until the app or probe configures a directory; the probe writes under
+`build/probe/session-log`.
+
+SessionModel holds a display-sleep assertion while a live local picture is
+visible in the main window or floating preview, and the system-sleep assertion
+while sharing. Hiding the monitor, losing the picture, or quitting releases them.
 
 ## Session safeguards
 

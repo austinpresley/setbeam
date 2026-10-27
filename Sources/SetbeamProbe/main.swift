@@ -15,6 +15,8 @@ import SetbeamCore
             let fixtures = option("--fixtures", fallback: root.appendingPathComponent("Fixtures"))
             let output = root.appendingPathComponent("build/probe", isDirectory: true)
             try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+            // Each probe run keeps the same redacted session timeline the app writes.
+            SessionLog.shared.configure(directory: output.appendingPathComponent("session-log", isDirectory: true))
             if values.contains("--safety-test") {
                 try await testSafeSwitching(tools: tools, fixtures: fixtures, output: output); return
             }
@@ -334,15 +336,24 @@ import SetbeamCore
             }
             throw SetbeamError.runtime("Codec/format transition timed out. \(await runtime.diagnosticStatus())")
         }
-        func verifyOutput(_ path: String, width: Int, height: Int, rate: String, audio: Bool) async throws {
+        /// `passthrough` names the source codec the private relay must keep; nil requires the browser contract.
+        func verifyOutput(_ path: String, width: Int, height: Int, rate: String, audio: Bool, passthrough: String? = nil) async throws {
             let data = try await run(tools: tools, args: ["-v", "error", "-rtsp_transport", "tcp", "-show_streams", "-of", "json", await runtime.localRTSP(path)], directory: fixtureDirectory, executable: "ffprobe")
             guard let value = try JSONSerialization.jsonObject(with: data) as? [String: Any], let streams = value["streams"] as? [[String: Any]],
                   let video = streams.first(where: { $0["codec_type"] as? String == "video" }),
-                  video["codec_name"] as? String == "h264", (video["profile"] as? String ?? "").lowercased().contains("baseline"),
-                  video["has_b_frames"] as? Int == 0, ["yuv420p", "yuvj420p"].contains(video["pix_fmt"] as? String ?? ""),
                   video["width"] as? Int == width, video["height"] as? Int == height,
                   streams.contains(where: { $0["codec_name"] as? String == "opus" }) == audio else {
-                throw SetbeamError.runtime("The \(path) relay did not satisfy the H.264 baseline/no-B-frame/Opus contract at \(width)x\(height) \(rate). \(String(decoding: data, as: UTF8.self))")
+                throw SetbeamError.runtime("The \(path) relay lost its \(width)x\(height) picture or Opus audio state. \(String(decoding: data, as: UTF8.self))")
+            }
+            if let passthrough {
+                guard video["codec_name"] as? String == passthrough else {
+                    throw SetbeamError.runtime("The \(path) relay re-encoded the received \(passthrough) picture. \(String(decoding: data, as: UTF8.self))")
+                }
+            } else {
+                guard video["codec_name"] as? String == "h264", (video["profile"] as? String ?? "").lowercased().contains("baseline"),
+                      video["has_b_frames"] as? Int == 0, ["yuv420p", "yuvj420p"].contains(video["pix_fmt"] as? String ?? "") else {
+                    throw SetbeamError.runtime("The \(path) relay did not satisfy the H.264 baseline/no-B-frame/Opus contract at \(width)x\(height) \(rate). \(String(decoding: data, as: UTF8.self))")
+                }
             }
             // RTSP's declared rate can be inferred from the first few packets and
             // vary between probes. Measure the decoded presentation timeline.
@@ -369,25 +380,17 @@ import SetbeamCore
             _ = try await runtime.prepare(source: .network(upstream), viewerAddress: "127.0.0.1")
             guard !(await runtime.snapshot()).sourceAvailable else { throw SetbeamError.runtime("Offline codec fixture was reported ready.") }
             var stableServer: Int32?, stableHolding: Int32?, stableCredential: String?, stableRevision: Int?
-            let formats: [(String, String, Int, Int, String, Bool)] = [
-                ("Compatibility-HEVC.mp4", "HEVC Main with B frames", 640, 360, "30/1", false),
-                ("Compatibility-H264.mp4", "H.264 High with B frames", 960, 540, "60/1", false),
-                ("Demo.mp4", "H.264 with AAC audio", 1280, 720, "24/1", true)]
+            let formats: [(String, String, Int, Int, String, Bool, String)] = [
+                ("Compatibility-HEVC.mp4", "HEVC Main with B frames", 640, 360, "30/1", false, "hevc"),
+                ("Compatibility-H264.mp4", "H.264 High with B frames", 960, 540, "60/1", false, "h264"),
+                ("Demo.mp4", "H.264 with AAC audio", 1280, 720, "24/1", true, "h264")]
             for (index, format) in formats.enumerated() {
                 sender = try ManagedChild(name: "Codec fixture sender", executable: tools.appendingPathComponent("ffmpeg"),
                     arguments: ["-nostdin", "-hide_banner", "-loglevel", "error", "-re", "-stream_loop", "-1", "-i", fixtures.appendingPathComponent(format.0).path,
                         "-c", "copy", "-f", "rtsp", "-rtsp_transport", "tcp", upstream], directory: fixtureDirectory)
                 let value = try await waitFor { $0.sourceAvailable && $0.sourceHasAudio == format.5 }
-                try await verifyOutput("local", width: format.2, height: format.3, rate: format.4, audio: format.5)
-                if index == 0 {
-                    _ = try await runtime.startSharing()
-                    _ = try await waitFor { $0.audienceAvailable }
-                    try await verifyOutput("live", width: format.2, height: format.3, rate: format.4, audio: false)
-                    try await runtime.setHold(true)
-                    let held = try await waitFor { $0.audienceAvailable }
-                    let pids = await runtime.processIDs()
-                    stableServer = pids.first; stableHolding = pids.last; stableCredential = held.guestToken; stableRevision = held.audienceRevision
-                } else {
+                if index > 0 {
+                    // A source format change under Hold keeps the server, holding publisher, and viewing identity.
                     let pids = await runtime.processIDs()
                     guard pids.first == stableServer, pids.last == stableHolding,
                           value.guestToken == stableCredential, value.audienceRevision == stableRevision,
@@ -395,11 +398,40 @@ import SetbeamCore
                         throw SetbeamError.runtime("A source format change interrupted the independent audience Hold.")
                     }
                 }
+                try await verifyOutput("local", width: format.2, height: format.3, rate: format.4, audio: format.5, passthrough: format.6)
+                if index < 2 {
+                    // Each received encoding reaches browsers through the audience's own Baseline encode.
+                    if index == 0 { _ = try await runtime.startSharing() } else { try await runtime.setHold(false) }
+                    _ = try await waitFor { $0.audienceAvailable && !$0.session.holding }
+                    try await verifyOutput("live", width: format.2, height: format.3, rate: format.4, audio: false)
+                    if index == 0 {
+                        // A lighter viewer bitrate replaces only the audience encode, at the same identity.
+                        let before = await runtime.snapshot(), server = await runtime.processIDs().first
+                        await runtime.setAudienceQuality(.light)
+                        let lighter = try await waitFor { $0.audienceAvailable && $0.audienceRevision > before.audienceRevision }
+                        let serverAfter = await runtime.processIDs().first
+                        guard lighter.guestToken == before.guestToken, serverAfter == server else {
+                            throw SetbeamError.runtime("Changing viewer quality replaced the viewing credential.")
+                        }
+                        try await verifyOutput("live", width: format.2, height: format.3, rate: format.4, audio: false)
+                        print("PASS: viewer quality changes restart only the audience encode and keep the viewing credential")
+                    }
+                    try await runtime.setHold(true)
+                    let held = try await waitFor { $0.audienceAvailable }
+                    let pids = await runtime.processIDs()
+                    if index == 0 { stableServer = pids.first; stableCredential = held.guestToken }
+                    guard pids.first == stableServer, held.guestToken == stableCredential else {
+                        throw SetbeamError.runtime("Resuming a new source format replaced the server or viewing credential.")
+                    }
+                    stableHolding = pids.last; stableRevision = held.audienceRevision
+                }
                 let status = try await fixtureStatus()
                 guard (status["readers"] as? [[String: Any]])?.count == 1 else {
                     throw SetbeamError.runtime("Monitoring and sharing opened more than one upstream connection.")
                 }
-                print("PASS: \(format.1) normalizes to baseline H.264 without B frames at \(format.2)x\(format.3) \(format.4), optional audio is accurate, upstream received once")
+                print(index < 2
+                    ? "PASS: \(format.1) reaches local monitoring unchanged and browsers as baseline H.264 without B frames at \(format.2)x\(format.3) \(format.4), upstream received once"
+                    : "PASS: \(format.1) reaches local monitoring unchanged at \(format.2)x\(format.3) \(format.4) with accurate audio while viewers stay on Hold, upstream received once")
                 sender?.stop(); sender = nil
                 _ = try await waitFor { !$0.sourceAvailable && $0.audienceAvailable }
             }

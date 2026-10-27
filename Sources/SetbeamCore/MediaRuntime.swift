@@ -64,16 +64,18 @@ public actor MediaRuntime {
     private let accsoonDiscovery = AccsoonDiscovery()
     private let accsoonReceiver = AccsoonReceiver()
     private var accsoonVideoPort: UInt16 = 0, accsoonAudioPort: UInt16?
+    private var audienceQuality = AudienceQuality.best
+    private let log: SessionLog
 
-    public init(paths: RuntimePaths) {
-        self.paths = paths
+    public init(paths: RuntimePaths, log: SessionLog = .shared) {
+        self.paths = paths; self.log = log
         beforeSourceConfigurationStep = { _ in }
         let discovery = accsoonDiscovery
         accsoonReceiver.onAnnouncement = { data, host in discovery.observe(data, host: host) }
     }
     /// Allows actual-media tests to exercise failures between controller requests.
     init(paths: RuntimePaths, beforeSourceConfigurationStep: @escaping @Sendable (SourceConfigurationStep) throws -> Void) {
-        self.paths = paths
+        self.paths = paths; self.log = .shared
         self.beforeSourceConfigurationStep = beforeSourceConfigurationStep
         let discovery = accsoonDiscovery
         accsoonReceiver.onAnnouncement = { data, host in discovery.observe(data, host: host) }
@@ -94,6 +96,7 @@ public actor MediaRuntime {
         defer { if !prepared { shutdownLocked() } }
         source = validated; self.viewerAddress = viewerAddress
         self.inputAddress = inputAddress ?? viewerAddress
+        log.record("session.prepare", ["source": validated.label])
         for executable in ["mediamtx", "ffmpeg", "ffprobe"] {
             guard FileManager.default.isExecutableFile(atPath: paths.tools.appendingPathComponent(executable).path) else {
                 throw SetbeamError.unavailable("The app's bundled \(executable) is missing. Rebuild or reinstall Setbeam.")
@@ -185,12 +188,17 @@ public actor MediaRuntime {
         case .network, .incoming:
             args += ["-analyzeduration", "500000", "-probesize", "1000000", "-rtsp_transport", "tcp", "-i", publisherURL("source")]
         case .capture(let video, let audio):
-            args += ["-f", "avfoundation", "-framerate", "30", "-i", "\(video):\(audio.map(String.init) ?? "none")"]
+            // Request the device's own format and cadence; a fixed rate halves 60p inputs
+            // or fails on devices without that mode.
+            let device = CaptureDiscovery.devices().first { !$0.audio && $0.index == video }
+            let mode = device.flatMap { CaptureDiscovery.mode(forVideoID: $0.id) }
+            args += ["-f", "avfoundation"] + (mode?.arguments ?? ["-framerate", "30"]) + ["-i", "\(video):\(audio.map(String.init) ?? "none")"]
         case .captureDevice(let videoID, let audioID):
             let devices = CaptureDiscovery.devices()
             _ = try CaptureHardware.resolve(videoID, audio: false, in: devices)
             if let audioID { _ = try CaptureHardware.resolve(audioID, audio: true, in: devices) }
-            args += ["-f", "avfoundation", "-framerate", "30", "-video_device_unique_id", videoID]
+            let mode = CaptureDiscovery.mode(forVideoID: videoID)
+            args += ["-f", "avfoundation"] + (mode?.arguments ?? ["-framerate", "30"]) + ["-video_device_unique_id", videoID]
             if let audioID { args += ["-audio_device_unique_id", audioID] }
             args += ["-i", "none:none"]
         case .accsoon(let uid):
@@ -211,8 +219,8 @@ public actor MediaRuntime {
             args += ["-protocol_whitelist", "file,udp,rtp", "-analyzeduration", "1000000", "-probesize", "2000000", "-i", file.path]
         }
         args += ["-map", "0:v:0", "-map", "0:a:0?"]
-        if case .sample = source { args += ["-c:v", "copy"] }
-        else { args += MediaOutputContract.videoArguments }
+        // Monitoring relays the received picture untouched. Only raw capture frames need an encoder.
+        args += source.isCapture ? MediaOutputContract.monitoringVideoArguments : ["-c:v", "copy"]
         args += MediaOutputContract.audioArguments
         return args + publishArguments("local")
     }
@@ -298,6 +306,7 @@ public actor MediaRuntime {
         guestPassword = MediaRuntime.secret()
         _ = try await api("/v3/config/global/patch", method: "PATCH", object: ["authInternalUsers": users()])
         try sessionState.startSharing(); sessionState.updateAudience(available: false); audienceFailures = 0
+        log.record("sharing.start", ["quality": audienceQuality.rawValue])
         publishSnapshot()
         try launchAudience()
         return await refreshSnapshot()
@@ -310,6 +319,7 @@ public actor MediaRuntime {
     private func setHoldLocked(_ enabled: Bool) async throws {
         guard sharing else { throw SetbeamError.unavailable("Start sharing before holding the audience.") }
         try sessionState.setHold(enabled); sessionState.updateAudience(available: false)
+        log.record(enabled ? "hold.on" : "hold.off")
         publishSnapshot()
         audiencePublisher?.stop(); audiencePublisher = nil
         audienceFailures = 0
@@ -325,6 +335,7 @@ public actor MediaRuntime {
         guard directory != nil, !replacingSource else { throw SetbeamError.unavailable("Connect a source before changing inputs.") }
         replacingSource = true
         defer { replacingSource = false }
+        log.record("source.replace", ["source": validated.label, "sharing": sharing])
         // Establish a real holding output before touching the input. If it is already
         // running, leave that publisher and every connected audience reader alone.
         if sharing {
@@ -421,13 +432,34 @@ public actor MediaRuntime {
         if holding {
             args += ["-re", "-stream_loop", "-1", "-i", paths.fixtures.appendingPathComponent("Hold.mp4").path,
                      "-c:v", "copy", "-c:a", "libopus", "-b:a", "64k", "-ar", "48000", "-ac", "2"]
-        } else { args += ["-analyzeduration", "500000", "-probesize", "1000000", "-rtsp_transport", "tcp", "-i", publisherURL("local"), "-c", "copy"] }
+        } else {
+            args += ["-analyzeduration", "500000", "-probesize", "1000000", "-rtsp_transport", "tcp", "-i", publisherURL("local"),
+                     "-map", "0:v:0", "-map", "0:a:0?"]
+            // The private relay keeps the source encoding. Browsers get their own bounded H.264
+            // Baseline encode; only the verified bundled sample is copied.
+            if case .sample = source { args += ["-c", "copy"] }
+            else { args += MediaOutputContract.audienceVideoArguments(audienceQuality) + ["-c:a", "copy"] }
+        }
         audiencePublisher = try child(holding ? "Audience holding output" : "Audience relay", "ffmpeg", args + publishArguments("live"))
         audienceStartedAt = Date(); audienceRevision += 1
+    }
+    /// Applies to the next audience encode. An active, unheld audience reconnects at the new rate.
+    public func setAudienceQuality(_ quality: AudienceQuality) async {
+        await acquireOperation()
+        defer { releaseOperation() }
+        guard quality != audienceQuality else { return }
+        audienceQuality = quality
+        log.record("audience.quality", ["quality": quality.rawValue])
+        guard sharing, !holding, audiencePublisher != nil else { return }
+        audiencePublisher?.stop(); audiencePublisher = nil
+        sessionState.updateAudience(available: false); publishSnapshot()
+        try? launchAudience()
+        _ = await refreshSnapshot()
     }
     public func stopSharing() async {
         await acquireOperation()
         defer { releaseOperation() }
+        if sharing { log.record("sharing.stop") }
         sessionState.stopSharing()
         observedAudienceAudio = false
         publishSnapshot()
@@ -494,6 +526,7 @@ public actor MediaRuntime {
             problem = "The video service is restarting. Your selected source has not changed."
             if Date() >= nextServerRetry {
                 serverFailures += 1; nextServerRetry = Date().addingTimeInterval(min(10, pow(1.6, Double(serverFailures))))
+                log.record("server.restart", ["failures": serverFailures, "exit": Self.exitDescription(mediaServer?.terminationStatus), "error": mediaServer?.recentError.suffix(300).description ?? ""])
                 sourcePublisher?.stop(); sourcePublisher = nil; audiencePublisher?.stop(); audiencePublisher = nil; mediaServer?.stop()
                 do { try await launchServer(); try? launchSource(); if sharing { try? launchAudience() } }
                 catch { problem = "The video service is retrying. Your preview will return here." }
@@ -504,6 +537,9 @@ public actor MediaRuntime {
         if !replacingSource, mediaServer?.isRunning == true, (sourcePublisher?.isRunning != true || sourceStalled || receiverFailed), Date() >= nextSourceRetry {
             problem = isAccsoonSource ? accsoonReceiver.lastError ?? sourcePublisher?.recentError : sourcePublisher?.recentError
             sourceFailures += 1; nextSourceRetry = Date().addingTimeInterval(min(10, pow(1.6, Double(sourceFailures))))
+            let reason = sourcePublisher == nil ? "not running" : sourcePublisher?.isRunning != true ? "exited" : receiverFailed ? "receiver failed" : "stalled"
+            log.record("source.restart", ["reason": reason, "failures": sourceFailures, "exit": Self.exitDescription(sourcePublisher?.terminationStatus),
+                                          "error": String((problem ?? "").suffix(300))])
             sourcePublisher?.stop(); sourcePublisher = nil
             do {
                 if sourceNeedsConfiguration { try await applySourceConfiguration() }
@@ -513,6 +549,8 @@ public actor MediaRuntime {
         let audienceStalled = Date().timeIntervalSince(audiencePublisher?.lastVideoFrameAt ?? audienceStartedAt) > 12
         if !replacingSource, sharing, mediaServer?.isRunning == true, (audiencePublisher?.isRunning != true || audienceStalled), Date() >= nextAudienceRetry {
             audienceFailures += 1; nextAudienceRetry = Date().addingTimeInterval(min(10, pow(1.6, Double(audienceFailures))))
+            log.record("audience.restart", ["reason": audiencePublisher?.isRunning != true ? "exited" : "stalled", "failures": audienceFailures,
+                                            "holding": holding, "error": String((audiencePublisher?.recentError ?? "").suffix(300))])
             audiencePublisher?.stop(); audiencePublisher = nil
             try? launchAudience()
         }
@@ -525,7 +563,8 @@ public actor MediaRuntime {
         let localPath = serverReady ? try? await api("/v3/paths/get/local") : nil
         let localReady = localPath?["available"] as? Bool ?? false
         let frameFresh = lastFrame.map { Date().timeIntervalSince($0) < 6 } ?? false
-        let available = !sourceNeedsConfiguration && localReady && frameFresh && MediaOutputContract.accepts(path: localPath) && (!isAccsoonSource || accsoonReceiver.isRunning)
+        let localDecodable = MediaOutputContract.acceptsMonitoring(path: localPath)
+        let available = !sourceNeedsConfiguration && localReady && frameFresh && localDecodable && (!isAccsoonSource || accsoonReceiver.isRunning)
         if available { sourceFailures = 0; serverFailures = 0 }
         var audiencePath: [String: Any]?
         if sharing && serverReady { audiencePath = try? await api("/v3/paths/get/live") }
@@ -534,10 +573,22 @@ public actor MediaRuntime {
         let transmitterFound: Bool
         if case .accsoon(let uid) = source { transmitterFound = accsoonDiscovery.device(uid)?.recognized == true }
         else { transmitterFound = false }
+        let previousStage = observedStage
         observedStage = ConnectionStage.resolve(serverReady: serverReady, sourceFresh: available,
             isTransmitter: isAccsoonSource, transmitterFound: transmitterFound, receiverRunning: accsoonReceiver.isRunning,
             connectionAcknowledged: (accsoonReceiver.statistics["connectionAcknowledgements"] ?? 0) > 0)
+        if observedStage != previousStage { log.record("stage", ["stage": observedStage.rawValue]) }
         let audienceAvailable = audienceReady && audienceFresh && MediaOutputContract.accepts(path: audiencePath)
+        if available != sessionState.sourceAvailable {
+            // Each readiness input is recorded so a short outage can be attributed afterwards.
+            log.record(available ? "source.available" : "source.unavailable", ["stage": observedStage.rawValue, "localPath": localReady,
+                "decodable": localDecodable, "receiver": !isAccsoonSource || accsoonReceiver.isRunning,
+                "frameAge": lastFrame.map { Date().timeIntervalSince($0) } ?? -1, "problem": problem ?? ""])
+        }
+        if sharing, audienceAvailable != sessionState.audienceAvailable {
+            log.record(audienceAvailable ? "audience.available" : "audience.unavailable", ["holding": holding, "outputPath": audienceReady,
+                "frameAge": audiencePublisher?.lastVideoFrameAt.map { Date().timeIntervalSince($0) } ?? -1])
+        }
         sessionState.updateSource(available: available); sessionState.updateAudience(available: audienceAvailable)
         observedFrameAt = lastFrame; observedProblem = available ? nil : problem.map(Redaction.text)
         observedSourceAudio = available && MediaTracks.hasAudio(localPath?["tracks"] as? [String] ?? [])
@@ -582,6 +633,7 @@ public actor MediaRuntime {
         shutdownLocked()
     }
     private func shutdownLocked() {
+        if directory != nil { log.record("session.end", ["sharing": sharing, "holding": holding]) }
         sourceNeedsConfiguration = false
         incomingRelay.stop()
         lifetime = UUID(); healthTask?.cancel(); healthTask = nil
@@ -604,6 +656,11 @@ public actor MediaRuntime {
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let response = response as? HTTPURLResponse, (200..<300).contains(response.statusCode) else { throw SetbeamError.runtime("The local media controller did not accept the request.") }
         return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+    }
+    /// Decodes a raw wait status for the session log.
+    static func exitDescription(_ status: Int32?) -> String {
+        guard let status else { return "running" }
+        return status & 0x7f == 0 ? "code \((status >> 8) & 0xff)" : "signal \(status & 0x7f)"
     }
     private static func json(_ value: [String: Any]) throws -> String { String(decoding: try JSONSerialization.data(withJSONObject: value, options: [.prettyPrinted, .sortedKeys]), as: UTF8.self) }
 }

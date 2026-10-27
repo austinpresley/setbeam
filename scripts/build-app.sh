@@ -15,7 +15,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Helpers" "$APP/Contents/Resources/
 cp "$BIN/Setbeam" "$APP/Contents/MacOS/Setbeam"
 cp Vendor/bin/ffmpeg Vendor/bin/ffprobe Vendor/bin/mediamtx Vendor/bin/setbeam-preview "$APP/Contents/Helpers/"
 cp "$BIN/SetbeamSupervisor" "$APP/Contents/Helpers/setbeam-supervisor"
-cp Sources/SetbeamApp/Resources/reader.js Sources/SetbeamApp/Resources/viewer.html Sources/SetbeamApp/Resources/viewer.css Sources/SetbeamApp/Resources/viewer.js "$APP/Contents/Resources/"
+cp Sources/SetbeamApp/Resources/reader.js Sources/SetbeamApp/Resources/viewer.html Sources/SetbeamApp/Resources/viewer.css Sources/SetbeamApp/Resources/viewer.js Sources/SetbeamApp/Resources/keepawake.js "$APP/Contents/Resources/"
 cp Fixtures/Demo.mp4 Fixtures/Hold.mp4 "$APP/Contents/Resources/Fixtures/"
 cp Fixtures/Compatibility-*.mp4 Fixtures/compatibility-notes.txt "$APP/Contents/Resources/Fixtures/"
 cp Vendor/licenses/* "$APP/Contents/Resources/Licenses/"
@@ -24,7 +24,7 @@ cp Vendor/cache/ffmpeg-9.0.2.tar.xz Vendor/cache/ffmpeg-9.0.2.tar.xz.asc Vendor/
 python3 - <<'PY'
 from pathlib import Path
 import plistlib
-info={'CFBundleName':'Setbeam','CFBundleDisplayName':'Setbeam','CFBundleIdentifier':'app.setbeam.mac','CFBundleExecutable':'Setbeam','CFBundlePackageType':'APPL','CFBundleShortVersionString':'0.2.0','CFBundleVersion':'11','LSMinimumSystemVersion':'14.0','LSApplicationCategoryType':'public.app-category.video','NSHighResolutionCapable':True,'NSBonjourServices':['_rtsp._tcp.'],'NSCameraUseContinuityCameraDeviceType':True,'NSLocalNetworkUsageDescription':'Setbeam connects to transmission systems and network video sources to share feeds with viewers on your local network.','NSCameraUsageDescription':'Setbeam uses the USB camera or capture device you select for monitoring and sharing.','NSMicrophoneUsageDescription':'Setbeam uses audio from the capture input you select for feed monitoring and sharing.','NSAppTransportSecurity':{'NSAllowsLocalNetworking':True},'NSPrincipalClass':'NSApplication','NSHumanReadableCopyright':'Setbeam. Based on Holly Share, copyright 2026 Faini Made. See bundled notices.'}
+info={'CFBundleName':'Setbeam','CFBundleDisplayName':'Setbeam','CFBundleIdentifier':'app.setbeam.mac','CFBundleExecutable':'Setbeam','CFBundlePackageType':'APPL','CFBundleShortVersionString':'0.2.0','CFBundleVersion':'12','LSMinimumSystemVersion':'14.0','LSApplicationCategoryType':'public.app-category.video','NSHighResolutionCapable':True,'NSBonjourServices':['_rtsp._tcp.'],'NSCameraUseContinuityCameraDeviceType':True,'NSLocalNetworkUsageDescription':'Setbeam connects to transmission systems and network video sources to share feeds with viewers on your local network.','NSCameraUsageDescription':'Setbeam uses the USB camera or capture device you select for monitoring and sharing.','NSMicrophoneUsageDescription':'Setbeam uses audio from the capture input you select for feed monitoring and sharing.','NSAppTransportSecurity':{'NSAllowsLocalNetworking':True},'NSPrincipalClass':'NSApplication','NSHumanReadableCopyright':'Setbeam. Based on Holly Share, copyright 2026 Faini Made. See bundled notices.'}
 icon=Path('build/Setbeam.icns')
 if icon.exists():
     import shutil

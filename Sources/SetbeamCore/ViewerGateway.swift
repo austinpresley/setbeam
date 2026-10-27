@@ -30,6 +30,8 @@ public final class ViewerGateway: @unchecked Sendable {
     private let lock = NSLock()
     private let assets: [String: Data]
     private var listener: NWListener?
+    /// A stopped listener releases its socket asynchronously; a same-port start waits for it.
+    private var stoppedListener: NWListener?
     private var session: ViewerSession?
     private var activity: [String: ViewerActivity] = [:]
     private var running = false
@@ -41,28 +43,48 @@ public final class ViewerGateway: @unchecked Sendable {
     private let retryDelay: TimeInterval
     private let startupTimeout: TimeInterval
     private let makeListener: (NWParameters, NWEndpoint.Port) throws -> NWListener
+    /// Open state streams. Each is an accepted connection held past the request deadline.
+    private var streams: [ObjectIdentifier: NWConnection] = [:]
+    private var keepaliveScheduled = false
+    private let maxStreams: Int
+    private let keepaliveInterval: TimeInterval
+    private let requestTimeout: TimeInterval
 
     public convenience init(assets: [String: Data]) {
         self.init(assets: assets, retryDelay: 1, startupTimeout: 5) { try NWListener(using: $0, on: $1) }
     }
 
     init(assets: [String: Data], retryDelay: TimeInterval, startupTimeout: TimeInterval = 5,
+         requestTimeout: TimeInterval = 6, keepaliveInterval: TimeInterval = 10, maxStreams: Int = 64,
          listenerFactory: @escaping (NWParameters, NWEndpoint.Port) throws -> NWListener) {
         self.assets = assets
         self.retryDelay = retryDelay
         self.startupTimeout = startupTimeout
+        self.requestTimeout = requestTimeout
+        self.keepaliveInterval = keepaliveInterval
+        self.maxStreams = maxStreams
         self.makeListener = listenerFactory
     }
     public func update(_ session: ViewerSession) {
-        lock.lock(); defer { lock.unlock() }
-        if self.session?.token != session.token { activity.removeAll() }
-        self.session = session
+        let (closed, changed) = lock.withLock { () -> ([NWConnection], Bool) in
+            let previous = self.session
+            self.session = session
+            // A new token is a new viewing link. Readers of the old link must reconnect and get 404.
+            if previous?.token != session.token {
+                activity.removeAll()
+                let closed = Array(streams.values); streams.removeAll()
+                return (closed, false)
+            }
+            return ([], previous.map { Self.stateObject($0) as NSDictionary != Self.stateObject(session) as NSDictionary } ?? true)
+        }
+        closed.forEach { $0.cancel() }
+        if changed { broadcast(session) }
     }
     public var viewers: [ViewerActivity] {
         lock.lock(); defer { lock.unlock() }
         activity = activity.filter { Date().timeIntervalSince($0.value.lastSeen) < 12 }
         return activity.values.map { item in
-            ViewerActivity(id: item.id, label: item.label, playing: item.playing && item.revision == session?.revision && session?.state == .live && Date().timeIntervalSince(item.lastSeen) < 5, onThisMac: item.onThisMac, revision: item.revision, lastSeen: item.lastSeen)
+            ViewerActivity(id: item.id, label: item.label, playing: item.playing && item.revision == session?.revision && session?.state == .live && Date().timeIntervalSince(item.lastSeen) < 8, onThisMac: item.onThisMac, revision: item.revision, lastSeen: item.lastSeen)
         }.sorted { $0.id < $1.id }
     }
     public var isRunning: Bool { lock.lock(); defer { lock.unlock() }; return running }
@@ -74,8 +96,8 @@ public final class ViewerGateway: @unchecked Sendable {
             let completion = ListenerStart(continuation)
             let current = UUID()
             let previous = lock.withLock {
-                let previous = (listener, retry, startup)
-                generation = current; listenerAttempt = UUID()
+                let previous = (listener ?? stoppedListener, retry, startup)
+                generation = current; listenerAttempt = UUID(); stoppedListener = nil
                 desiredListener = (address, port); listener = nil; retry = nil
                 startup = completion; running = false
                 return previous
@@ -94,12 +116,13 @@ public final class ViewerGateway: @unchecked Sendable {
     }
     public func stop() {
         let previous = lock.withLock {
-            let previous = (listener, retry, startup)
+            let previous = (listener, retry, startup, Array(streams.values))
             generation = UUID(); listenerAttempt = UUID(); desiredListener = nil
-            listener = nil; retry = nil; startup = nil
-            running = false; activity.removeAll()
+            stoppedListener = listener; listener = nil; retry = nil; startup = nil
+            running = false; activity.removeAll(); streams.removeAll()
             return previous
         }
+        previous.3.forEach { $0.cancel() }
         previous.1?.cancel()
         previous.2?.finish(.failure(SetbeamError.unavailable("Viewer server stopped before it was ready.")))
         previous.0?.cancel()
@@ -229,7 +252,10 @@ public final class ViewerGateway: @unchecked Sendable {
     }
     private func accept(_ connection: NWConnection) {
         connection.start(queue: queue)
-        queue.asyncAfter(deadline: .now() + 6) { connection.cancel() }
+        // Ordinary requests must finish within the deadline. Only an opened state stream outlives it.
+        queue.asyncAfter(deadline: .now() + requestTimeout) { [weak self] in
+            if self?.isStreaming(connection) != true { connection.cancel() }
+        }
         receive(connection, buffer: Data())
     }
     private func receive(_ connection: NWConnection, buffer: Data) {
@@ -288,12 +314,10 @@ public final class ViewerGateway: @unchecked Sendable {
             sendJSON(connection, ["title": current.title, "sample": current.sample,
                 "whepURL": current.playback.whepURL, "user": current.playback.user, "pass": current.playback.password]); return
         }
-        if suffix == "state.json" {
-            sendJSON(connection, ["state": current.state.rawValue, "title": current.title, "sample": current.sample,
-                                  "revision": current.revision, "wifiSSID": current.wifiSSID]); return
-        }
+        if suffix == "state.json" { sendJSON(connection, Self.stateObject(current)); return }
+        if suffix == "events" { openStream(connection, session: current); return }
         let file = suffix.isEmpty ? "viewer.html" : suffix
-        guard let data = assets[file], ["viewer.html", "viewer.js", "viewer.css", "reader.js"].contains(file) else { send(connection, code: 404, mime: "text/plain", body: Data()); return }
+        guard let data = assets[file], ["viewer.html", "viewer.js", "viewer.css", "reader.js", "keepawake.js"].contains(file) else { send(connection, code: 404, mime: "text/plain", body: Data()); return }
         let mime = file.hasSuffix(".html") ? "text/html; charset=utf-8" : file.hasSuffix(".css") ? "text/css; charset=utf-8" : "text/javascript; charset=utf-8"
         send(connection, code: 200, mime: mime, body: data)
     }
@@ -301,11 +325,78 @@ public final class ViewerGateway: @unchecked Sendable {
         send(connection, code: 200, mime: "application/json", body: (try? JSONSerialization.data(withJSONObject: object)) ?? Data("{}".utf8))
     }
     private func send(_ connection: NWConnection, code: Int, mime: String, body: Data) {
-        let phrase = [200: "OK", 400: "Bad Request", 404: "Not Found", 405: "Method Not Allowed", 413: "Payload Too Large"][code] ?? "Error"
+        let phrase = [200: "OK", 400: "Bad Request", 404: "Not Found", 405: "Method Not Allowed", 413: "Payload Too Large", 503: "Service Unavailable"][code] ?? "Error"
         let header = "HTTP/1.1 \(code) \(phrase)\r\nContent-Type: \(mime)\r\nContent-Length: \(body.count)\r\nCache-Control: no-store\r\nReferrer-Policy: no-referrer\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n"
         connection.send(content: Data(header.utf8) + body, completion: .contentProcessed { _ in connection.cancel() })
     }
+    private static func stateObject(_ session: ViewerSession) -> [String: Any] {
+        ["state": session.state.rawValue, "title": session.title, "sample": session.sample,
+         "revision": session.revision, "wifiSSID": session.wifiSSID]
+    }
+    private static func event(_ session: ViewerSession) -> Data {
+        let json = (try? JSONSerialization.data(withJSONObject: stateObject(session))) ?? Data("{}".utf8)
+        return Data("data: ".utf8) + json + Data("\n\n".utf8)
+    }
+
+    /// Server-sent events carry the same JSON as state.json: once on open, on every change, and as a keepalive.
+    private func openStream(_ connection: NWConnection, session current: ViewerSession) {
+        let accepted = lock.withLock { () -> Bool in
+            guard self.session?.token == current.token, streams.count < maxStreams else { return false }
+            streams[ObjectIdentifier(connection)] = connection
+            return true
+        }
+        guard accepted else { send(connection, code: 503, mime: "text/plain", body: Data()); return }
+        let header = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-store\r\nReferrer-Policy: no-referrer\r\nX-Content-Type-Options: nosniff\r\n\r\nretry: 3000\n\n"
+        connection.stateUpdateHandler = { [weak self, weak connection] state in
+            guard let connection else { return }
+            switch state { case .failed, .cancelled: self?.closeStream(connection); default: break }
+        }
+        push(Data(header.utf8) + Self.event(current), to: connection)
+        watchForClose(connection)
+        scheduleKeepalive()
+    }
+    /// A viewer sends nothing after its request, so any completed read means the browser went away.
+    private func watchForClose(_ connection: NWConnection) {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 1024) { [weak self] _, _, complete, error in
+            if complete || error != nil { self?.closeStream(connection) } else { self?.watchForClose(connection) }
+        }
+    }
+    private func isStreaming(_ connection: NWConnection) -> Bool {
+        lock.withLock { streams[ObjectIdentifier(connection)] != nil }
+    }
+    private func closeStream(_ connection: NWConnection) {
+        let removed = lock.withLock { streams.removeValue(forKey: ObjectIdentifier(connection)) != nil }
+        if removed { connection.cancel() }
+    }
+    private func push(_ data: Data, to connection: NWConnection) {
+        connection.send(content: data, completion: .contentProcessed { [weak self] error in
+            if error != nil { self?.closeStream(connection) }
+        })
+    }
+    private func broadcast(_ session: ViewerSession) {
+        let event = Self.event(session)
+        let targets = lock.withLock { Array(streams.values) }
+        queue.async { [weak self] in targets.forEach { self?.push(event, to: $0) } }
+    }
+    private func scheduleKeepalive() {
+        let schedule = lock.withLock { () -> Bool in
+            guard !keepaliveScheduled, !streams.isEmpty else { return false }
+            keepaliveScheduled = true; return true
+        }
+        guard schedule else { return }
+        queue.asyncAfter(deadline: .now() + keepaliveInterval) { [weak self] in
+            guard let self else { return }
+            let current = self.lock.withLock { () -> ViewerSession? in
+                self.keepaliveScheduled = false
+                return self.streams.isEmpty ? nil : self.session
+            }
+            guard let current else { return }
+            self.broadcast(current)
+            self.scheduleKeepalive()
+        }
+    }
     deinit {
+        streams.values.forEach { $0.cancel() }
         retry?.cancel()
         startup?.finish(.failure(SetbeamError.unavailable("Viewer server stopped before it was ready.")))
         listener?.cancel()

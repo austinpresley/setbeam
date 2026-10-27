@@ -28,5 +28,12 @@ final class SessionTests: XCTestCase {
         XCTAssertEqual(VideoSource.safeAddress("rtsp://user:secret@camera:5554/live?token=private"), "rtsp://camera:5554/live")
         let log = Redaction.text("Failed rtsp://publisher:private@127.0.0.1/live and http://camera/live?token=private")
         XCTAssertFalse(log.contains("private"))
+        let key = String(repeating: "a1b2", count: 12)
+        for text in ["rtmp://sender:\(key)@192.0.2.4/source", "source?user=sender&pass=\(key)", "http://192.0.2.4:8080/s/\(key)/",
+                     "guest token \(key)", "password=hunter2 next"] {
+            let redacted = Redaction.text(text)
+            XCTAssertFalse(redacted.contains(key) || redacted.contains("hunter2"), redacted)
+        }
+        XCTAssertEqual(Redaction.text("Source input exited with status 1"), "Source input exited with status 1")
     }
 }

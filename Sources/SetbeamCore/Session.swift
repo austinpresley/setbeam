@@ -117,9 +117,13 @@ public enum Redaction {
     public static func text(_ value: String) -> String {
         var result = value
         let replacements = [
-            (#"(rtsps?|https?)://[^\s/@]+:[^\s/@]+@"#, "$1://<credentials>@"),
-            (#"(rtsps?|https?)://([^\s?]+)\?[^\s]+"#, "$1://$2?<redacted>"),
-            (#"(?i)(authorization:\s*)([^\r\n]+)"#, "$1<redacted>")
+            (#"(rtsps?|rtmps?|https?)://[^\s/@]+:[^\s/@]+@"#, "$1://<credentials>@"),
+            (#"(rtsps?|rtmps?|https?)://([^\s?]+)\?[^\s]+"#, "$1://$2?<redacted>"),
+            (#"(?i)(authorization:\s*)([^\r\n]+)"#, "$1<redacted>"),
+            (#"(?i)\b(pass|password|key|token)=[^&\s"]+"#, "$1=<redacted>"),
+            (#"/s/[^/\s"]+"#, "/s/<redacted>"),
+            // Session secrets, stream keys, and viewing tokens are long hexadecimal or alphanumeric runs.
+            (#"\b[0-9A-Za-z]{32,}\b"#, "<secret>")
         ]
         for (pattern, replacement) in replacements {
             if let expression = try? NSRegularExpression(pattern: pattern) {

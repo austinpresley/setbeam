@@ -19,7 +19,9 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
     @Published var viewers: [ViewerActivity] = []
     @Published var busy = false
     @Published private var preparingConnection = false
-    @Published var error: String?
+    @Published var error: String? {
+        didSet { if let error, error != oldValue { SessionLog.shared.record("operator.message", ["message": error]) } }
+    }
     @Published var localMuted = true {
         didSet { localPlayer.muted = localMuted }
     }
@@ -52,6 +54,7 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
     @Published var diagnosticCopied = false
     @Published var incomingServer = ""
     @Published var incomingStreamKey = ""
+    @Published private(set) var audienceQuality: AudienceQuality
     private(set) var savedNetworkURL = ""
     private var nativePreviewProblem: String?
     private let defaults: UserDefaults
@@ -73,7 +76,9 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
     private var rememberFailed = false
     private var connectedAt = Date.distantPast
     private var lastRuntimeProblem = ""
-    private var powerAssertion: IOPMAssertionID = 0
+    private let sharingPower = PowerAssertion(type: kIOPMAssertionTypePreventUserIdleSystemSleep, reason: "Setbeam feed sharing")
+    private let displayPower = PowerAssertion(type: kIOPMAssertionTypePreventUserIdleDisplaySleep, reason: "Setbeam live monitoring")
+    private var loggedViewers = (opened: 0, playing: 0)
     private var observers: [NSObjectProtocol] = []
     private lazy var floating = FloatingPreviewWindow(model: self)
 
@@ -96,6 +101,7 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
         wifiSSID = defaults.string(forKey: "wifiSSID") ?? ""
         provenSetup = integration ? nil : store.setup
         localMuted = integration ? true : defaults.object(forKey: "localMuted") as? Bool ?? true
+        audienceQuality = defaults.string(forKey: "audienceQuality").flatMap(AudienceQuality.init(rawValue:)) ?? .best
     }
 
     var sourceLabel: String { setup?.name ?? "Choose a source" }
@@ -213,6 +219,13 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
 
     func launch() {
         guard !launched else { return }; launched = true
+        let args = CommandLine.arguments
+        let logDirectory = args.firstIndex(of: "--log-directory").flatMap { $0 + 1 < args.count ? URL(fileURLWithPath: args[$0 + 1]) : nil }
+        SessionLog.shared.configure(directory: logDirectory ?? SessionLog.defaultDirectory)
+        let info = Bundle.main.infoDictionary
+        SessionLog.shared.record("app.launch", ["version": info?["CFBundleShortVersionString"] as? String ?? "development",
+            "build": info?["CFBundleVersion"] as? String ?? "development", "integration": integration])
+        Task { await runtime.setAudienceQuality(audienceQuality) }
         localPlayer.muted = localMuted
         localPlayer.onPlaybackState = nativePlaybackState
         audiencePlayer.onPlaybackState = { [weak self] playing, _ in self?.audiencePreviewPlaying = playing }
@@ -240,12 +253,14 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
                 guard let self, !Task.isCancelled, !self.shuttingDown else { return }
                 tick += 1
+                self.updateDisplayWake()
                 if tick % 3 == 0 && !self.busy {
                     self.refreshCaptureDevices(); await self.refreshNetworks()
                     if self.sheet == .connection || self.setup?.kind == .accsoon { await self.refreshWireless() }
                 }
                 guard self.state.monitoring, !self.busy else { self.writeExperienceState(); continue }
                 self.viewers = self.gateway.viewers
+                self.recordViewerChanges()
                 self.confirmSetupIfReady()
                 self.writeExperienceState()
             }
@@ -307,7 +322,7 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
             defer { preparingConnection = false }
             localPlayer.stop(); audiencePlayer.stop(); audiencePreviewPlaying = false
             if !changingSource {
-                gateway.stop(); gatewayPort = nil; viewerURL = nil; viewers = []; releasePowerAssertion()
+                gateway.stop(); gatewayPort = nil; viewerURL = nil; viewers = []; sharingPower.hold(false)
                 currentRuntime = nil
             }
             preview = nil; nativePreviewPlaying = false; sourceHasAudio = false; audienceHasAudio = false; testSoundConfirmed = false
@@ -435,7 +450,7 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
             let audienceURL = await runtime.localRTSP("live")
             guard !shuttingDown else { busy = false; return }
             try audiencePlayer.start(url: audienceURL)
-            networkChanged = false; acquirePowerAssertion()
+            networkChanged = false; sharingPower.hold(true)
         } catch {
             guard !shuttingDown else { busy = false; return }
             gateway.stop(); gatewayPort = nil; viewerURL = nil; await runtime.stopSharing(); apply(await runtime.snapshot()); outgoingTransition.reset(); audiencePlayer.stop(); self.error = "Sharing could not start. Check the viewing network and try again."; lastRuntimeProblem = Redaction.text(error.localizedDescription)
@@ -471,7 +486,7 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
         Task { await endSharing(); busy = false }
     }
     private func endSharing() async {
-        releasePowerAssertion()
+        sharingPower.hold(false)
         outgoingTransition.reset()
         audiencePlayer.stop(); audiencePreviewPlaying = false; audienceHasAudio = false; testSoundConfirmed = false
         await runtime.stopSharing()
@@ -499,6 +514,7 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
         viewerInterface = selected?.interface ?? "lo0"
         guard address != viewerAddress || viewerNetworkNeedsUpdate else { return }
         viewerNetworkNeedsUpdate = true
+        SessionLog.shared.record("network.viewing", ["interface": viewerInterface, "sharing": state.sharing])
         viewerAddress = address
         do {
             try await runtime.updateViewerAddress(address)
@@ -527,6 +543,12 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
         publishGatewayState()
         if selectionChanged { Task { if state.sharing { await endSharing(); networkChanged = true }; await refreshNetworks() } }
     }
+    func setAudienceQuality(_ quality: AudienceQuality) {
+        guard quality != audienceQuality else { return }
+        audienceQuality = quality
+        if !integration { defaults.set(quality.rawValue, forKey: "audienceQuality") }
+        Task { await runtime.setAudienceQuality(quality) }
+    }
     func togglePiP() { pipVisible ? floating.close() : floating.show() }
     func toggleLocalSound() {
         localMuted.toggle()
@@ -534,6 +556,7 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
     }
     func floatingVisibilityChanged(_ visible: Bool) {
         pipVisible = visible
+        updateDisplayWake()
         if !integration && !shuttingDown { defaults.set(visible, forKey: "floatingVisible") }
     }
     func copyLink() {
@@ -554,6 +577,11 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
         Task { do { try await runtime.saveFrame(to: destination) } catch { self.error = "The frame could not be saved. Wait for the picture and try again." } }
     }
     func refreshCaptureDevices() { captureDevices = CaptureDiscovery.devices() }
+    func revealSessionLog() {
+        guard let file = SessionLog.shared.currentFile else { return }
+        if FileManager.default.fileExists(atPath: file.path) { NSWorkspace.shared.activateFileViewerSelecting([file]) }
+        else { NSWorkspace.shared.open(file.deletingLastPathComponent()) }
+    }
     func diagnostics() {
         Task {
             var data = await runtime.diagnosticStatus()
@@ -565,16 +593,32 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
         }
     }
     func nativePlaybackState(_ playing: Bool, _ problem: String?) {
-        if nativePreviewPlaying != playing { nativePreviewPlaying = playing }; nativePreviewProblem = problem
+        if nativePreviewPlaying != playing {
+            nativePreviewPlaying = playing
+            SessionLog.shared.record(playing ? "preview.playing" : "preview.stopped", ["problem": problem ?? ""])
+            updateDisplayWake()
+        }
+        nativePreviewProblem = problem
     }
-    private func acquirePowerAssertion() {
-        guard powerAssertion == 0 else { return }
-        _ = IOPMAssertionCreateWithName(kIOPMAssertionTypePreventUserIdleSystemSleep as CFString, IOPMAssertionLevel(kIOPMAssertionLevelOn), "Setbeam feed sharing" as CFString, &powerAssertion)
+    /// A visible live picture keeps the display awake; a missing picture or hidden monitor lets it sleep.
+    private func updateDisplayWake() {
+        let previewVisible = pipVisible || NSApp.windows.contains {
+            $0.canBecomeMain && $0.isVisible && !$0.isMiniaturized && $0.occlusionState.contains(.visible)
+        }
+        let wanted = !shuttingDown && localReady && previewVisible
+        if displayPower.hold(wanted) { SessionLog.shared.record(wanted ? "display.awake.on" : "display.awake.off") }
     }
-    private func releasePowerAssertion() { if powerAssertion != 0 { IOPMAssertionRelease(powerAssertion); powerAssertion = 0 } }
+    private func recordViewerChanges() {
+        let current = (opened: openedViewers, playing: verifiedViewers)
+        guard current != loggedViewers else { return }
+        loggedViewers = current
+        SessionLog.shared.record("viewers", ["opened": current.opened, "playing": current.playing, "otherDevices": otherDeviceViewers])
+    }
     func shutdown() async {
         shuttingDown = true; pollTask?.cancel(); runtimeUpdates?.cancel(); sourceBrowser.stop(); observers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
-        floating.close(); localPlayer.stop(); audiencePlayer.stop(); gateway.stop(); releasePowerAssertion(); await runtime.shutdown(); apply(await runtime.snapshot())
+        floating.close(); localPlayer.stop(); audiencePlayer.stop(); gateway.stop(); sharingPower.hold(false); displayPower.hold(false)
+        SessionLog.shared.record("app.quit", ["sharing": state.sharing])
+        await runtime.shutdown(); apply(await runtime.snapshot())
     }
     private func writeIntegrationSession() {
         guard let viewerURL else { return }
