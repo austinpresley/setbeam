@@ -21,7 +21,7 @@ The default build is ad-hoc signed and is not notarized. No public release is av
 
 ## Connect a source
 
-Open the source control at the top left and choose a detected source, your last working setup, or the labeled sample. RTSP addresses, incoming RTMP, and manual connection settings are in **Advanced** under the gear menu. Built-in capture of this Mac's own desktop is not implemented.
+Open the source control at the top left and choose a detected source, your last working setup, or the labeled sample. RTSP addresses, incoming RTMP, and manual connection settings are in **Advanced** under the gear menu. For this computer's display, choose **This Mac's screen** and the display name/resolution. Allow Setbeam in Screen Recording when requested, then retry. Setbeam excludes its own windows and includes your cursor. This source has no sound. If the display disconnects, Setbeam waits for that same display.
 
 For the physically tested Accsoon CineView Master 4K on firmware 3.30:
 

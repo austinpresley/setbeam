@@ -30,6 +30,7 @@ public actor MediaRuntime {
     private let paths: RuntimePaths
     private var directory: URL?
     private var mediaServer: ManagedChild?
+    private var screenCapture: MacScreenCapture?
     private var sourcePublisher: ManagedChild?
     private var audiencePublisher: ManagedChild?
     private var source: VideoSource = .sample
@@ -124,7 +125,7 @@ public actor MediaRuntime {
                 try? await incomingRelay.start(address: self.inputAddress, port: port, targetPort: rtmpPort, keepTrying: true)
             }
             // A remembered capture device may be unplugged. Keep the session waiting for it.
-            try? launchSource()
+            try? await launchSource()
             sourceFailures = 0; audienceFailures = 0
             serverFailures = 0; nextServerRetry = .distantPast
             nextSourceRetry = Date().addingTimeInterval(2); nextAudienceRetry = .distantPast
@@ -183,6 +184,9 @@ public actor MediaRuntime {
     private func makeSourceArguments() throws -> [String] {
         var args = commonFFmpegArguments
         switch source {
+        case .macScreen(let id):
+            let display = try MacDisplay.resolve(id, in: MacDisplay.connected())
+            args += ["-fflags", "+genpts", "-f", "h264", "-framerate", String(display.frameRate), "-i", "pipe:0"]
         case .sample:
             args += ["-re", "-stream_loop", "-1", "-i", paths.fixtures.appendingPathComponent("Demo.mp4").path]
         case .network, .incoming:
@@ -219,7 +223,8 @@ public actor MediaRuntime {
             args += ["-protocol_whitelist", "file,udp,rtp", "-analyzeduration", "1000000", "-probesize", "2000000", "-i", file.path]
         }
         args += ["-map", "0:v:0", "-map", "0:a:0?"]
-        // Monitoring relays the received picture untouched. Only raw capture frames need an encoder.
+        // Monitoring relays the received picture untouched. Only raw capture frames need an encoder;
+        // the screen source arrives already encoded at monitoring quality.
         args += source.isCapture ? MediaOutputContract.monitoringVideoArguments : ["-c:v", "copy"]
         args += MediaOutputContract.audioArguments
         return args + publishArguments("local")
@@ -249,18 +254,32 @@ public actor MediaRuntime {
         }
         throw SetbeamError.runtime("The video service did not respond.")
     }
-    private func launchSource() throws {
+    private func launchSource() async throws {
         guard !sourceNeedsConfiguration else {
             throw SetbeamError.unavailable("The selected input is waiting for its private media configuration.")
         }
         accsoonReceiver.stop()
         sourceArguments = try makeSourceArguments()
-        sourcePublisher = try child("Source input", "ffmpeg", sourceArguments)
+        if case .macScreen(let id) = source, let directory {
+            let pipe = Pipe()
+            let capture = MacScreenCapture()
+            do {
+                sourcePublisher = try ManagedChild(name: "Screen input", executable: paths.tools.appendingPathComponent("ffmpeg"), arguments: sourceArguments, directory: directory, standardInput: pipe.fileHandleForReading)
+                try pipe.fileHandleForReading.close()
+                screenCapture = capture
+                try await capture.start(displayUUID: id, output: pipe.fileHandleForWriting)
+            } catch {
+                capture.stop(); screenCapture = nil; sourcePublisher?.stop(); sourcePublisher = nil
+                throw error
+            }
+        } else {
+            sourcePublisher = try child("Source input", "ffmpeg", sourceArguments)
+        }
         sourceStartedAt = Date()
         if case .accsoon(let uid) = source, let device = accsoonDiscovery.device(uid) {
             accsoonDiscovery.stop()
             do { try accsoonReceiver.start(host: device.host, deviceUID: uid, videoPort: accsoonVideoPort, audioPort: accsoonAudioPort) }
-            catch { sourcePublisher?.stop(); sourcePublisher = nil; try? accsoonDiscovery.start(); throw error }
+            catch { screenCapture?.stop(); screenCapture = nil; sourcePublisher?.stop(); sourcePublisher = nil; try? accsoonDiscovery.start(); throw error }
         }
     }
     private var isAccsoonSource: Bool { if case .accsoon = source { return true }; return false }
@@ -288,7 +307,7 @@ public actor MediaRuntime {
         await acquireOperation()
         defer { releaseOperation() }
         accsoonReceiver.stop()
-        sourcePublisher?.stop(); sourcePublisher = nil; nextSourceRetry = .distantPast
+        screenCapture?.stop(); screenCapture = nil; sourcePublisher?.stop(); sourcePublisher = nil; nextSourceRetry = .distantPast
         sessionState.updateSource(available: false); observedSourceAudio = false
         publishSnapshot()
     }
@@ -349,7 +368,7 @@ public actor MediaRuntime {
             try await incomingRelay.start(address: inputAddress ?? self.inputAddress, port: port, targetPort: rtmpPort)
         } else { incomingRelay.stop() }
         accsoonReceiver.stop(); accsoonDiscovery.stop()
-        sourcePublisher?.stop(); sourcePublisher = nil
+        screenCapture?.stop(); screenCapture = nil; sourcePublisher?.stop(); sourcePublisher = nil
         sessionState.updateSource(available: false)
         observedFrameAt = nil; observedSourceAudio = false
         sourceNeedsConfiguration = true
@@ -359,7 +378,7 @@ public actor MediaRuntime {
         nextSourceRetry = Date().addingTimeInterval(2)
         publishSnapshot()
         try await applySourceConfiguration()
-        try? launchSource()
+        try? await launchSource()
         return await refreshSnapshot()
     }
 
@@ -527,8 +546,8 @@ public actor MediaRuntime {
             if Date() >= nextServerRetry {
                 serverFailures += 1; nextServerRetry = Date().addingTimeInterval(min(10, pow(1.6, Double(serverFailures))))
                 log.record("server.restart", ["failures": serverFailures, "exit": Self.exitDescription(mediaServer?.terminationStatus), "error": mediaServer?.recentError.suffix(300).description ?? ""])
-                sourcePublisher?.stop(); sourcePublisher = nil; audiencePublisher?.stop(); audiencePublisher = nil; mediaServer?.stop()
-                do { try await launchServer(); try? launchSource(); if sharing { try? launchAudience() } }
+                screenCapture?.stop(); screenCapture = nil; sourcePublisher?.stop(); sourcePublisher = nil; audiencePublisher?.stop(); audiencePublisher = nil; mediaServer?.stop()
+                do { try await launchServer(); try? await launchSource(); if sharing { try? launchAudience() } }
                 catch { problem = "The video service is retrying. Your preview will return here." }
             }
         }
@@ -537,13 +556,9 @@ public actor MediaRuntime {
         if !replacingSource, mediaServer?.isRunning == true, (sourcePublisher?.isRunning != true || sourceStalled || receiverFailed), Date() >= nextSourceRetry {
             problem = isAccsoonSource ? accsoonReceiver.lastError ?? sourcePublisher?.recentError : sourcePublisher?.recentError
             sourceFailures += 1; nextSourceRetry = Date().addingTimeInterval(min(10, pow(1.6, Double(sourceFailures))))
-            let reason = sourcePublisher == nil ? "not running" : sourcePublisher?.isRunning != true ? "exited" : receiverFailed ? "receiver failed" : "stalled"
-            log.record("source.restart", ["reason": reason, "failures": sourceFailures, "exit": Self.exitDescription(sourcePublisher?.terminationStatus),
-                                          "error": String((problem ?? "").suffix(300))])
-            sourcePublisher?.stop(); sourcePublisher = nil
-            do {
+             do {
                 if sourceNeedsConfiguration { try await applySourceConfiguration() }
-                try launchSource()
+                try await launchSource()
             } catch { problem = error.localizedDescription }
         }
         let audienceStalled = Date().timeIntervalSince(audiencePublisher?.lastVideoFrameAt ?? audienceStartedAt) > 12
@@ -641,7 +656,7 @@ public actor MediaRuntime {
         observedSourceAudio = false; observedAudienceAudio = false; observedProblem = nil
         accsoonReceiver.stop(); accsoonDiscovery.stop()
         audiencePublisher?.stop(); audiencePublisher = nil
-        sourcePublisher?.stop(); sourcePublisher = nil
+        screenCapture?.stop(); screenCapture = nil; sourcePublisher?.stop(); sourcePublisher = nil
         mediaServer?.stop(); mediaServer = nil
         if let directory { try? FileManager.default.removeItem(at: directory) }
         directory = nil

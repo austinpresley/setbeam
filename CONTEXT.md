@@ -27,3 +27,6 @@ Making a feed available to audience viewers independently of local monitoring.
 
 **Hold**:
 Temporarily replacing the audience's feed with a holding state and silence while local monitoring continues.
+
+**This Mac's screen**:
+A selected display of the receiving Mac, captured with its cursor and without Setbeam's own windows. This input has no sound.

@@ -42,6 +42,7 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
     @Published var networkChoice: String
     @Published var wifiSSID: String
     @Published var wifiPassword = ""
+    @Published var screenDisplays: [MacDisplay] = []
     @Published var captureDevices: [CaptureHardware] = []
     @Published var wirelessDevices: [AccsoonDevice] = []
     @Published var wirelessDiscoveryProblem: String?
@@ -49,6 +50,8 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
     @Published var setupConfirmed = false
     @Published var copiedLink = false
     @Published var lastFrameAt: Date?
+    private var pendingScreenPermission: (setup: SourceSetup, remember: Bool)?
+    private var screenPermissionDenied = false
     @Published var permissionDenied = false
     @Published var networkChanged = false
     @Published var diagnosticCopied = false
@@ -198,6 +201,7 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
         if permissionDenied { return "Enable Setbeam in Privacy & Security, then retry. Access is only needed for the input you chose." }
         if connectingToPicture { return "Your monitor is opening. Your picture stays private until you start sharing." }
         guard let setup else { return "Connect a receiver, camera, or computer output. You can also try a clearly labeled sample." }
+        if setup.kind == .macScreen { return "Reconnect the selected display. Setbeam keeps trying that same display. This source has no sound; Setbeam windows are excluded." }
         if setup.kind == .capture { return "Connect the selected device to this Mac. If it is connected, check the HDMI or SDI cable and turn on the source. Setbeam keeps trying this same input." }
         if setup.kind == .network {
             return setup.sourceWiFi.isEmpty ? "Turn on the source and check that this Mac is on its network. Your picture will return here automatically." : "Turn on the source and join \(setup.sourceWiFi) in Wi-Fi Settings. Your picture will return here automatically."
@@ -302,8 +306,13 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
         let chosen: VideoSource
         do { chosen = try candidate.source(address: address).validated() }
         catch { self.error = error.localizedDescription; return }
-        busy = true; error = nil; permissionDenied = false; sheet = nil
+        busy = true; error = nil; permissionDenied = false; screenPermissionDenied = false; pendingScreenPermission = nil; sheet = nil
         Task {
+            if candidate.kind == .macScreen && !MacScreenCapture.requestPermission() {
+                pendingScreenPermission = (candidate, remember)
+                screenPermissionDenied = true; permissionDenied = true; error = "Allow Setbeam in Screen Recording, then retry."
+                busy = false; setup = state.monitoring ? setup : candidate; return
+            }
             if candidate.kind == .capture {
                 let videoAllowed = await Self.requestPermission(.video)
                 let audioAllowed = candidate.audioID == nil ? true : await Self.requestPermission(.audio)
@@ -398,6 +407,10 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
     }
     func retry() {
         guard !busy else { return }; error = nil
+        if let pending = pendingScreenPermission {
+            connect(pending.setup, remember: pending.remember)
+            return
+        }
         if state.monitoring && !permissionDenied {
             busy = true
             connectedAt = Date()
@@ -569,14 +582,14 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
         refreshCaptureDevices()
     }
     func openWiFiSettings() { NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.wifi-settings-extension")!) }
-    func openPrivacySettings() { NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Camera")!) }
+    func openPrivacySettings() { NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_\(screenPermissionDenied || setup?.kind == .macScreen ? "ScreenCapture" : "Camera")")!) }
     func saveFrame() {
         guard localReady else { return }
         let panel = NSSavePanel(); panel.nameFieldStringValue = "\(title.isEmpty ? "Setbeam" : title)-frame.jpg"; panel.allowedContentTypes = [.jpeg]
         guard panel.runModal() == .OK, let destination = panel.url else { return }
         Task { do { try await runtime.saveFrame(to: destination) } catch { self.error = "The frame could not be saved. Wait for the picture and try again." } }
     }
-    func refreshCaptureDevices() { captureDevices = CaptureDiscovery.devices() }
+    func refreshCaptureDevices() { captureDevices = CaptureDiscovery.devices(); screenDisplays = MacDisplay.connected() }
     func revealSessionLog() {
         guard let file = SessionLog.shared.currentFile else { return }
         if FileManager.default.fileExists(atPath: file.path) { NSWorkspace.shared.activateFileViewerSelecting([file]) }
