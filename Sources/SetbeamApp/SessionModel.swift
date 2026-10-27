@@ -58,6 +58,9 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
     @Published var incomingServer = ""
     @Published var incomingStreamKey = ""
     @Published private(set) var audienceQuality: AudienceQuality
+    @Published private(set) var transmitterRejoin: Bool
+    @Published var transmitterWiFiPassword = ""
+    @Published var rejoinProblem: String?
     private(set) var savedNetworkURL = ""
     private var nativePreviewProblem: String?
     private let defaults: UserDefaults
@@ -82,6 +85,9 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
     private let sharingPower = PowerAssertion(type: kIOPMAssertionTypePreventUserIdleSystemSleep, reason: "Setbeam feed sharing")
     private let displayPower = PowerAssertion(type: kIOPMAssertionTypePreventUserIdleDisplaySleep, reason: "Setbeam live monitoring")
     private var loggedViewers = (opened: 0, playing: 0)
+    private let transmitterWiFi = TransmitterWiFi()
+    private var rejoinPolicy = TransmitterRejoinPolicy()
+    private var rejoinInFlight = false
     private var observers: [NSObjectProtocol] = []
     private lazy var floating = FloatingPreviewWindow(model: self)
 
@@ -105,6 +111,7 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
         provenSetup = integration ? nil : store.setup
         localMuted = integration ? true : defaults.object(forKey: "localMuted") as? Bool ?? true
         audienceQuality = defaults.string(forKey: "audienceQuality").flatMap(AudienceQuality.init(rawValue:)) ?? .best
+        transmitterRejoin = integration ? false : defaults.bool(forKey: "transmitterWiFiRejoin")
     }
 
     var sourceLabel: String { setup?.name ?? "Choose a source" }
@@ -258,6 +265,7 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
                 guard let self, !Task.isCancelled, !self.shuttingDown else { return }
                 tick += 1
                 self.updateDisplayWake()
+                self.rejoinTransmitterIfNeeded()
                 if tick % 3 == 0 && !self.busy {
                     self.refreshCaptureDevices(); await self.refreshNetworks()
                     if self.sheet == .connection || self.setup?.kind == .accsoon { await self.refreshWireless() }
@@ -562,6 +570,40 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
         if !integration { defaults.set(quality.rawValue, forKey: "audienceQuality") }
         Task { await runtime.setAudienceQuality(quality) }
     }
+    /// Opt-in. Joining another Wi-Fi network is never automatic unless the operator enables it here.
+    func setTransmitterRejoin(_ enabled: Bool, password: String) {
+        guard let ssid = setup?.sourceWiFi, !ssid.isEmpty else { return }
+        transmitterRejoin = enabled; rejoinPolicy = TransmitterRejoinPolicy(); rejoinProblem = nil
+        if !integration { defaults.set(enabled, forKey: "transmitterWiFiRejoin") }
+        do { if password.isEmpty { SecureSettings.remove("source-wifi-\(ssid)") } else { try SecureSettings.store(password, account: "source-wifi-\(ssid)") } }
+        catch { self.error = "The transmitter Wi-Fi password could not be saved." }
+        transmitterWiFiPassword = password
+        if enabled { transmitterWiFi.requestLocation() }
+        if enabled && transmitterWiFi.locationDenied { rejoinProblem = TransmitterWiFiResult.needsLocation.message }
+        SessionLog.shared.record("wifi.rejoin.setting", ["enabled": enabled])
+    }
+    private func rejoinTransmitterIfNeeded() {
+        guard let setup, setup.kind == .accsoon, !setup.sourceWiFi.isEmpty, !shuttingDown else { return }
+        let visible = wirelessDevices.contains { $0.id == setup.wirelessUID }
+        // Sharing over Wi-Fi depends on the current network; switching it would end viewing.
+        let sharingOverWiFi = state.sharing && viewerInterface == transmitterWiFi.interfaceName
+        guard rejoinPolicy.observe(enabled: transmitterRejoin, transmitterVisible: visible, pictureLive: localReady,
+                                   blocked: busy || rejoinInFlight || sharingOverWiFi, now: Date()) else { return }
+        let ssid = setup.sourceWiFi
+        guard transmitterWiFi.locationAllowed else {
+            rejoinProblem = TransmitterWiFiResult.needsLocation.message
+            SessionLog.shared.record("wifi.rejoin.result", ["network": ssid, "result": TransmitterWiFiResult.needsLocation.logValue])
+            return
+        }
+        rejoinInFlight = true
+        SessionLog.shared.record("wifi.rejoin.attempt", ["network": ssid])
+        let password = SecureSettings.read("source-wifi-\(ssid)")
+        Task {
+            let result = await TransmitterWiFi.join(ssid: ssid, password: password)
+            rejoinInFlight = false; rejoinProblem = result.message
+            SessionLog.shared.record("wifi.rejoin.result", ["network": ssid, "result": result.logValue])
+        }
+    }
     func togglePiP() { pipVisible ? floating.close() : floating.show() }
     func toggleLocalSound() {
         localMuted.toggle()
@@ -579,6 +621,7 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
     func loadPrivateSettings() {
         savedNetworkURL = activeNetworkURL ?? provenSetup.flatMap { $0.kind == .network ? SecureSettings.read($0.credentialAccount) : nil } ?? ""
         if !integration && !wifiSSID.isEmpty { wifiPassword = SecureSettings.read("viewing-wifi-\(wifiSSID)") ?? "" }
+        if !integration, let ssid = setup?.sourceWiFi, !ssid.isEmpty { transmitterWiFiPassword = SecureSettings.read("source-wifi-\(ssid)") ?? "" }
         refreshCaptureDevices()
     }
     func openWiFiSettings() { NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.wifi-settings-extension")!) }

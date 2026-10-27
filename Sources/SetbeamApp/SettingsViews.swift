@@ -138,6 +138,8 @@ struct AdvancedView: View {
     @State private var password: String
     @State private var audio: String
     @State private var quality: AudienceQuality
+    @State private var rejoin: Bool
+    @State private var rejoinPassword: String
     @State private var remember = true
     @State private var showStream = false
     @State private var validation: String?
@@ -148,6 +150,7 @@ struct AdvancedView: View {
         _network = State(initialValue: model.networkChoice); _ssid = State(initialValue: model.wifiSSID)
         _password = State(initialValue: model.wifiPassword); _audio = State(initialValue: model.setup?.audioID ?? "")
         _quality = State(initialValue: model.audienceQuality)
+        _rejoin = State(initialValue: model.transmitterRejoin); _rejoinPassword = State(initialValue: model.transmitterWiFiPassword)
         _showStream = State(initialValue: model.setup?.kind == .network)
     }
     var body: some View {
@@ -165,6 +168,12 @@ struct AdvancedView: View {
                         if model.setup?.kind == .accsoon, let device = model.wirelessDevices.first(where: { $0.id == model.setup?.wirelessUID }) {
                             LabeledContent("Transmission system", value: device.name)
                             LabeledContent("Firmware", value: device.firmwareLabel ?? "Unknown")
+                        }
+                        if model.setup?.kind == .accsoon, let ssid = model.setup?.sourceWiFi, !ssid.isEmpty {
+                            Toggle("Rejoin \(ssid) automatically", isOn: $rejoin)
+                            if rejoin { SecureField("\(ssid) password", text: $rejoinPassword) }
+                            Text("Off by default. If the transmitter stays missing for 15 seconds, Setbeam rejoins its Wi-Fi with this password, then retries less often. macOS requires Location access to find Wi-Fi networks by name. Setbeam never switches networks while sharing over Wi-Fi.").font(.caption).foregroundStyle(.secondary)
+                            if let problem = model.rejoinProblem { Text(problem).font(.caption).foregroundStyle(.orange) }
                         }
                         if model.setup?.kind == .incoming { Button("Accsoon SEE setup…") { model.sheet = .incoming } }
                         if model.setup?.kind != .incoming { Button("Set up a SEE stream bridge…") { model.prepareAccsoon() } }
@@ -224,6 +233,9 @@ struct AdvancedView: View {
     private func save() {
         model.title = title.isEmpty ? "My feed" : title
         model.setAudienceQuality(quality)
+        if model.setup?.kind == .accsoon, rejoin != model.transmitterRejoin || rejoinPassword != model.transmitterWiFiPassword {
+            model.setTransmitterRejoin(rejoin, password: rejoinPassword)
+        }
         if network != model.networkChoice || ssid != model.wifiSSID || password != model.wifiPassword { model.saveViewingSettings(network: network, ssid: ssid, password: password) }
         if var setup = model.setup, setup.kind == .capture, setup.audioID != (audio.isEmpty ? nil : audio) {
             setup.audioID = audio.isEmpty ? nil : audio; setup.name = name
