@@ -61,6 +61,8 @@ Viewer pages and signaling use local HTTP. Use a trusted local network and keep 
 
 The selected source and open viewer pages retry after interruptions. Temporary viewing-network loss preserves sharing and Hold while Setbeam waits for the same interface. Wi-Fi selection stays under your control.
 
+If a transmitter power cycle leaves the Mac on another Wi-Fi network, you can turn on **Rejoin automatically** for the saved transmitter in Advanced and enter its Wi-Fi password. It is off by default and asks for Location access, which macOS requires before an app can find a Wi-Fi network by name. Setbeam does not switch networks while viewers depend on the Mac's Wi-Fi.
+
 If the Mac receives a different IP address, viewers need the updated viewing code. Stopping sharing or quitting ends the audience session. Reopening the app restores private monitoring.
 
 To see what happened during a dropout, choose **Show session log** in Advanced. The log records connection, recovery, and sharing events with timestamps. It leaves out stream addresses, keys, and viewing links.
