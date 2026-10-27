@@ -561,7 +561,11 @@ public actor MediaRuntime {
         if !replacingSource, mediaServer?.isRunning == true, (sourcePublisher?.isRunning != true || sourceStalled || receiverFailed), Date() >= nextSourceRetry {
             problem = isAccsoonSource ? accsoonReceiver.lastError ?? sourcePublisher?.recentError : sourcePublisher?.recentError
             sourceFailures += 1; nextSourceRetry = Date().addingTimeInterval(min(10, pow(1.6, Double(sourceFailures))))
-             do {
+            let reason = sourcePublisher == nil ? "not running" : sourcePublisher?.isRunning != true ? "exited" : receiverFailed ? "receiver failed" : "stalled"
+            log.record("source.restart", ["reason": reason, "failures": sourceFailures, "exit": Self.exitDescription(sourcePublisher?.terminationStatus),
+                                          "error": String((problem ?? "").suffix(300))])
+            screenCapture?.stop(); screenCapture = nil; sourcePublisher?.stop(); sourcePublisher = nil
+            do {
                 if sourceNeedsConfiguration { try await applySourceConfiguration() }
                 try await launchSource()
             } catch { problem = error.localizedDescription }
