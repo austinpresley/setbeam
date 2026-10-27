@@ -23,8 +23,7 @@ RTMS4 reception. Support requires recorded physical connection evidence in
 
 Computer displays, including DigiTech applications such as Capture One, and
 camera feeds are peer source use cases. The transport and input describe how
-the feed reaches Setbeam, independently of what appears in it. Direct capture
-of the receiving Mac's own screen is a separate feature and is not implemented.
+the feed reaches Setbeam, independently of what appears in it. This Mac's screen captures a selected display locally through ScreenCaptureKit.
 
 ## Media flow
 
@@ -163,3 +162,13 @@ The setup check requires a fresh native picture, a non-loopback running viewing 
 ## Outgoing status presentation
 
 SessionModel presents outgoing-media readiness separately from the thumbnail decoder. OutgoingTransition gives only an explicit Start, Hold, or Resume change a preparation state, bounded at ten seconds. The first fresh outgoing output clears it, so later loss is immediately eligible for recovery feedback. Stop and known failed audience actions cancel preparation. Holding-output health does not depend on the source picture; a cached thumbnail never establishes outgoing readiness. These are presentation observations and do not alter media commands or audience permissions.
+
+## This Mac's screen
+
+MacScreenCapture owns one in-app ScreenCaptureKit stream. The display filter excludes the running Setbeam application, including windows opened after capture starts, so the main and floating previews cannot create a mirror. Capture refuses to start if ScreenCaptureKit cannot identify Setbeam for exclusion. AVFoundation screen capture cannot provide this exclusion. Keeping SCStream in the app also attributes Screen Recording permission to Setbeam rather than a separately launched helper. Only choosing this source requests permission. Denial uses the existing recovery UI and links to Screen Recording settings.
+
+The chooser lists localized display names and native pixel dimensions without requesting recording permission. SourceSetup persists the CG display UUID in videoID, never an enumeration index. Every retry resolves that UUID again. A disconnected display remains the selected source; another connected display is never substituted. Proven setup confirmation and private relaunch use the existing readiness gate.
+
+ScreenCaptureKit includes the cursor and captures video only, labeled No sound. Pixels are preserved up to a 3840 by 2160 bounding box, maintaining aspect ratio and even dimensions. Cadence follows the display mode rounded to the nearest whole frame rate up to 60 fps, with 60 as the fallback for a variable/unspecified refresh rate. A timer encodes the latest complete screen frame even while the desktop is unchanged. ScreenCaptureKit errors clear that picture and close the publisher input so normal runtime recovery retries the selected display.
+
+VideoToolbox encodes H.264 without B frames, at least 40 Mbps, scaling the bitrate with pixel count and cadence, with a keyframe every second. The screen publisher copies this monitoring-quality video to local like other received encodings, and browsers receive the audience output's own bounded encode. An Annex B pipe feeds the existing bundled FFmpeg H.264 demuxer. The pipe carries no timestamps, so FFmpeg stamps each frame on arrival from the constant-rate capture clock; generated timestamps advanced only one 90 kHz tick per frame under stream copy. ManagedChild accepts an explicit stdin handle while retaining its existing process group and supervisor. Nonblocking writes and an 8 MiB pending limit bound backpressure; a blocked/broken pipe closes capture output and enters existing recovery. No new executable or external runtime dependency is required. Native monitoring, floating preview, sharing, Hold and Stop all continue to consume the single local relay.

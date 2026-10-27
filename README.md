@@ -44,7 +44,7 @@ Choose a source, or try the labeled sample. Click **Start sharing**, then invite
 
 Direct Wi-Fi reception has been physically tested with the Accsoon CineView Master 4K on firmware 3.30 and a 1080p60 computer display. Other transmitters and physical capture hardware remain unverified.
 
-RTSP, incoming RTMP, and Mac capture inputs are also implemented. Capturing this Mac's own desktop is not implemented.
+RTSP, incoming RTMP, and Mac capture inputs are also implemented. This Mac's screen captures a selected local display, including the cursor and excluding Setbeam windows. It requires Screen Recording permission and has no sound. Native capture verification is pending permission on the development Mac.
 
 [Setup guide](docs/getting-started.md) · [Test results](docs/hardware-tests.md) · [Current status and limits](docs/status.md) · [Architecture](docs/architecture.md)
 

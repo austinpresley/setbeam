@@ -1,6 +1,6 @@
 import Foundation
 
-public enum InputKind: String, Codable, Sendable { case sample, capture, network, incoming, accsoon }
+public enum InputKind: String, Codable, Sendable { case sample, macScreen, capture, network, incoming, accsoon }
 
 /// A remembered connection, independent of the session's audience and credentials.
 public struct SourceSetup: Codable, Equatable, Identifiable, Sendable {
@@ -24,6 +24,8 @@ public struct SourceSetup: Codable, Equatable, Identifiable, Sendable {
     public var credentialAccount: String { "source-\(id.uuidString)" }
     public func source(address: String? = nil) throws -> VideoSource {
         switch kind {
+        case .macScreen:
+            return try VideoSource.macScreen(displayUUID: videoID ?? "").validated()
         case .sample: return .sample
         case .capture:
             guard let videoID, !videoID.isEmpty else { throw SetbeamError.unavailable("Choose the capture device you want to use.") }

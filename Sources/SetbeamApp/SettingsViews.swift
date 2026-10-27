@@ -69,6 +69,11 @@ struct ConnectionView: View {
                     }
                     VStack(alignment: .leading, spacing: 9) {
                         Text("On this Mac").font(.headline)
+                        ForEach(model.screenDisplays) { display in
+                            sourceRow("This Mac's screen · \(display.name)", detail: "\(display.width) × \(display.height) · No sound", symbol: "display") {
+                                model.connect(SourceSetup(kind: .macScreen, name: "This Mac's screen · \(display.name)", videoID: display.id, deviceName: display.name))
+                            }
+                        }
                         if model.captureDevices.filter({ !$0.audio }).isEmpty {
                             HStack(alignment: .top, spacing: 13) {
                                 HardwareArtwork(symbol: "cable.connector")
@@ -110,7 +115,7 @@ struct ConnectionView: View {
         .task { model.refreshCaptureDevices(); browser.start() }
         .onDisappear { browser.stop(); model.stopWirelessScan() }
     }
-    private func symbol(for kind: InputKind) -> String { kind == .sample ? "play.rectangle" : kind == .capture ? "video" : kind == .accsoon ? "accsoon.master" : "antenna.radiowaves.left.and.right" }
+    private func symbol(for kind: InputKind) -> String { kind == .macScreen ? "display" : kind == .sample ? "play.rectangle" : kind == .capture ? "video" : kind == .accsoon ? "accsoon.master" : "antenna.radiowaves.left.and.right" }
     private func sourceRow(_ name: String, detail: String, symbol: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 13) {

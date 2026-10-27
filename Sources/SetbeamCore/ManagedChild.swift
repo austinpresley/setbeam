@@ -15,14 +15,18 @@ public final class ManagedChild: @unchecked Sendable {
     private var frameTime: Date?
     public let name: String
 
-    public init(name: String, executable: URL, arguments: [String], directory: URL, onOutput: (@Sendable (Data) -> Void)? = nil) throws {
+    public init(name: String, executable: URL, arguments: [String], directory: URL, onOutput: (@Sendable (Data) -> Void)? = nil, standardInput: FileHandle? = nil) throws {
         self.name = name
         var actions: posix_spawn_file_actions_t?
         var attributes: posix_spawnattr_t?
         posix_spawn_file_actions_init(&actions)
         posix_spawnattr_init(&attributes)
         defer { posix_spawn_file_actions_destroy(&actions); posix_spawnattr_destroy(&attributes) }
-        posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0)
+        if let standardInput {
+            posix_spawn_file_actions_adddup2(&actions, standardInput.fileDescriptor, STDIN_FILENO)
+        } else {
+            posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0)
+        }
         posix_spawn_file_actions_adddup2(&actions, output.fileHandleForWriting.fileDescriptor, STDOUT_FILENO)
         posix_spawn_file_actions_adddup2(&actions, errors.fileHandleForWriting.fileDescriptor, STDERR_FILENO)
         posix_spawn_file_actions_addclose(&actions, output.fileHandleForReading.fileDescriptor)

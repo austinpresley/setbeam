@@ -13,6 +13,7 @@ public enum SetbeamError: LocalizedError, Equatable {
 
 public enum VideoSource: Equatable, Sendable {
     case sample
+    case macScreen(displayUUID: String)
     case network(String)
     case capture(video: Int, audio: Int?)
     case captureDevice(videoID: String, audioID: String?)
@@ -21,6 +22,7 @@ public enum VideoSource: Equatable, Sendable {
 
     public var label: String {
         switch self {
+        case .macScreen: return "This Mac's screen"
         case .sample: return "Sample feed"
         case .network(let address): return Self.safeAddress(address)
         case .capture, .captureDevice: return "USB / capture device"
@@ -34,6 +36,9 @@ public enum VideoSource: Equatable, Sendable {
 
     public func validated() throws -> VideoSource {
         switch self {
+        case .macScreen(let id):
+            guard UUID(uuidString: id) != nil else { throw SetbeamError.invalidSource("Choose a display on this Mac.") }
+            return self
         case .sample: return self
         case .network(let address):
             guard !address.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }),

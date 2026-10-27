@@ -125,7 +125,7 @@ struct MainView: View {
 
     private var feedback: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if model.setup != nil && !model.localReady && !model.preparingPicture { recovery }
+            if model.permissionDenied || model.setup != nil && !model.localReady && !model.preparingPicture { recovery }
             if let message = model.error { issue(message) { model.error = nil } }
             if model.networkChanged {
                 issue(model.state.sharing ? "The viewing address changed. Invite viewers with the current code. Sharing and Hold are preserved." : "The viewing network changed. Your monitor continues. Start sharing to invite viewers again.") { model.networkChanged = false }
