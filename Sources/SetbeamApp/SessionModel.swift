@@ -458,6 +458,8 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
     func startSharing() { guard !busy else { return }; Task { await startSharingNow() } }
     private func startSharingNow() async {
         guard !shuttingDown, state.monitoring, !state.sharing, (localReady || integration) else { return }
+        // Viewers may come to depend on this Mac's Wi-Fi; a pending rejoin must not switch it.
+        rejoinAttempt?.permit.revoke()
         busy = true; error = nil
         outgoingTransition.begin(.startSharing)
         do {
