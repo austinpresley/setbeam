@@ -4,7 +4,13 @@ Updated: 2026-10-27. Version 0.2.0, build 12. Local monitoring shows the receive
 
 ## Product scope
 
-Setbeam receives, monitors, and shares video feeds. Computer displays used by DigiTechs and camera feeds are peer use cases. Direct capture of this Mac's desktop is not implemented.
+Setbeam receives, monitors, and shares video feeds. Computer displays used by DigiTechs and camera feeds are peer use cases. This Mac's screen is implemented with ScreenCaptureKit, but fresh native capture and visual exclusion remain unverified because Screen Recording access is disabled on this Mac.
+
+## This Mac's screen implementation, 2026-10-26
+
+The source chooser lists local displays by localized name and pixel resolution, with a Display fallback when macOS supplies no name, and labels this source No sound. The saved identity is a display UUID. One in-app ScreenCaptureKit stream excludes Setbeam's application windows, includes the cursor, and encodes monitoring-quality H.264 through VideoToolbox into the existing supervised FFmpeg/local relay. Capture retains native pixels up to 3840×2160 and cadence up to 60 fps. Existing audience controls and proven private restore use that same source adapter.
+
+The final `scripts/check.sh` passed all 80 Swift tests, five viewer checks, and all preview/media/recovery/source-switching/format probes. All five new screen-source tests passed. Later verification encountered intermittent existing preview cadence/timestamp and viewer-port-reuse assertions, recorded with their isolated reruns. Automated evidence and native limits are recorded in [screen-source verification](verification-mac-screen-2026-10-26.md). No new hardware compatibility claim is made. Real screen capture, readable fine text, visible exclusion of main/floating windows, display hot-unplug/reconnect, capture recovery, browser sharing, Hold/Stop with this source, and proven relaunch with captured frames still require a Screen Recording grant. The packaged app's permission-denied UI and exact privacy-pane link were verified natively; Setbeam was off in Screen & System Audio Recording. The isolated QA app was quit afterward.
 
 ## Current behavior
 
