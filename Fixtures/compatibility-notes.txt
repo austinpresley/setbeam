@@ -1,0 +1,17 @@
+Synthetic media for automated codec and format-change checks. No hardware evidence.
+
+Compatibility-HEVC.mp4: FFmpeg's testsrc2 pattern, 640x360 at 30 fps, four seconds,
+video only, HEVC Main with B frames. Generated locally with FFmpeg/libx265.
+Command: ffmpeg -f lavfi -i testsrc2=size=640x360:rate=30:duration=4 -an
+  -c:v libx265 -preset fast -x265-params log-level=error:keyint=30:bframes=2
+  -tag:v hvc1 -movflags +faststart Compatibility-HEVC.mp4
+
+Compatibility-H264.mp4: the existing fictional Demo.mp4, scaled to 960x540,
+60 fps, four seconds, video only, H.264 High with two B frames. Generated with
+the bundled VideoToolbox encoder to test normalization after a format change.
+Command: ffmpeg -i Demo.mp4 -t 4 -vf scale=960:540 -r 60 -an
+  -c:v h264_videotoolbox -b:v 2000k -profile:v high -bf 2 -g 60
+  -movflags +faststart Compatibility-H264.mp4
+
+Only fixture authoring used a developer-installed HEVC encoder. Tests and the
+finished application consume these files with bundled tools only.

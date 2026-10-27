@@ -8,6 +8,8 @@ public struct RuntimePaths: Sendable {
 }
 
 public struct RuntimeSnapshot: Sendable {
+    public let session: SessionState
+    public let source: VideoSource
     public let sourceAvailable: Bool
     public let connectionStage: ConnectionStage
     public let audienceAvailable: Bool
@@ -21,6 +23,8 @@ public struct RuntimeSnapshot: Sendable {
     public let audienceHasAudio: Bool
 }
 
+enum SourceConfigurationStep: Sendable { case credentials, path }
+
 /// Owns one received source, a private monitoring output, and an independent audience output.
 public actor MediaRuntime {
     private let paths: RuntimePaths
@@ -29,13 +33,27 @@ public actor MediaRuntime {
     private var sourcePublisher: ManagedChild?
     private var audiencePublisher: ManagedChild?
     private var source: VideoSource = .sample
+    private var sourceNeedsConfiguration = false
+    private let beforeSourceConfigurationStep: @Sendable (SourceConfigurationStep) throws -> Void
     private var sourceArguments: [String] = []
-    private var rtspPort: UInt16 = 0, apiPort: UInt16 = 0, webPort: UInt16 = 0, icePort: UInt16 = 0
+    private var rtspPort: UInt16 = 0, apiPort: UInt16 = 0, webPort: UInt16 = 0, icePort: UInt16 = 0, rtmpPort: UInt16 = 0
+    private let incomingRelay = IncomingStreamRelay()
     private var publisherPassword = MediaRuntime.secret(), previewPassword = MediaRuntime.secret(), adminPassword = MediaRuntime.secret()
     private var guestPassword = MediaRuntime.secret()
     private var viewerAddress = "127.0.0.1"
     private var inputAddress = "127.0.0.1"
-    private var sharing = false, holding = false
+    private var sessionState = SessionState()
+    private var sharing: Bool { sessionState.sharing }
+    private var holding: Bool { sessionState.holding }
+    private var healthTask: Task<Void, Never>?
+    private var lifetime = UUID()
+    private var operationActive = false
+    private var operationWaiters: [CheckedContinuation<Void, Never>] = []
+    private var observers: [UUID: AsyncStream<RuntimeSnapshot>.Continuation] = [:]
+    private var observedFrameAt: Date?
+    private var observedStage: ConnectionStage = .preparingMonitor
+    private var observedSourceAudio = false, observedAudienceAudio = false
+    private var observedProblem: String?
     private var nextSourceRetry = Date.distantPast, nextAudienceRetry = Date.distantPast
     private var sourceFailures = 0, audienceFailures = 0
     private var guestNetworks: [String] = ["127.0.0.1", "::1"]
@@ -49,6 +67,14 @@ public actor MediaRuntime {
 
     public init(paths: RuntimePaths) {
         self.paths = paths
+        beforeSourceConfigurationStep = { _ in }
+        let discovery = accsoonDiscovery
+        accsoonReceiver.onAnnouncement = { data, host in discovery.observe(data, host: host) }
+    }
+    /// Allows actual-media tests to exercise failures between controller requests.
+    init(paths: RuntimePaths, beforeSourceConfigurationStep: @escaping @Sendable (SourceConfigurationStep) throws -> Void) {
+        self.paths = paths
+        self.beforeSourceConfigurationStep = beforeSourceConfigurationStep
         let discovery = accsoonDiscovery
         accsoonReceiver.onAnnouncement = { data, host in discovery.observe(data, host: host) }
     }
@@ -60,8 +86,13 @@ public actor MediaRuntime {
     private static func secret() -> String { UUID().uuidString.replacingOccurrences(of: "-", with: "") + UUID().uuidString.replacingOccurrences(of: "-", with: "") }
 
     public func prepare(source candidate: VideoSource, viewerAddress: String, inputAddress: String? = nil) async throws -> RuntimeSnapshot {
-        await shutdown()
-        source = try candidate.validated(); self.viewerAddress = viewerAddress
+        let validated = try candidate.validated()
+        await acquireOperation()
+        defer { releaseOperation() }
+        shutdownLocked()
+        var prepared = false
+        defer { if !prepared { shutdownLocked() } }
+        source = validated; self.viewerAddress = viewerAddress
         self.inputAddress = inputAddress ?? viewerAddress
         for executable in ["mediamtx", "ffmpeg", "ffprobe"] {
             guard FileManager.default.isExecutableFile(atPath: paths.tools.appendingPathComponent(executable).path) else {
@@ -73,25 +104,33 @@ public actor MediaRuntime {
         directory = run
         publisherPassword = MediaRuntime.secret(); previewPassword = MediaRuntime.secret(); adminPassword = MediaRuntime.secret(); guestPassword = MediaRuntime.secret()
         var ports = Set<UInt16>()
+        if case .incoming(let inputPort, _) = source { ports.insert(inputPort) }
         func port() throws -> UInt16 {
             for _ in 0..<20 { let value = try NetworkAddress.freeTCPPort(); if ports.insert(value).inserted { return value } }
             throw SetbeamError.unavailable("Could not find free local media ports.")
         }
-        rtspPort = try port(); apiPort = try port(); webPort = try port(); icePort = try port()
+        rtspPort = try port(); apiPort = try port(); webPort = try port(); icePort = try port(); rtmpPort = try port()
         guestNetworks = ["127.0.0.1", "::1", Self.networkRange(for: viewerAddress)]
         let configuration = run.appendingPathComponent("mediamtx.yml")
         try Self.json(configurationObject()).write(to: configuration, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configuration.path)
         do {
             try await launchServer()
+            sessionState.beginMonitoring()
+            if case .incoming(let port, _) = source {
+                try? await incomingRelay.start(address: self.inputAddress, port: port, targetPort: rtmpPort, keepTrying: true)
+            }
             // A remembered capture device may be unplugged. Keep the session waiting for it.
             try? launchSource()
             sourceFailures = 0; audienceFailures = 0
             serverFailures = 0; nextServerRetry = .distantPast
             nextSourceRetry = Date().addingTimeInterval(2); nextAudienceRetry = .distantPast
-            return await snapshot()
+            let initial = await refreshSnapshot()
+            startHealthLoop()
+            prepared = true
+            return initial
         } catch {
-            await shutdown(); throw error
+            shutdownLocked(); throw error
         }
     }
 
@@ -99,12 +138,10 @@ public actor MediaRuntime {
         let permissions: [[String: String]] = [
             ["action": "publish", "path": "local"], ["action": "publish", "path": "live"],
             ["action": "read", "path": "source"], ["action": "read", "path": "local"], ["action": "read", "path": "live"]]
-        var upstream: [String: Any] = ["source": "publisher"]
-        if case .network(let address) = source { upstream = ["source": address, "rtspTransport": "tcp"] }
-        var configuration: [String: Any] = [
+        let configuration: [String: Any] = [
             "logLevel": "warn", "api": true, "apiAddress": "127.0.0.1:\(apiPort)",
             "rtsp": true, "rtspAddress": "127.0.0.1:\(rtspPort)", "rtspTransports": ["tcp"],
-            "rtmp": false, "hls": false, "srt": false, "moq": false,
+            "rtmp": true, "rtmpAddress": "127.0.0.1:\(rtmpPort)", "hls": false, "srt": false, "moq": false,
             "webrtc": true, "webrtcAddress": ":\(webPort)",
             "webrtcLocalUDPAddress": ":\(icePort)", "webrtcLocalTCPAddress": ":\(icePort)",
             "webrtcIPsFromInterfaces": false,
@@ -112,10 +149,14 @@ public actor MediaRuntime {
             "webrtcAllowOrigins": ["*"],
             "authMethod": "internal", "authInternalUsers": users(publisherPermissions: permissions),
             "pathDefaults": ["source": "publisher", "overridePublisher": false],
-            "paths": ["source": upstream, "local": [:], "live": [:]]
+            "paths": ["source": sourceConfiguration(), "local": [:], "live": [:]]
         ]
-        if case .incoming(let port, _) = source { configuration["rtmp"] = true; configuration["rtmpAddress"] = "\(inputAddress):\(port)" }
         return configuration
+    }
+
+    private func sourceConfiguration() -> [String: Any] {
+        if case .network(let address) = source { return ["source": address, "rtspTransport": "tcp"] }
+        return ["source": "publisher"]
     }
 
     private func users(publisherPermissions: [[String: String]]? = nil) -> [[String: Any]] {
@@ -129,29 +170,12 @@ public actor MediaRuntime {
             ["user": "guest", "pass": guestPassword, "ips": guestNetworks, "permissions": [["action": "read", "path": "live"]]]
         ]
         if case .incoming(_, let key) = source {
-            result.append(["user": "sender", "pass": key, "ips": ["127.0.0.1", "::1", Self.networkRange(for: inputAddress)], "permissions": [["action": "publish", "path": "source"]]])
+            result.append(["user": "sender", "pass": key, "ips": ["127.0.0.1", "::1"], "permissions": [["action": "publish", "path": "source"]]])
         }
         return result
     }
 
-    private static func networkRange(for address: String) -> String {
-        // Restrict to the selected interface's actual subnet, rather than guessing a /24.
-        var interfaces: UnsafeMutablePointer<ifaddrs>?
-        guard getifaddrs(&interfaces) == 0 else { return address + "/32" }
-        defer { freeifaddrs(interfaces) }
-        var current = interfaces
-        while let item = current {
-            defer { current = item.pointee.ifa_next }
-            guard let raw = item.pointee.ifa_addr, raw.pointee.sa_family == UInt8(AF_INET), let mask = item.pointee.ifa_netmask else { continue }
-            let value = raw.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee.sin_addr.s_addr }
-            guard value == inet_addr(address) else { continue }
-            let bits = mask.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { UInt32(bigEndian: $0.pointee.sin_addr.s_addr) }
-            let network = UInt32(bigEndian: value) & bits
-            let ip = [24, 16, 8, 0].map { String((network >> $0) & 255) }.joined(separator: ".")
-            return "\(ip)/\(bits.nonzeroBitCount)"
-        }
-        return address + "/32"
-    }
+    private static func networkRange(for address: String) -> String { NetworkAddress.subnet(for: address) }
 
     private func makeSourceArguments() throws -> [String] {
         var args = commonFFmpegArguments
@@ -187,10 +211,9 @@ public actor MediaRuntime {
             args += ["-protocol_whitelist", "file,udp,rtp", "-analyzeduration", "1000000", "-probesize", "2000000", "-i", file.path]
         }
         args += ["-map", "0:v:0", "-map", "0:a:0?"]
-        if source.isCapture || isAccsoonSource {
-            args += ["-vf", isAccsoonSource ? "scale=w='min(1920,iw)':h=-2,format=yuv420p" : "scale=1280:-2,format=yuv420p", "-c:v", "h264_videotoolbox", "-b:v", isAccsoonSource ? "6000k" : "2000k", "-bf", "0", "-g", "30", "-profile:v", "baseline"]
-        } else { args += ["-c:v", "copy"] }
-        args += ["-c:a", "libopus", "-b:a", "96k", "-ar", "48000", "-ac", "2"]
+        if case .sample = source { args += ["-c:v", "copy"] }
+        else { args += MediaOutputContract.videoArguments }
+        args += MediaOutputContract.audioArguments
         return args + publishArguments("local")
     }
 
@@ -210,14 +233,18 @@ public actor MediaRuntime {
         try Self.json(configurationObject()).write(to: configuration, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configuration.path)
         mediaServer = try child("MediaMTX", "mediamtx", [configuration.path])
-        for _ in 0..<40 {
+        let deadline = Date().addingTimeInterval(5)
+        while Date() < deadline {
             guard mediaServer?.isRunning == true else { throw SetbeamError.runtime("The video service could not start.") }
-            if (try? await api("/v3/config/global/get")) != nil { return }
+            if (try? await api("/v3/config/global/get")) != nil { sourceNeedsConfiguration = false; return }
             try await Task.sleep(nanoseconds: 100_000_000)
         }
         throw SetbeamError.runtime("The video service did not respond.")
     }
     private func launchSource() throws {
+        guard !sourceNeedsConfiguration else {
+            throw SetbeamError.unavailable("The selected input is waiting for its private media configuration.")
+        }
         accsoonReceiver.stop()
         sourceArguments = try makeSourceArguments()
         sourcePublisher = try child("Source input", "ffmpeg", sourceArguments)
@@ -231,6 +258,8 @@ public actor MediaRuntime {
     private var isAccsoonSource: Bool { if case .accsoon = source { return true }; return false }
 
     public func updateViewerAddress(_ address: String) async throws {
+        await acquireOperation()
+        defer { releaseOperation() }
         viewerAddress = address
         guestNetworks = ["127.0.0.1", "::1", Self.networkRange(for: address)]
         if mediaServer?.isRunning == true {
@@ -238,17 +267,22 @@ public actor MediaRuntime {
             _ = try await api("/v3/config/global/patch", method: "PATCH", object: changes)
             audienceRevision += 1
         }
+        publishSnapshot()
     }
     public func updateInputAddress(_ address: String) async throws {
+        await acquireOperation()
+        defer { releaseOperation() }
         guard address != inputAddress, case .incoming(let port, _) = source else { return }
+        try await incomingRelay.start(address: address, port: port, targetPort: rtmpPort)
         inputAddress = address
-        if mediaServer?.isRunning == true {
-            _ = try await api("/v3/config/global/patch", method: "PATCH", object: ["rtmpAddress": "\(address):\(port)", "authInternalUsers": users()])
-        }
     }
-    public func retrySource() {
+    public func retrySource() async {
+        await acquireOperation()
+        defer { releaseOperation() }
         accsoonReceiver.stop()
         sourcePublisher?.stop(); sourcePublisher = nil; nextSourceRetry = .distantPast
+        sessionState.updateSource(available: false); observedSourceAudio = false
+        publishSnapshot()
     }
     /// Private setup destination, never exposed by ViewerGateway.
     public func incomingDestination() -> (server: String, streamKey: String)? {
@@ -257,40 +291,130 @@ public actor MediaRuntime {
     }
 
     public func startSharing() async throws -> RuntimeSnapshot {
+        await acquireOperation()
+        defer { releaseOperation() }
         guard mediaServer?.isRunning == true else { throw SetbeamError.unavailable("Connect a source before sharing.") }
+        guard !sharing else { return snapshot() }
         guestPassword = MediaRuntime.secret()
         _ = try await api("/v3/config/global/patch", method: "PATCH", object: ["authInternalUsers": users()])
-        sharing = true; holding = false; audienceFailures = 0
+        try sessionState.startSharing(); sessionState.updateAudience(available: false); audienceFailures = 0
+        publishSnapshot()
         try launchAudience()
-        return await snapshot()
+        return await refreshSnapshot()
     }
     public func setHold(_ enabled: Bool) async throws {
+        await acquireOperation()
+        defer { releaseOperation() }
+        try await setHoldLocked(enabled)
+    }
+    private func setHoldLocked(_ enabled: Bool) async throws {
         guard sharing else { throw SetbeamError.unavailable("Start sharing before holding the audience.") }
+        try sessionState.setHold(enabled); sessionState.updateAudience(available: false)
+        publishSnapshot()
         audiencePublisher?.stop(); audiencePublisher = nil
-        holding = enabled; audienceFailures = 0
+        audienceFailures = 0
         try launchAudience()
+        _ = await refreshSnapshot()
     }
     /// Keep the audience credential, ports, and Hold while replacing the one received input.
     /// A failed or absent replacement never resumes audience media automatically.
     public func replaceSource(_ candidate: VideoSource, inputAddress: String? = nil) async throws -> RuntimeSnapshot {
         let validated = try candidate.validated()
+        await acquireOperation()
+        defer { releaseOperation() }
         guard directory != nil, !replacingSource else { throw SetbeamError.unavailable("Connect a source before changing inputs.") }
         replacingSource = true
         defer { replacingSource = false }
-        if sharing { holding = true }
-        audiencePublisher?.stop(); audiencePublisher = nil
+        // Establish a real holding output before touching the input. If it is already
+        // running, leave that publisher and every connected audience reader alone.
+        if sharing {
+            if !holding { try await setHoldLocked(true) }
+            else if audiencePublisher?.isRunning != true { try launchAudience() }
+            try await waitForHoldingOutput()
+        }
+        // Bind a replacement incoming destination before disturbing the current
+        // source. An occupied port must never terminate the audience media server.
+        if case .incoming(let port, _) = validated {
+            try await incomingRelay.start(address: inputAddress ?? self.inputAddress, port: port, targetPort: rtmpPort)
+        } else { incomingRelay.stop() }
         accsoonReceiver.stop(); accsoonDiscovery.stop()
         sourcePublisher?.stop(); sourcePublisher = nil
-        mediaServer?.stop(); mediaServer = nil
+        sessionState.updateSource(available: false)
+        observedFrameAt = nil; observedSourceAudio = false
+        sourceNeedsConfiguration = true
         source = validated
         if let inputAddress { self.inputAddress = inputAddress }
-        sourceFailures = 0; audienceFailures = 0; serverFailures = 0
-        nextServerRetry = .distantPast; nextSourceRetry = Date().addingTimeInterval(2); nextAudienceRetry = .distantPast
-        try await launchServer()
-        // Hold is independent of the new input and remains available even when it has no picture.
-        if sharing { try launchAudience() }
+        sourceFailures = 0
+        nextSourceRetry = Date().addingTimeInterval(2)
+        publishSnapshot()
+        try await applySourceConfiguration()
         try? launchSource()
-        return await snapshot()
+        return await refreshSnapshot()
+    }
+
+    /// A failed or partly applied controller update never authorizes a source
+    /// publisher to read the previous path under the newly selected identity.
+    private func applySourceConfiguration() async throws {
+        // MediaMTX reloads only this input path and its sender credentials.
+        // Its RTSP/WebRTC servers, holding publisher, ports, and credentials survive.
+        try beforeSourceConfigurationStep(.credentials)
+        _ = try await api("/v3/config/global/patch", method: "PATCH", object: ["authInternalUsers": users()])
+        try beforeSourceConfigurationStep(.path)
+        _ = try await api("/v3/config/paths/replace/source", method: "POST", object: sourceConfiguration())
+        // Mutating requests are serialized through MediaMTX's core loop, but a
+        // config GET reads directly and can precede a just-acknowledged reload.
+        // This no-op patch is a barrier for both preceding reloads.
+        _ = try await api("/v3/config/global/patch", method: "PATCH", object: [:])
+        let global = try await api("/v3/config/global/get")
+        // The controller intentionally redacts password bytes. The successful
+        // patch and sequenced read confirm application; read back every access
+        // scope and permission instead of comparing the redacted placeholder.
+        func networks(_ user: [String: Any]) -> Set<String> {
+            Set((user["ips"] as? [String] ?? []).map { $0.contains("/") ? $0 : $0 + ($0.contains(":") ? "/128" : "/32") })
+        }
+        func permissions(_ user: [String: Any]) -> Set<String> {
+            Set((user["permissions"] as? [[String: String]] ?? []).map { ($0["action"] ?? "") + ":" + ($0["path"] ?? "") })
+        }
+        guard let appliedUsers = global["authInternalUsers"] as? [[String: Any]],
+              appliedUsers.count == users().count,
+              users().allSatisfy({ expected in
+                  appliedUsers.contains { $0["user"] as? String == expected["user"] as? String && $0["pass"] is String &&
+                      networks($0) == networks(expected) && permissions($0) == permissions(expected) }
+              }) else {
+            throw SetbeamError.runtime("The selected input's private credentials could not be confirmed. The audience remains on Hold.")
+        }
+        let applied = try await api("/v3/config/paths/get/source")
+        guard applied["source"] as? String == sourceConfiguration()["source"] as? String else {
+            throw SetbeamError.runtime("The new input configuration could not be applied. The audience remains on Hold.")
+        }
+        // Revoke existing incoming connections only after the new credentials
+        // have applied, so an old sender cannot reconnect in between updates.
+        incomingRelay.disconnectSenders()
+        if let path = try? await api("/v3/paths/get/source"),
+           let publisher = path["source"] as? [String: Any], publisher["type"] as? String == "rtmpConn",
+           let identifier = publisher["id"] as? String {
+            // Closing the relay may already have ended this connection.
+            _ = try? await api("/v3/rtmp/conns/kick/\(identifier)", method: "POST")
+            if let current = try? await api("/v3/paths/get/source"),
+               let active = current["source"] as? [String: Any], active["id"] as? String == identifier {
+                throw SetbeamError.runtime("The previous incoming sender could not be disconnected. The audience remains on Hold.")
+            }
+        }
+        sourceNeedsConfiguration = false
+    }
+
+    private func waitForHoldingOutput() async throws {
+        let deadline = Date().addingTimeInterval(8)
+        while Date() < deadline {
+            guard audiencePublisher?.isRunning == true, mediaServer?.isRunning == true else {
+                throw SetbeamError.runtime("The holding output could not start. The input has not changed.")
+            }
+            if let path = try? await api("/v3/paths/get/live"), path["available"] as? Bool == true,
+               MediaOutputContract.accepts(path: path),
+               let frame = audiencePublisher?.lastVideoFrameAt, Date().timeIntervalSince(frame) < 3 { return }
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        throw SetbeamError.runtime("The holding output did not become ready. The input has not changed.")
     }
     private func launchAudience() throws {
         var args = commonFFmpegArguments
@@ -302,13 +426,69 @@ public actor MediaRuntime {
         audienceStartedAt = Date(); audienceRevision += 1
     }
     public func stopSharing() async {
-        sharing = false; holding = false
+        await acquireOperation()
+        defer { releaseOperation() }
+        sessionState.stopSharing()
+        observedAudienceAudio = false
+        publishSnapshot()
         audiencePublisher?.stop(); audiencePublisher = nil
         guestPassword = MediaRuntime.secret()
         _ = try? await api("/v3/config/global/patch", method: "PATCH", object: ["authInternalUsers": users()])
+        publishSnapshot()
     }
 
-    public func snapshot() async -> RuntimeSnapshot {
+    /// Reading state never starts, stops, retries, or probes media processes.
+    public func snapshot() -> RuntimeSnapshot {
+        RuntimeSnapshot(session: sessionState, source: source, sourceAvailable: sessionState.sourceAvailable, connectionStage: observedStage,
+            audienceAvailable: sessionState.audienceAvailable, audienceRevision: audienceRevision,
+            lastFrameAt: observedFrameAt, message: observedProblem,
+            preview: PlaybackDescriptor(origin: "http://127.0.0.1:\(webPort)", path: "local", user: "preview", password: previewPassword),
+            audience: PlaybackDescriptor(origin: "http://\(viewerAddress):\(webPort)", path: "live", user: "guest", password: guestPassword), guestToken: guestPassword,
+            sourceHasAudio: observedSourceAudio, audienceHasAudio: observedAudienceAudio)
+    }
+
+    /// Subscribers observe the same authoritative session state as command callers.
+    public func updates() -> AsyncStream<RuntimeSnapshot> {
+        let id = UUID()
+        return AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
+            observers[id] = continuation
+            continuation.yield(snapshot())
+            continuation.onTermination = { [weak self] _ in Task { await self?.removeObserver(id) } }
+        }
+    }
+    private func removeObserver(_ id: UUID) { observers.removeValue(forKey: id) }
+    private func publishSnapshot() { let value = snapshot(); observers.values.forEach { $0.yield(value) } }
+
+    // Actor isolation alone permits interleaving across awaits. Serialize lifecycle commands
+    // and reconciliation so an older probe cannot recreate a source after Stop or replacement.
+    private func acquireOperation() async {
+        if operationActive { await withCheckedContinuation { operationWaiters.append($0) } }
+        else { operationActive = true }
+    }
+    private func releaseOperation() {
+        if operationWaiters.isEmpty { operationActive = false }
+        else { operationWaiters.removeFirst().resume() }
+    }
+    private func startHealthLoop() {
+        healthTask?.cancel()
+        let current = lifetime
+        healthTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(nanoseconds: 500_000_000) } catch { return }
+                guard !Task.isCancelled else { return }
+                guard let engine = self else { return }
+                await engine.serviceTick(lifetime: current)
+            }
+        }
+    }
+    private func serviceTick(lifetime expected: UUID) async {
+        await acquireOperation()
+        defer { releaseOperation() }
+        guard expected == lifetime, directory != nil, !Task.isCancelled else { return }
+        let problem = await reconcile()
+        _ = await refreshSnapshot(problem: problem)
+    }
+    private func reconcile() async -> String? {
         var problem: String?
         if !replacingSource, directory != nil, mediaServer?.isRunning != true {
             problem = "The video service is restarting. Your selected source has not changed."
@@ -325,7 +505,10 @@ public actor MediaRuntime {
             problem = isAccsoonSource ? accsoonReceiver.lastError ?? sourcePublisher?.recentError : sourcePublisher?.recentError
             sourceFailures += 1; nextSourceRetry = Date().addingTimeInterval(min(10, pow(1.6, Double(sourceFailures))))
             sourcePublisher?.stop(); sourcePublisher = nil
-            do { try launchSource() } catch { problem = error.localizedDescription }
+            do {
+                if sourceNeedsConfiguration { try await applySourceConfiguration() }
+                try launchSource()
+            } catch { problem = error.localizedDescription }
         }
         let audienceStalled = Date().timeIntervalSince(audiencePublisher?.lastVideoFrameAt ?? audienceStartedAt) > 12
         if !replacingSource, sharing, mediaServer?.isRunning == true, (audiencePublisher?.isRunning != true || audienceStalled), Date() >= nextAudienceRetry {
@@ -333,28 +516,34 @@ public actor MediaRuntime {
             audiencePublisher?.stop(); audiencePublisher = nil
             try? launchAudience()
         }
+        return problem
+    }
+
+    @discardableResult private func refreshSnapshot(problem: String? = nil) async -> RuntimeSnapshot {
         let lastFrame = sourcePublisher?.lastVideoFrameAt
-        let localPath = try? await api("/v3/paths/get/local")
+        let serverReady = directory != nil && mediaServer?.isRunning == true
+        let localPath = serverReady ? try? await api("/v3/paths/get/local") : nil
         let localReady = localPath?["available"] as? Bool ?? false
         let frameFresh = lastFrame.map { Date().timeIntervalSince($0) < 6 } ?? false
-        let available = localReady && frameFresh && (!isAccsoonSource || accsoonReceiver.isRunning)
-        if available { sourceFailures = 0; serverFailures = 0; problem = nil }
+        let available = !sourceNeedsConfiguration && localReady && frameFresh && MediaOutputContract.accepts(path: localPath) && (!isAccsoonSource || accsoonReceiver.isRunning)
+        if available { sourceFailures = 0; serverFailures = 0 }
         var audiencePath: [String: Any]?
-        if sharing { audiencePath = try? await api("/v3/paths/get/live") }
+        if sharing && serverReady { audiencePath = try? await api("/v3/paths/get/live") }
         let audienceReady = audiencePath?["available"] as? Bool ?? false
         let audienceFresh = audiencePublisher?.lastVideoFrameAt.map { Date().timeIntervalSince($0) < 6 } ?? false
         let transmitterFound: Bool
         if case .accsoon(let uid) = source { transmitterFound = accsoonDiscovery.device(uid)?.recognized == true }
         else { transmitterFound = false }
-        let stage = ConnectionStage.resolve(serverReady: mediaServer?.isRunning == true, sourceFresh: available,
+        observedStage = ConnectionStage.resolve(serverReady: serverReady, sourceFresh: available,
             isTransmitter: isAccsoonSource, transmitterFound: transmitterFound, receiverRunning: accsoonReceiver.isRunning,
             connectionAcknowledged: (accsoonReceiver.statistics["connectionAcknowledgements"] ?? 0) > 0)
-        return RuntimeSnapshot(sourceAvailable: available, connectionStage: stage, audienceAvailable: audienceReady && audienceFresh, audienceRevision: audienceRevision,
-            lastFrameAt: lastFrame, message: problem.map(Redaction.text),
-            preview: PlaybackDescriptor(origin: "http://127.0.0.1:\(webPort)", path: "local", user: "preview", password: previewPassword),
-            audience: PlaybackDescriptor(origin: "http://\(viewerAddress):\(webPort)", path: "live", user: "guest", password: guestPassword), guestToken: guestPassword,
-            sourceHasAudio: available && MediaTracks.hasAudio(localPath?["tracks"] as? [String] ?? []),
-            audienceHasAudio: audienceReady && audienceFresh && MediaTracks.hasAudio(audiencePath?["tracks"] as? [String] ?? []))
+        let audienceAvailable = audienceReady && audienceFresh && MediaOutputContract.accepts(path: audiencePath)
+        sessionState.updateSource(available: available); sessionState.updateAudience(available: audienceAvailable)
+        observedFrameAt = lastFrame; observedProblem = available ? nil : problem.map(Redaction.text)
+        observedSourceAudio = available && MediaTracks.hasAudio(localPath?["tracks"] as? [String] ?? [])
+        observedAudienceAudio = audienceAvailable && MediaTracks.hasAudio(audiencePath?["tracks"] as? [String] ?? [])
+        publishSnapshot()
+        return snapshot()
     }
 
     public func saveFrame(to destination: URL) async throws {
@@ -388,13 +577,23 @@ public actor MediaRuntime {
     public func processIDs() -> [Int32] { [mediaServer, sourcePublisher, audiencePublisher].compactMap { $0?.processID }.filter { $0 > 0 } }
 
     public func shutdown() async {
-        sharing = false; holding = false
+        await acquireOperation()
+        defer { releaseOperation() }
+        shutdownLocked()
+    }
+    private func shutdownLocked() {
+        sourceNeedsConfiguration = false
+        incomingRelay.stop()
+        lifetime = UUID(); healthTask?.cancel(); healthTask = nil
+        sessionState.end(); observedFrameAt = nil; observedStage = .preparingMonitor
+        observedSourceAudio = false; observedAudienceAudio = false; observedProblem = nil
         accsoonReceiver.stop(); accsoonDiscovery.stop()
         audiencePublisher?.stop(); audiencePublisher = nil
         sourcePublisher?.stop(); sourcePublisher = nil
         mediaServer?.stop(); mediaServer = nil
         if let directory { try? FileManager.default.removeItem(at: directory) }
         directory = nil
+        publishSnapshot()
     }
 
     private func api(_ path: String, method: String = "GET", object: [String: Any]? = nil) async throws -> [String: Any] {

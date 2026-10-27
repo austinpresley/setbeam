@@ -1,12 +1,20 @@
 # Setbeam status
 
-Updated: 2026-10-21. Version 0.2.0, build 9. Corrects the outgoing-status warnings while retaining the approved full-width layout. Final packaged checks pass. Earlier physical evidence retains the limits below.
+Updated: 2026-10-23. Version 0.2.0, build 11. Show/Hide QR codes now opens a persistent panel beside the local picture, with Wi-Fi above the current feed invitation. Final packaged checks and isolated native/browser sample checks pass. Earlier physical evidence retains the limits below.
 
 ## Product scope
 
 Setbeam receives, monitors, and shares video feeds. Computer displays used by DigiTechs and camera feeds are peer use cases. Direct capture of this Mac's desktop is not implemented.
 
 ## Current behavior
+
+Build 11 adds the approved optional join-code panel while retaining numeric-IP session links. Show QR codes widens the main window by 252 points when space permits, keeping the current picture size; Hide restores its previous width. Wi-Fi and feed codes stack beside the picture and scale with its height. The panel stays open through other controls, Hold, and Stop. Stop removes the feed code while leaving Wi-Fi and local monitoring available. Add/Edit viewing Wi-Fi returns directly to the panel and preserves the viewing link. Relaunch still restores privately; there is no reusable printed invitation, online lookup, or new Bonjour dependency.
+
+The final self-contained Build 11 passes all 75 Swift tests, five viewer checks, and the packaged bridge/media/recovery/source-switching/format probes. Native default dark and compact light layouts, actual QR decoding with protected Wi-Fi punctuation, stable links during Wi-Fi edits and Hold, fresh codes after Stop/Start, same-page browser Resume/Stop, right-edge expansion, and normal/Force Quit process cleanup pass. These are automated/sample checks; physical phone scanning and Wi-Fi joining were not newly tested. See [QR panel verification](verification-qr-panel-2026-10-23.md).
+
+Build 10 completes the four approved architecture changes. MediaRuntime owns session intent and health and recovers without UI status requests; snapshots are observational and lifecycle commands are serialized. Native main/floating playback shares timestamped video and a synchronized audio path instead of JPEG frames and separate audio decoding. External inputs normalize to verified H.264 Baseline without B frames and optional Opus while preserving dimensions and cadence. Source changes retain the same server, viewing identity, and running holding publisher, including an offline source, occupied incoming port, or partial configuration failure. Failed replacement preflight restores the previous source identity and local preview. Relaunch remains private.
+
+The final self-contained Build 10 passes 75 Swift tests, five viewer-controller checks, file and actual-RTSP preview-bridge checks, and packaged sample/RTSP/RTMP, source/server recovery, continuous-Hold source-switching, and media-format probes. Native main/floating and Chromium Start/Hold/Resume/Stop pass. An isolated synthetic 1080p60 native check passes, normal Quit cleans all six private-monitoring descendants, and Force Quit cleans all ten sharing descendants. Strict signatures, system-only dependencies, bundled resource/source hashes, and the frozen source/test snapshot pass. This Mac still reaches the explained local-audio device timeout and returns to mute while video continues; audible synchronization and physical endurance remain open. See [architecture verification](verification-architecture-2026-10-23.md).
 
 Build 9 separates actual outgoing-media health from the outgoing thumbnail. Normal Start, Hold, and Resume changes show bounded preparation states rather than false reconnection warnings. Fresh output ends preparation immediately; real later loss and unavailable holding output remain visible. All 51 Swift tests, five viewer checks, and packaged media/recovery/source-switching probes pass. Native Start/Hold/Resume checks pass without the false banners. A new quick demo uses moving footage and a visible pointer without added captions. See [outgoing-status verification](verification-outgoing-status-2026-10-21.md).
 
@@ -49,6 +57,14 @@ Build 7 verified the same confirmed unit with product ID 24: real 1920×1080 com
 A physical phone in Safari passed sample video and audible tone, 30-second lock/wake recovery, silent Hold, and automatic same-page Resume with sound. The real transmitter picture also played on that phone. After physical transmitter OFF/ON, macOS switched Wi-Fi to the regular LAN. Manually rejoining the transmitter's Wi-Fi restored the same source, fresh main/outgoing frames, and the same phone page without app Retry or browser reload. The viewing link remained unchanged. This is recovery after a manual Wi-Fi rejoin; automatic association is not implemented. Phone model and OS version were not supplied.
 
 ## Verification and packaging
+
+Build 11 is `dist/Setbeam-0.2.0-build11-macOS-arm64/Setbeam.app`. Its frozen source/test snapshot, packaged checks, strict signatures, bundled viewer resources, system-only dependencies, and isolated native/browser sample verification pass. Finished build notes and a native sample screenshot accompany the archive. The app remains an ad-hoc signed developer preview. Physical compatibility and long-session limits are unchanged. See [QR panel verification](verification-qr-panel-2026-10-23.md).
+
+Private Build 11 delivery completed remote verification with the finished app archive, build notes, and native sample screenshot. All isolated QA apps were closed, their owned helpers exited, and their viewing codes expired.
+
+Build 10 is `dist/Setbeam-0.2.0-build10-macOS-arm64/Setbeam.app`. Its packaged-runtime checks passed 75 Swift tests, five viewer checks, and all media/recovery/source-switching/format probes with the source and test snapshot unchanged. Native sample and synthetic 1080p60 monitoring, browser audience controls, normal/Force Quit cleanup, strict signatures, resource/source hashes, and system-only dependencies passed. The archive includes finished build notes. The app remains an ad-hoc signed developer preview. Physical compatibility and long-session limits remain unchanged. See [architecture verification](verification-architecture-2026-10-23.md).
+
+Private Build 10 delivery completed remote verification with the finished app archive and build notes. The production app and its saved hardware source were not operated during this pass.
 
 Build 9 is `dist/Setbeam-0.2.0-build9-macOS-arm64/Setbeam.app`. Its final frozen source, packaged-runtime checks, signatures, resource hashes, and system-only dependencies pass. It opened privately with the same saved Master 4K and Mac sound muted. The physical source was unavailable at that checkpoint, so fresh hardware playback is not claimed for this build. The ad-hoc signed developer distribution and existing hardware limits are unchanged. See [verification](verification-outgoing-status-2026-10-21.md).
 

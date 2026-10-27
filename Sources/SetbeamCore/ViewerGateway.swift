@@ -34,7 +34,25 @@ public final class ViewerGateway: @unchecked Sendable {
     private var activity: [String: ViewerActivity] = [:]
     private var running = false
     private var generation = UUID()
-    public init(assets: [String: Data]) { self.assets = assets }
+    private var listenerAttempt = UUID()
+    private var desiredListener: (address: String, port: UInt16)?
+    private var retry: DispatchWorkItem?
+    private var startup: ListenerStart?
+    private let retryDelay: TimeInterval
+    private let startupTimeout: TimeInterval
+    private let makeListener: (NWParameters, NWEndpoint.Port) throws -> NWListener
+
+    public convenience init(assets: [String: Data]) {
+        self.init(assets: assets, retryDelay: 1, startupTimeout: 5) { try NWListener(using: $0, on: $1) }
+    }
+
+    init(assets: [String: Data], retryDelay: TimeInterval, startupTimeout: TimeInterval = 5,
+         listenerFactory: @escaping (NWParameters, NWEndpoint.Port) throws -> NWListener) {
+        self.assets = assets
+        self.retryDelay = retryDelay
+        self.startupTimeout = startupTimeout
+        self.makeListener = listenerFactory
+    }
     public func update(_ session: ViewerSession) {
         lock.lock(); defer { lock.unlock() }
         if self.session?.token != session.token { activity.removeAll() }
@@ -49,65 +67,165 @@ public final class ViewerGateway: @unchecked Sendable {
     }
     public var isRunning: Bool { lock.lock(); defer { lock.unlock() }; return running }
 
+    /// Requests this address until stop or another start. A bounded startup error still leaves
+    /// recovery enabled; callers abandoning the sharing request must call stop.
     public func start(address: String, port: UInt16 = 0) async throws -> UInt16 {
-        let previous = lock.withLock { listener }
-        stop()
-        let current = lock.withLock { generation }
-        // Cancellation releases the bound socket asynchronously on Network's queue.
-        if let previous {
-            for _ in 0..<100 {
-                if case .cancelled = previous.state { break }
-                try await Task.sleep(nanoseconds: 10_000_000)
-            }
-        }
         return try await withCheckedThrowingContinuation { continuation in
             let completion = ListenerStart(continuation)
-            do {
-                let parameters = NWParameters.tcp
-                parameters.allowLocalEndpointReuse = true
-                parameters.requiredLocalEndpoint = .hostPort(host: .init(address), port: .any)
-                let listener = try NWListener(using: parameters, on: NWEndpoint.Port(rawValue: port)!)
-                let accepted = lock.withLock {
-                    guard generation == current else { return false }
-                    self.listener = listener; return true
-                }
-                guard accepted else { throw SetbeamError.unavailable("Viewer server was replaced.") }
-                listener.stateUpdateHandler = { [weak self, weak listener] state in
-                    guard let self else { return }
-                    self.lock.lock()
-                    guard self.generation == current else {
-                        self.lock.unlock()
-                        completion.finish(.failure(SetbeamError.unavailable("Viewer server was replaced.")))
-                        return
-                    }
-                    defer { self.lock.unlock() }
-                    switch state {
-                    case .ready:
-                        self.running = true
-                        completion.finish(.success(listener?.port?.rawValue ?? 0))
-                    case .failed(let error):
-                        self.running = false
-                        completion.finish(.failure(error))
-                    case .cancelled:
-                        self.running = false
-                        completion.finish(.failure(SetbeamError.unavailable("Viewer server stopped before it was ready.")))
-                    default: break
-                    }
-                }
-                listener.newConnectionHandler = { [weak self] connection in self?.accept(connection) }
-                listener.start(queue: queue)
-                queue.asyncAfter(deadline: .now() + 5) { [weak listener] in
-                    if completion.finish(.failure(SetbeamError.unavailable("The viewing network is not ready. Setbeam will retry."))) {
-                        listener?.cancel()
-                    }
-                }
-            } catch { completion.finish(.failure(error)) }
+            let current = UUID()
+            let previous = lock.withLock {
+                let previous = (listener, retry, startup)
+                generation = current; listenerAttempt = UUID()
+                desiredListener = (address, port); listener = nil; retry = nil
+                startup = completion; running = false
+                return previous
+            }
+            previous.1?.cancel()
+            previous.2?.finish(.failure(SetbeamError.unavailable("Viewer server was replaced.")))
+            let previousListener = previous.0
+            previousListener?.cancel()
+            queue.async { [weak self] in
+                self?.beginListener(generation: current, waitingFor: previousListener, until: .now() + 1)
+            }
+            queue.asyncAfter(deadline: .now() + startupTimeout) { [weak self] in
+                self?.startupExpired(generation: current)
+            }
         }
     }
     public func stop() {
-        lock.lock(); generation = UUID(); let previous = listener; listener = nil
-        running = false; activity.removeAll(); lock.unlock()
-        previous?.cancel()
+        let previous = lock.withLock {
+            let previous = (listener, retry, startup)
+            generation = UUID(); listenerAttempt = UUID(); desiredListener = nil
+            listener = nil; retry = nil; startup = nil
+            running = false; activity.removeAll()
+            return previous
+        }
+        previous.1?.cancel()
+        previous.2?.finish(.failure(SetbeamError.unavailable("Viewer server stopped before it was ready.")))
+        previous.0?.cancel()
+    }
+
+    private func beginListener(generation current: UUID, waitingFor previous: NWListener? = nil,
+                               until cancellationDeadline: DispatchTime = .now()) {
+        guard lock.withLock({ generation == current && desiredListener != nil }) else { return }
+        // Network releases a cancelled listener's socket on its own queue. Give a replacement
+        // a bounded wait so an explicit same-port restart does not race that release.
+        if let previous, case .cancelled = previous.state { }
+        else if previous != nil, .now() < cancellationDeadline {
+            queue.asyncAfter(deadline: .now() + 0.01) { [weak self] in
+                self?.beginListener(generation: current, waitingFor: previous, until: cancellationDeadline)
+            }
+            return
+        }
+        guard let desired = lock.withLock({ generation == current ? desiredListener : nil }) else { return }
+        do {
+            let parameters = NWParameters.tcp
+            parameters.allowLocalEndpointReuse = true
+            parameters.requiredLocalEndpoint = .hostPort(host: .init(desired.address), port: .any)
+            let listener = try makeListener(parameters, NWEndpoint.Port(rawValue: desired.port)!)
+            let attempt = UUID()
+            let accepted = lock.withLock {
+                guard generation == current, desiredListener != nil else { return false }
+                self.listener = listener; listenerAttempt = attempt; retry = nil
+                return true
+            }
+            guard accepted else { listener.cancel(); return }
+            listener.stateUpdateHandler = { [weak self, weak listener] state in
+                guard let self, let listener else { return }
+                self.listenerChanged(state, listener: listener, generation: current, attempt: attempt)
+            }
+            listener.newConnectionHandler = { [weak self] connection in
+                guard let self, self.lock.withLock({ self.generation == current && self.listenerAttempt == attempt && self.desiredListener != nil }) else {
+                    connection.cancel(); return
+                }
+                self.accept(connection)
+            }
+            listener.start(queue: queue)
+            queue.asyncAfter(deadline: .now() + startupTimeout) { [weak self] in
+                self?.retryUnreadyListener(generation: current, attempt: attempt)
+            }
+        } catch {
+            let completion = lock.withLock {
+                guard generation == current else { return nil as ListenerStart? }
+                let completion = startup; startup = nil; running = false
+                return completion
+            }
+            completion?.finish(.failure(error))
+            scheduleRetry(generation: current)
+        }
+    }
+
+    private func listenerChanged(_ state: NWListener.State, listener: NWListener,
+                                 generation current: UUID, attempt: UUID) {
+        guard lock.withLock({ generation == current && listenerAttempt == attempt && desiredListener != nil }) else { return }
+        switch state {
+        case .ready:
+            let completion = lock.withLock {
+                guard generation == current, listenerAttempt == attempt, desiredListener != nil else { return nil as ListenerStart? }
+                running = true
+                // Port zero chooses once. Recovery must not change an already-issued viewing link.
+                if let port = listener.port?.rawValue { desiredListener?.port = port }
+                let completion = startup; startup = nil
+                return completion
+            }
+            completion?.finish(.success(listener.port?.rawValue ?? 0))
+        case .failed(let error):
+            retireListener(generation: current, attempt: attempt, error: error)
+        case .cancelled:
+            retireListener(generation: current, attempt: attempt,
+                           error: SetbeamError.unavailable("Viewer server stopped before it was ready."))
+        case .waiting:
+            let waitingAfterStartup = lock.withLock {
+                guard generation == current, listenerAttempt == attempt else { return false }
+                running = false
+                return startup == nil
+            }
+            if waitingAfterStartup {
+                queue.asyncAfter(deadline: .now() + retryDelay) { [weak self] in
+                    self?.retryUnreadyListener(generation: current, attempt: attempt)
+                }
+            }
+        default: break
+        }
+    }
+
+    private func startupExpired(generation current: UUID) {
+        let pending = lock.withLock {
+            guard generation == current, startup != nil else { return nil as UUID? }
+            return listenerAttempt
+        }
+        if let pending { retryUnreadyListener(generation: current, attempt: pending) }
+    }
+
+    private func retryUnreadyListener(generation current: UUID, attempt: UUID) {
+        guard lock.withLock({ generation == current && listenerAttempt == attempt && !running && desiredListener != nil }) else { return }
+        retireListener(generation: current, attempt: attempt,
+                       error: SetbeamError.unavailable("The viewing network is not ready. Setbeam will retry."))
+    }
+
+    private func retireListener(generation current: UUID, attempt: UUID, error: Error) {
+        let previous = lock.withLock {
+            guard generation == current, listenerAttempt == attempt, desiredListener != nil else { return nil as (NWListener?, ListenerStart?)? }
+            let previous = (listener, startup)
+            listener = nil; startup = nil; running = false; listenerAttempt = UUID()
+            return previous
+        }
+        guard let previous else { return }
+        previous.1?.finish(.failure(error))
+        previous.0?.cancel()
+        scheduleRetry(generation: current, waitingFor: previous.0)
+    }
+
+    private func scheduleRetry(generation current: UUID, waitingFor previous: NWListener? = nil) {
+        let work = DispatchWorkItem { [weak self] in
+            self?.beginListener(generation: current, waitingFor: previous, until: .now() + 1)
+        }
+        let accepted = lock.withLock {
+            guard generation == current, desiredListener != nil else { return false }
+            retry?.cancel(); retry = work
+            return true
+        }
+        if accepted { queue.asyncAfter(deadline: .now() + retryDelay, execute: work) }
     }
     private func accept(_ connection: NWConnection) {
         connection.start(queue: queue)
@@ -187,7 +305,11 @@ public final class ViewerGateway: @unchecked Sendable {
         let header = "HTTP/1.1 \(code) \(phrase)\r\nContent-Type: \(mime)\r\nContent-Length: \(body.count)\r\nCache-Control: no-store\r\nReferrer-Policy: no-referrer\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n"
         connection.send(content: Data(header.utf8) + body, completion: .contentProcessed { _ in connection.cancel() })
     }
-    deinit { listener?.cancel() }
+    deinit {
+        retry?.cancel()
+        startup?.finish(.failure(SetbeamError.unavailable("Viewer server stopped before it was ready.")))
+        listener?.cancel()
+    }
 }
 
 private final class ListenerStart: @unchecked Sendable {

@@ -294,10 +294,12 @@ struct JoinCodesView: View {
 
 struct ViewingWiFiView: View {
     @ObservedObject var model: SessionModel
+    let returnsToJoinCodes: Bool
     @State private var ssid: String
     @State private var password: String
-    init(model: SessionModel) {
-        self.model = model; _ssid = State(initialValue: model.wifiSSID); _password = State(initialValue: model.wifiPassword)
+    init(model: SessionModel, returnsToJoinCodes: Bool = true) {
+        self.model = model; self.returnsToJoinCodes = returnsToJoinCodes
+        _ssid = State(initialValue: model.wifiSSID); _password = State(initialValue: model.wifiPassword)
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -306,8 +308,8 @@ struct ViewingWiFiView: View {
             Form { TextField("Wi-Fi name", text: $ssid); SecureField("Password", text: $password) }
             Text("Leave the password empty for an open network. Saving a join code keeps the current feed and viewing link running.").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             HStack {
-                Button("Back") { model.sheet = .join }.keyboardShortcut(.cancelAction)
-                Spacer(); Button("Save") { model.saveViewingSettings(network: model.networkChoice, ssid: ssid, password: password); model.sheet = .join }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction).disabled(ssid.utf8.count > 32)
+                Button(returnsToJoinCodes ? "Back" : "Cancel") { model.sheet = returnsToJoinCodes ? .join : nil }.keyboardShortcut(.cancelAction)
+                Spacer(); Button("Save") { model.saveViewingSettings(network: model.networkChoice, ssid: ssid, password: password); model.sheet = returnsToJoinCodes ? .join : nil }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction).disabled(ssid.utf8.count > 32)
             }
         }.padding(26).frame(width: 410)
     }

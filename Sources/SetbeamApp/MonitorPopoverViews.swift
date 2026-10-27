@@ -39,33 +39,6 @@ struct MonitorSoundPopover: View {
     }
 }
 
-struct MonitorInvitePopover: View {
-    @ObservedObject var model: SessionModel
-    let show: (AppSheet) -> Void
-    var body: some View {
-        VStack(spacing: 14) {
-            Text("Scan to watch").font(.headline)
-            if model.state.sharing, let url = model.viewerURL { QRView(payload: url.absoluteString, size: 176) }
-            else { ProgressView("Preparing viewing link").frame(width: 176, height: 176) }
-            Text(model.viewingInstructions).font(.caption).foregroundStyle(.secondary)
-                .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
-            HStack {
-                Text(model.copiedLink ? "Link copied" : "Viewing link").font(.caption).foregroundStyle(.secondary)
-                Spacer()
-                Button { model.copyLink() } label: { Image(systemName: model.copiedLink ? "checkmark" : "link").frame(width: 24, height: 22) }
-                    .help(model.copiedLink ? "Link copied" : "Copy viewing link")
-                    .accessibilityLabel(model.copiedLink ? "Link copied" : "Copy viewing link")
-                    .disabled(model.viewerURL == nil || !model.state.sharing)
-            }.padding(7).background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 7))
-            Button("Show join codes…") { model.loadPrivateSettings(); show(.join) }
-                .buttonStyle(.link).font(.caption).disabled(!model.state.sharing)
-            if model.viewerAddress == "127.0.0.1" {
-                Button("Open Wi-Fi Settings") { model.openWiFiSettings() }.buttonStyle(.link).font(.caption)
-            }
-        }.padding(18).frame(width: 252)
-    }
-}
-
 struct MonitorSharingPopover: View {
     @ObservedObject var model: SessionModel
     let show: (AppSheet) -> Void
