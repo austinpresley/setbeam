@@ -197,6 +197,67 @@ final class ViewerGatewayTests: XCTestCase {
         XCTAssertEqual(expired, 404)
     }
 
+    func testStateStreamPushesChangesAndOutlivesTheRequestDeadline() async throws {
+        let host = ViewerGateway(assets: [:], retryDelay: 0.05, requestTimeout: 0.3, keepaliveInterval: 0.4) { try NWListener(using: $0, on: $1) }
+        let token = UUID().uuidString
+        host.update(session(token: token))
+        let port = try await host.start(address: "127.0.0.1")
+        defer { host.stop() }
+        let stream = try await StateStream(port: port, token: token)
+        XCTAssertEqual(stream.status, 200)
+        XCTAssertEqual(stream.contentType, "text/event-stream")
+        let initial = try await stream.next()
+        XCTAssertEqual(initial?["state"] as? String, "holding")
+        XCTAssertEqual(initial?["revision"] as? Int, 7)
+        var live = session(token: token); live.state = .live; live.revision = 8
+        host.update(live)
+        let pushed = try await stream.next()
+        XCTAssertEqual(pushed?["state"] as? String, "live")
+        XCTAssertEqual(pushed?["revision"] as? Int, 8)
+        // Keepalives keep arriving well after an ordinary request would have been closed.
+        try await Task.sleep(nanoseconds: 1_000_000_000)
+        let keepalive = try await stream.next()
+        XCTAssertEqual(keepalive?["state"] as? String, "live")
+        let (_, response) = try await URLSession.shared.data(from: URL(string: "http://127.0.0.1:\(port)/s/\(token)/state.json")!)
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200, "Polling remains available as the fallback")
+    }
+
+    func testTokenChangeAndStopCloseStateStreams() async throws {
+        let host = ViewerGateway(assets: [:], retryDelay: 0.05, requestTimeout: 0.3) { try NWListener(using: $0, on: $1) }
+        let token = UUID().uuidString
+        host.update(session(token: token))
+        let port = try await host.start(address: "127.0.0.1")
+        defer { host.stop() }
+        let rotated = try await StateStream(port: port, token: token)
+        _ = try await rotated.next()
+        let current = UUID().uuidString
+        host.update(session(token: current))
+        let afterRotation = try await rotated.next()
+        XCTAssertNil(afterRotation, "A replaced viewing link must end its open streams")
+        let (_, response) = try await URLSession.shared.data(from: URL(string: "http://127.0.0.1:\(port)/s/\(token)/events")!)
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 404)
+
+        let stopped = try await StateStream(port: port, token: current)
+        _ = try await stopped.next()
+        host.stop()
+        let afterStop = try await stopped.next()
+        XCTAssertNil(afterStop, "Stop must end open streams")
+    }
+
+    func testStateStreamCapFallsBackToPolling() async throws {
+        let host = ViewerGateway(assets: [:], retryDelay: 0.05, maxStreams: 1) { try NWListener(using: $0, on: $1) }
+        let token = UUID().uuidString
+        host.update(session(token: token))
+        let port = try await host.start(address: "127.0.0.1")
+        defer { host.stop() }
+        let first = try await StateStream(port: port, token: token)
+        _ = try await first.next()
+        let second = try await StateStream(port: port, token: token)
+        XCTAssertEqual(second.status, 503)
+        let (_, response) = try await URLSession.shared.data(from: URL(string: "http://127.0.0.1:\(port)/s/\(token)/state.json")!)
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+    }
+
     private func session(token: String) -> ViewerSession {
         ViewerSession(token: token, title: "Studio", sample: true, state: .holding,
             playback: PlaybackDescriptor(origin: "http://127.0.0.1:8889", path: "live", user: "guest", password: "synthetic"), revision: 7)
@@ -250,5 +311,46 @@ private final class GatewayListenerFactory: @unchecked Sendable {
         let listener = try NWListener(using: parameters, on: port)
         lock.withLock { listeners.append(listener) }
         return listener
+    }
+}
+
+/// Reads server-sent state events with a bounded wait per event.
+private final class StateStream: @unchecked Sendable {
+    let status: Int
+    let contentType: String?
+    private var lines: AsyncLineSequence<URLSession.AsyncBytes>.AsyncIterator
+
+    init(port: UInt16, token: String) async throws {
+        let (bytes, response) = try await URLSession.shared.bytes(from: URL(string: "http://127.0.0.1:\(port)/s/\(token)/events?id=stream-test-01")!)
+        let http = try XCTUnwrap(response as? HTTPURLResponse)
+        status = http.statusCode
+        contentType = http.value(forHTTPHeaderField: "Content-Type")
+        lines = bytes.lines.makeAsyncIterator()
+    }
+
+    /// The next state object, or nil when the server ended the stream.
+    func next(timeout: TimeInterval = 3) async throws -> [String: Any]? {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            let line: String?
+            do { line = try await nextLine(timeout: deadline.timeIntervalSinceNow) } catch is CancellationError { break } catch { return nil }
+            guard let line else { return nil }
+            guard line.hasPrefix("data: ") else { continue }
+            return try JSONSerialization.jsonObject(with: Data(line.dropFirst(6).utf8)) as? [String: Any]
+        }
+        XCTFail("No state event arrived in time")
+        throw SetbeamError.unavailable("Timed out waiting for a state event")
+    }
+
+    private func nextLine(timeout: TimeInterval) async throws -> String? {
+        try await withThrowingTaskGroup(of: String?.self) { group in
+            group.addTask { [self] in try await self.lines.next() }
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(max(0, timeout) * 1_000_000_000))
+                throw CancellationError()
+            }
+            defer { group.cancelAll() }
+            return try await group.next() ?? nil
+        }
     }
 }

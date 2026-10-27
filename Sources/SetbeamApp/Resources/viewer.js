@@ -4,11 +4,20 @@
   const slate = document.getElementById('slate');
   const sound = document.getElementById('sound');
   const retry = document.getElementById('retry');
+  const awake = document.getElementById('awake');
+  const awakeVideo = document.getElementById('keepawake');
   let reader, mode = 'reconnecting', config, revision = -1, lastTime = -1, lastFrameAt = 0;
   let receivedTrack = false, pollRunning = false, playBlocked = false, unavailable = false;
   let readerStartedAt = 0, readerGeneration = 0;
+  // Pushed state replaces 1.5 s polling while the stream stays healthy. Polling remains the fallback.
+  let events, eventsAt = 0, eventsHeard = false, eventsRetryAt = 0, applying = Promise.resolve();
+  let heartbeatAt = 0, reportedPlaying;
+  let keepAwake = false, wakeLock, wakeLockPending = false;
   const id = globalThis.crypto?.randomUUID?.() || Math.random().toString(36).slice(2) + Date.now().toString(36);
   const playing = () => mode === 'live' && receivedTrack && !video.paused && video.readyState >= 2 && Date.now() - lastFrameAt < 6000;
+  const stalled = () => !document.hidden && !playBlocked && Date.now() - (lastFrameAt || readerStartedAt) > 10000;
+  // A stream must deliver its first state quickly and a keepalive about every 10 s after that.
+  const streaming = () => events && events.readyState !== 2 && Date.now() - eventsAt <= (eventsHeard ? 25000 : 5000);
   function show(title, copy) {
     slate.hidden = false;
     document.getElementById('slate-title').textContent = title;
@@ -25,6 +34,11 @@
     else if (playing()) { label.textContent = 'Live feed'; slate.hidden = true; }
     else { label.textContent = 'Reconnecting'; show('Waiting for the picture', 'Keep this page open. Your picture reconnects automatically.'); }
     video.muted = mode !== 'live' || sound.getAttribute('aria-pressed') !== 'true';
+    const ended = mode === 'stopped' || unavailable;
+    if (ended && keepAwake) releaseAwake();
+    awake.disabled = ended;
+    // The operator's viewer count follows playback promptly without polling.
+    if (streaming() && playing() !== reportedPlaying) heartbeat();
   }
   function closeReader() {
     readerGeneration++;
@@ -51,13 +65,46 @@
     const nextFrame = () => { frame(); video.requestVideoFrameCallback(nextFrame); };
     video.requestVideoFrameCallback(nextFrame);
   } else { video.addEventListener('timeupdate', frame); }
+
+  // Keep the viewer's screen on after a tap. Wake Lock needs a secure context; plain-HTTP LAN
+  // pages fall back to a tiny muted looping clip, which phones treat as active playback.
+  function engageAwake() {
+    if (keepAwake || mode === 'stopped' || unavailable) return;
+    keepAwake = true; acquireAwake(); awake.setAttribute('aria-pressed', 'true');
+  }
+  function acquireAwake() {
+    if (!keepAwake || document.hidden) return;
+    if (!navigator.wakeLock?.request) { playAwakeVideo(); return; }
+    if (wakeLock || wakeLockPending) return;
+    wakeLockPending = true;
+    navigator.wakeLock.request('screen').then(lock => {
+      wakeLockPending = false;
+      if (!keepAwake) { lock.release().catch(() => {}); return; }
+      wakeLock = lock;
+      lock.addEventListener?.('release', () => { if (wakeLock === lock) wakeLock = undefined; });
+    }).catch(() => { wakeLockPending = false; playAwakeVideo(); });
+  }
+  function playAwakeVideo() {
+    if (!keepAwake || !globalThis.SetbeamKeepAwakeVideo) return;
+    if (!awakeVideo.src) { awakeVideo.muted = true; awakeVideo.src = globalThis.SetbeamKeepAwakeVideo; }
+    awakeVideo.play()?.catch?.(() => {});
+  }
+  function releaseAwake() {
+    keepAwake = false;
+    const lock = wakeLock; wakeLock = undefined; lock?.release().catch(() => {});
+    awakeVideo.pause(); awake.setAttribute('aria-pressed', 'false');
+  }
+
   sound.addEventListener('click', () => {
     const enabled = sound.getAttribute('aria-pressed') !== 'true';
     sound.setAttribute('aria-pressed', String(enabled)); sound.textContent = enabled ? 'Mute sound' : 'Enable sound';
-    update(); play();
+    engageAwake(); update(); play();
   });
-  retry.addEventListener('click', () => { if (unavailable) { unavailable = false; config = undefined; poll(); } else { play(); } });
+  retry.addEventListener('click', () => { engageAwake(); if (unavailable) { unavailable = false; config = undefined; poll(); } else { play(); } });
+  awake.addEventListener('click', () => { if (keepAwake) releaseAwake(); else engageAwake(); });
+  document.getElementById('picture').addEventListener('click', engageAwake);
   document.getElementById('fullscreen').addEventListener('click', () => {
+    engageAwake();
     const picture = document.getElementById('picture');
     if (picture.requestFullscreen) picture.requestFullscreen().catch(() => {});
     else if (video.webkitEnterFullscreen) video.webkitEnterFullscreen();
@@ -72,6 +119,41 @@
       return {ok: response.ok, status: response.status, body};
     } finally { clearTimeout(timeout); }
   }
+  function heartbeat() {
+    heartbeatAt = Date.now(); reportedPlaying = playing();
+    return request('heartbeat', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({id, mobile: /iPhone|iPad|Android/.test(navigator.userAgent), playing: reportedPlaying, revision})}).catch(() => {});
+  }
+  async function applyState(state) {
+    const previous = mode; mode = state.state;
+    if (mode === 'live' && revision >= 0 && revision !== state.revision) {
+      const refreshed = await request('config.json');
+      if (!refreshed.ok) throw new Error('Connection unavailable');
+      config = refreshed.body;
+    }
+    document.getElementById('title').textContent = state.title; document.title = state.title + ' · Setbeam';
+    document.getElementById('sample').hidden = !state.sample;
+    document.getElementById('network-hint').textContent = state.wifiSSID ? 'Stay on ' + state.wifiSSID + '. Your picture reconnects automatically.' : 'Stay on the same network as the operator. Your picture reconnects automatically.';
+    if (mode === 'live' && (previous !== 'live' || revision !== state.revision || !reader || stalled())) startReader();
+    else if (mode !== 'live') closeReader();
+    revision = state.revision;
+    update();
+  }
+  function openEvents() {
+    eventsAt = Date.now(); eventsHeard = false;
+    const source = events = new EventSource('events?id=' + encodeURIComponent(id));
+    source.onmessage = message => {
+      if (source !== events) return;
+      eventsAt = Date.now(); eventsHeard = true;
+      let state; try { state = JSON.parse(message.data); } catch { return; }
+      applying = applying.then(() => applyState(state)).catch(() => {
+        if (mode !== 'holding' && mode !== 'stopped') mode = 'reconnecting';
+        dropEvents(); update();
+      });
+    };
+    // A failed or refused stream, including a replaced viewing link, falls back to polling at once.
+    source.onerror = () => { if (source === events) { dropEvents(); poll(); } };
+  }
+  function dropEvents() { events?.close(); events = undefined; eventsRetryAt = Date.now() + 15000; }
   async function poll() {
     if (pollRunning) return; pollRunning = true;
     try {
@@ -84,28 +166,24 @@
       const response = await request('state.json');
       if (response.status === 404) { mode = 'stopped'; closeReader(); update(); return; }
       if (!response.ok) throw new Error('Connection unavailable');
-      const state = response.body; const previous = mode; mode = state.state;
-      if (mode === 'live' && revision >= 0 && revision !== state.revision) {
-        const refreshed = await request('config.json');
-        if (!refreshed.ok) throw new Error('Connection unavailable');
-        config = refreshed.body;
-      }
-      document.getElementById('title').textContent = state.title; document.title = state.title + ' · Setbeam';
-      document.getElementById('sample').hidden = !state.sample;
-      document.getElementById('network-hint').textContent = state.wifiSSID ? 'Stay on ' + state.wifiSSID + '. Your picture reconnects automatically.' : 'Stay on the same network as the operator. Your picture reconnects automatically.';
-      const stalled = !document.hidden && !playBlocked && Date.now() - (lastFrameAt || readerStartedAt) > 10000;
-      if (mode === 'live' && (previous !== 'live' || revision !== state.revision || !reader || stalled)) startReader();
-      else if (mode !== 'live') closeReader();
-      revision = state.revision;
-      update();
-      await request('heartbeat', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({id, mobile: /iPhone|iPad|Android/.test(navigator.userAgent), playing: playing(), revision})}).catch(() => {});
+      await applyState(response.body);
+      await heartbeat();
+      if (!events && typeof EventSource === 'function' && Date.now() >= eventsRetryAt) openEvents();
     } catch { if (mode !== 'holding' && mode !== 'stopped') mode = 'reconnecting'; update(); }
     finally { pollRunning = false; }
   }
   window.addEventListener('online', poll);
   window.addEventListener('pagehide', closeReader);
   window.addEventListener('pageshow', poll);
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) poll(); });
-  setInterval(() => { update(); poll(); }, 1500);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) { acquireAwake(); poll(); } });
+  setInterval(() => {
+    update();
+    if (events && !streaming()) dropEvents();
+    if (!events) { poll(); return; }
+    // While state is pushed, the periodic tick keeps the stale-peer watchdog and heartbeat running.
+    if (mode === 'live' && config && (!reader || stalled())) startReader();
+    // Every other tick, about 3 s. A strict 3000 ms threshold slips to 4.5 s with ordinary timer jitter.
+    if (Date.now() - heartbeatAt >= 2500) heartbeat();
+  }, 1500);
   poll();
 })();

@@ -15,7 +15,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Helpers" "$APP/Contents/Resources/
 cp "$BIN/Setbeam" "$APP/Contents/MacOS/Setbeam"
 cp Vendor/bin/ffmpeg Vendor/bin/ffprobe Vendor/bin/mediamtx Vendor/bin/setbeam-preview "$APP/Contents/Helpers/"
 cp "$BIN/SetbeamSupervisor" "$APP/Contents/Helpers/setbeam-supervisor"
-cp Sources/SetbeamApp/Resources/reader.js Sources/SetbeamApp/Resources/viewer.html Sources/SetbeamApp/Resources/viewer.css Sources/SetbeamApp/Resources/viewer.js "$APP/Contents/Resources/"
+cp Sources/SetbeamApp/Resources/reader.js Sources/SetbeamApp/Resources/viewer.html Sources/SetbeamApp/Resources/viewer.css Sources/SetbeamApp/Resources/viewer.js Sources/SetbeamApp/Resources/keepawake.js "$APP/Contents/Resources/"
 cp Fixtures/Demo.mp4 Fixtures/Hold.mp4 "$APP/Contents/Resources/Fixtures/"
 cp Fixtures/Compatibility-*.mp4 Fixtures/compatibility-notes.txt "$APP/Contents/Resources/Fixtures/"
 cp Vendor/licenses/* "$APP/Contents/Resources/Licenses/"
