@@ -56,3 +56,16 @@ The source checks, isolated QA, and packaging do not add physical hardware compa
 ## Rebase onto the screen source
 
 While packaging, PR #3 merged as `8979d42`, introducing This Mac's screen and taking Build 13. The viewer change was rebased onto it and moved to Build 14. Only the status header and appended architecture notes conflicted. Both product changes and the existing screen-source evidence were preserved; no screen-capture behavior was changed by this PR. The combined build receives fresh automated and packaged verification below. Earlier 90-test and browser results above describe the pre-rebase candidate.
+
+## Final Build 14 evidence
+
+The combined `scripts/check.sh` run against Build 14's packaged helpers and fixtures passed 96 Swift tests, all 18 final viewer checks, the timestamped native bridge/file/RTSP checks, and every sample/RTSP/RTMP, Hold, credential, recovery, source-switching, and media-format probe. The total is 66 core and 30 app tests, including the inherited Mac screen-source tests. No thresholds or runtime behavior were changed to obtain these results.
+
+The rebased viewer resources and tests are byte-identical to the final Sol-approved candidate. The final packaged app was separately launched with isolated preferences. Actual native Chrome and Chromium sample playback passed; M toggled sound, F and double-click entered full screen, and Sample/status remained present during Hold. Resume restored the same page. Stop retained fresh private native monitoring, and refreshing the old URL displayed the generic 404. Normal Quit removed all 11 recorded app/helper processes. Screen capture and physical phones were not newly operated.
+
+Strict recursive signatures, system-only linked libraries, the frozen source/test snapshot, and exact matches for all six bundled viewer assets passed. The finished app is `dist/Setbeam-0.2.0-build14-macOS-arm64/Setbeam.app`.
+
+- Final executable SHA256: `571a679d0fb989d40f4cac60888bf6e155d5ad11e59e8caca29414edd3c3bdad`.
+- Final source/test manifest SHA256: `e2655f359bd851bbd283d4ca4ecc43728a4da5cd73e809b9cfd46cba92360382`.
+
+The pre-rebase Build 13 candidate was moved out of `dist` and is not the delivered build.
