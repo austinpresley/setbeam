@@ -41,3 +41,6 @@ __pycache__/
 /design/
 /scratch/
 /local-artifacts/
+
+# Local agent worktrees
+/.claude/worktrees/

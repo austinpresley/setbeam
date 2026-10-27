@@ -132,6 +132,7 @@ struct AdvancedView: View {
     @State private var ssid: String
     @State private var password: String
     @State private var audio: String
+    @State private var quality: AudienceQuality
     @State private var remember = true
     @State private var showStream = false
     @State private var validation: String?
@@ -141,6 +142,7 @@ struct AdvancedView: View {
         _title = State(initialValue: model.title); _sourceWiFi = State(initialValue: model.setup?.sourceWiFi ?? "")
         _network = State(initialValue: model.networkChoice); _ssid = State(initialValue: model.wifiSSID)
         _password = State(initialValue: model.wifiPassword); _audio = State(initialValue: model.setup?.audioID ?? "")
+        _quality = State(initialValue: model.audienceQuality)
         _showStream = State(initialValue: model.setup?.kind == .network)
     }
     var body: some View {
@@ -185,9 +187,15 @@ struct AdvancedView: View {
                         TextField("Wi-Fi name", text: $ssid, prompt: Text("Optional"))
                         SecureField("Wi-Fi password", text: $password)
                         Text("Wi-Fi details create a join code. Changing the viewer network stops sharing and keeps local monitoring running.").font(.caption).foregroundStyle(.secondary)
+                        Picker("Viewer picture", selection: $quality) {
+                            ForEach(AudienceQuality.allCases, id: \.self) { Text($0.title).tag($0) }
+                        }
+                        Text("Each viewer receives its own copy. Choose a lighter picture for many phones on one Wi-Fi network. Your local monitor is unaffected; open viewers reconnect.").font(.caption).foregroundStyle(.secondary)
                     }.id(AdvancedSection.network)
                     Section("Diagnostics") {
                         Button(model.diagnosticCopied ? "Diagnostics copied" : "Copy diagnostics") { model.diagnostics() }
+                        Button("Show session log") { model.revealSessionLog() }
+                        Text("The session log records connection, recovery, and sharing events without addresses, keys, or viewing links.").font(.caption).foregroundStyle(.secondary)
                         Text("Device detection does not establish transmitter compatibility. Physical connection tests are recorded separately.").font(.caption).foregroundStyle(.secondary)
                     }.id(AdvancedSection.diagnostics)
                 }.formStyle(.grouped).frame(height: 430)
@@ -210,6 +218,7 @@ struct AdvancedView: View {
     }
     private func save() {
         model.title = title.isEmpty ? "My feed" : title
+        model.setAudienceQuality(quality)
         if network != model.networkChoice || ssid != model.wifiSSID || password != model.wifiPassword { model.saveViewingSettings(network: network, ssid: ssid, password: password) }
         if var setup = model.setup, setup.kind == .capture, setup.audioID != (audio.isEmpty ? nil : audio) {
             setup.audioID = audio.isEmpty ? nil : audio; setup.name = name
