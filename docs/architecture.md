@@ -8,7 +8,8 @@ not the controller for the new app.
 
 - `SetbeamCore` owns source descriptions, session transitions, address validation,
   process ownership, and the media runtime. Its interface separates local monitoring
-  from audience sharing. Tests cross that same interface.
+  from audience sharing. MediaRuntime is the authoritative owner of session intent
+  and observed media health. Tests cross that same interface.
 - `SetbeamApp` owns SwiftUI/AppKit presentation, saved settings, QR generation,
   local web hosting, native preview presentation, and native window lifetime. UI code observes the session
   state instead of constructing media commands.
@@ -32,12 +33,44 @@ processes. Local monitoring has a private playable output. Audience sharing
 uses a separate output so Hold and Stop can change audience media without
 closing the source input.
 
-The initial browser transport is WebRTC. The Mac decodes the private local RTSP relay once into JPEG frames at 24 fps and presents the same native image in its main and floating windows. A separately decoded PCM feed supplies optional local sound through AVAudioEngine. Audio-device initialization stays off the UI thread and has an operator-visible timeout. Guest permission grants read access
+The browser transport is WebRTC. External inputs normalize to H.264 Baseline
+without B frames and optional 48 kHz stereo Opus. Encoding preserves source
+dimensions and cadence, rounding odd dimensions to even values for 4:2:0.
+Only the verified bundled sample copies its video. Observed media metadata must
+satisfy this contract before an output is considered ready.
+
+The separate bundled `setbeam-preview` helper links the pinned FFmpeg libraries
+and decodes the private local RTSP relay once. A versioned, bounded pipe carries
+NV12 video and stereo Float32 PCM with source presentation timestamps. The native
+renderer presents shared pixel-buffer images in the main and floating windows;
+there is no JPEG encode/decode or fixed 24 fps/1280-pixel main-preview limit.
+Audio and video use one AVSampleBufferRenderSynchronizer clock. Bounded queues,
+stale-frame dropping, timestamp discontinuity handling, and a decoder watchdog
+keep playback current. Audio-device initialization stays off the UI thread and
+has an operator-visible timeout. The main preview preserves source cadence;
+the silent outgoing thumbnail explicitly requests its smaller size and rate.
+Guest permission grants read access
 only to the audience output. Control and publishing credentials are private.
 
 Each run has a private directory and explicit process ownership. Packaged helpers run in owned process groups through a bundled supervisor that watches the app and terminates its group after parent exit, including Force Quit. The controller also cleans the group after an unexpected supervisor exit. Runtime
 state stays outside the signed app bundle and repository. Dependency versions,
 source provenance, and build flags are recorded with the bundle tooling.
+
+## Session ownership
+
+MediaRuntime owns sharing, Hold, monitoring, and media health. Its own watchdog
+reconciles failed or stalled processes every 500 ms independently of the UI.
+Lifecycle commands and recovery share a serialized operation queue, including
+across actor suspension points. Shutdown cancels the watchdog and invalidates
+its lifetime before removing owned processes.
+
+`snapshot()` is a read of cached observations and has no repair or probing side
+effects. `updates()` publishes snapshots through a bounded AsyncStream.
+SessionModel observes this state and keeps presentation concerns and saved setup
+metadata; it does not maintain a second mutable sharing/Hold state machine.
+The native decoder and ViewerGateway supervise their own recovery too. The
+remaining UI timer refreshes discovery, network selection, and viewer activity.
+It is not required to keep media processes or the viewer listener alive.
 
 ## Evidence
 
@@ -64,11 +97,30 @@ AccsoonReceiver owns one UDP/TCP RTMS4 session for the selected unit. Bounded fr
 
 RuntimeSnapshot includes an observational ConnectionStage. Server readiness, discovery of the selected UID, a current receiver's connection acknowledgement, and fresh local relay video determine its stage. SessionModel keeps that stage visible until native decoded playback is also fresh. Generic inputs omit transmitter-only steps. Stage presentation does not start extra receivers or change retry timing, and old receiver counters cannot advance a disconnected session.
 
-Incoming RTMP remains a generic authenticated adapter in Advanced. Its listener uses the source Wi-Fi interface while viewer sharing can continue through Ethernet. The input credential can be restored independently of private audience session credentials. The SEE bridge is unverified; direct Master 4K reception is the physically tested route. No vendor binary is bundled.
+Incoming RTMP remains a generic authenticated adapter in Advanced. MediaMTX keeps
+a stable, private loopback RTMP listener for the session. IncomingStreamRelay
+binds the selected source interface and forwards a bounded number of TCP streams
+to that listener, retaining source-subnet restrictions. Authentication remains
+inside MediaMTX. An unavailable or occupied input binding therefore cannot
+terminate the server used by local monitoring and audience viewing. Viewer
+sharing can continue through Ethernet. The input credential can be restored
+independently of private audience session credentials. The SEE bridge is
+unverified; direct Master 4K reception is the physically tested route. No vendor
+binary is bundled.
 
 ## Session safeguards
 
-Changing inputs inside an existing session keeps the viewer gateway, numeric viewing address, server ports, and viewing credential. The app publishes Hold before replacing the input. MediaRuntime stops the outgoing relay, retains Hold while restarting its server with the new source configuration, and starts an independent holding publisher even if the new input is absent. The one received source is replaced rather than duplicated. A fresh replacement picture never resumes sharing automatically. Returning to the previous input uses its in-memory identity and private address, with the same Hold requirement. Relaunch still restores privately.
+Changing inputs inside an existing session keeps the viewer gateway, numeric
+viewing address, server process, ports, viewing credential, and an already-running
+holding publisher. MediaRuntime establishes actual compatible holding output
+before touching the source. It validates a replacement incoming binding before
+closing the previous input, updates only source configuration and sender
+authorization, and replaces the one received source. An offline replacement
+leaves the holding publisher running; a fresh replacement never resumes sharing
+automatically. A failed preflight retains the previous source, and the UI restores
+its identity and local decoder. Returning to the previous input uses its in-memory
+identity and private address, with the same Hold requirement. Relaunch restores
+privately. In-flight UI continuations check shutdown before reopening playback.
 
 The small audience preview decodes the actual `live` output through an authorized loopback publisher descriptor at 384 pixels and 8 fps. It is silent, supervised, and independent of the shared local decoder. It never contacts the transmitter and does not count as an audience browser. Frame freshness and outgoing publisher readiness hide stale outgoing pictures. Stop Sharing and Quit stop this decoder.
 

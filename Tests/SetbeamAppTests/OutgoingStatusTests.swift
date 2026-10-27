@@ -3,13 +3,14 @@ import SetbeamCore
 @testable import SetbeamApp
 
 final class OutgoingStatusTests: XCTestCase {
-    @MainActor private func sharingModel() throws -> SessionModel {
-        let model = SessionModel()
-        model.state.beginMonitoring()
-        model.state.updateSource(available: true)
-        try model.state.startSharing()
-        model.state.updateAudience(available: true)
-        return model
+    @MainActor private func sharingModel(holding: Bool = false, sourceAvailable: Bool = true, audienceAvailable: Bool = true) throws -> SessionModel {
+        var state = SessionState()
+        state.beginMonitoring()
+        state.updateSource(available: sourceAvailable)
+        try state.startSharing()
+        try state.setHold(holding)
+        state.updateAudience(available: audienceAvailable)
+        return SessionModel(initialState: state)
     }
 
     @MainActor func testHealthyOutputDoesNotReportReconnectingWhileThumbnailOpens() throws {
@@ -19,16 +20,13 @@ final class OutgoingStatusTests: XCTestCase {
     }
 
     @MainActor func testCachedThumbnailDoesNotHideMissingHoldingOutput() throws {
-        let model = try sharingModel()
-        try model.state.setHold(true)
-        model.state.updateAudience(available: false)
+        let model = try sharingModel(holding: true, audienceAvailable: false)
         model.audiencePreviewPlaying = true
         XCTAssertTrue(model.outgoingNeedsAttention, "A cached thumbnail cannot establish a healthy holding output.")
     }
 
     @MainActor func testUnplannedLiveOutputLossStillNeedsAttention() throws {
-        let model = try sharingModel()
-        model.state.updateAudience(available: false)
+        let model = try sharingModel(audienceAvailable: false)
         model.audiencePreviewPlaying = true
         XCTAssertTrue(model.outgoingNeedsAttention)
     }
@@ -39,9 +37,7 @@ final class OutgoingStatusTests: XCTestCase {
     }
 
     @MainActor func testHealthyHoldingOutputDoesNotDependOnTheSourcePicture() throws {
-        let model = try sharingModel()
-        try model.state.setHold(true)
-        model.state.updateSource(available: false)
+        let model = try sharingModel(holding: true, sourceAvailable: false)
         model.audiencePreviewPlaying = false
         XCTAssertFalse(model.outgoingNeedsAttention)
         XCTAssertEqual(model.sharingTitle, "On hold")

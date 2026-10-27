@@ -59,6 +59,25 @@ public struct NetworkAddress: Hashable, Identifiable, Sendable {
         return (bsd, false)
     }
 
+    static func subnet(for address: String) -> String {
+        // Restrict to the selected interface's actual subnet, rather than guessing a /24.
+        var interfaces: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&interfaces) == 0 else { return address + "/32" }
+        defer { freeifaddrs(interfaces) }
+        var current = interfaces
+        while let item = current {
+            defer { current = item.pointee.ifa_next }
+            guard let raw = item.pointee.ifa_addr, raw.pointee.sa_family == UInt8(AF_INET), let mask = item.pointee.ifa_netmask else { continue }
+            let value = raw.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee.sin_addr.s_addr }
+            guard value == inet_addr(address) else { continue }
+            let bits = mask.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { UInt32(bigEndian: $0.pointee.sin_addr.s_addr) }
+            let network = UInt32(bigEndian: value) & bits
+            let ip = [24, 16, 8, 0].map { String((network >> $0) & 255) }.joined(separator: ".")
+            return "\(ip)/\(bits.nonzeroBitCount)"
+        }
+        return address + "/32"
+    }
+
     public static func freeTCPPort() throws -> UInt16 {
         let fd = socket(AF_INET, SOCK_STREAM, 0)
         guard fd >= 0 else { throw SetbeamError.unavailable("Could not reserve a local media port.") }

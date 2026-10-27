@@ -8,9 +8,11 @@ The application bundles these separate helper programs and assets:
 | --- | --- | --- | --- |
 | MediaMTX and reader.js | 1.21.2 | MIT | https://github.com/bluenviron/mediamtx/tree/v1.21.2 |
 | FFmpeg | 9.0.2 | LGPL 2.1 or later, built with GPL and nonfree components disabled | https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz |
-| Opus, statically linked into FFmpeg | 1.6.1 | BSD 3-Clause | https://downloads.xiph.org/releases/opus/opus-1.6.1.tar.gz |
+| Opus, statically linked into FFmpeg and the preview helper | 1.6.1 | BSD 3-Clause | https://downloads.xiph.org/releases/opus/opus-1.6.1.tar.gz |
 
-See `Setbeam.app/Contents/Resources/Licenses` for the complete notices, pinned versions and hashes, FFmpeg configuration, and runtime build script. Matching unmodified FFmpeg and Opus sources are included in its `Sources` subdirectory. The FFmpeg source signature and official public verification key are included too. The Swift app communicates with FFmpeg as a separate process.
+See `Setbeam.app/Contents/Resources/Licenses` for the complete notices, pinned versions and hashes, FFmpeg configuration, and runtime build script. Matching unmodified FFmpeg and Opus sources are included in its `Sources` subdirectory. The FFmpeg source signature and official public verification key are included too. The Swift app communicates with FFmpeg and `setbeam-preview` as separate supervised processes.
+
+`setbeam-preview` is a separate executable linked with the pinned LGPL FFmpeg libraries and BSD Opus library. Its complete bridge source and `build-preview-bridge.sh` are bundled with the runtime source materials so the helper can be rebuilt and relinked with modified compatible libraries. The Swift app does not link FFmpeg libraries. Rebuild the runtime first, then run `scripts/build-preview-bridge.sh`; replace and re-sign the preview helper in a local app copy as with the other helpers.
 
 To rebuild the runtime, use this repository's `scripts/build-runtime.sh`. Source archives from the bundle can be copied into `Vendor/cache/` to reuse them. The build script downloads the pinned MediaMTX archive and verifies all archive hashes. Replace the matching helpers in a local copy of the app and re-sign that copy for local use.
 

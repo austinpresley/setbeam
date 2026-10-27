@@ -5,8 +5,11 @@ import SetbeamCore
 struct MainView: View {
     @ObservedObject var model: SessionModel
     @State private var popover: MonitorPopover?
+    @State private var showingJoinCodes = false
+    @StateObject private var windowPresentation = MainWindowPresentation()
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private enum MonitorPopover { case source, sound, sharing, invite }
+    private enum MonitorPopover { case source, sound, sharing }
     private var outgoingNeedsAttention: Bool {
         model.outgoingNeedsAttention
     }
@@ -17,17 +20,23 @@ struct MainView: View {
     var body: some View {
         VStack(spacing: 0) {
             GeometryReader { geometry in
-                let width = min(geometry.size.width, geometry.size.height * 16 / 9)
-                picture
-                    .frame(width: width, height: width * 9 / 16)
-                    .frame(width: geometry.size.width, height: geometry.size.height)
+                let extraWidth = showingJoinCodes ? MonitorJoinCodesPanel.extraWidth : 0
+                let width = min(max(0, geometry.size.width - extraWidth), geometry.size.height * 16 / 9)
+                HStack(spacing: MonitorJoinCodesPanel.spacing) {
+                    picture.frame(width: width, height: width * 9 / 16)
+                    if showingJoinCodes {
+                        MonitorJoinCodesPanel(model: model) { showSheet(.viewingWiFi) }
+                            .frame(width: MonitorJoinCodesPanel.width, height: width * 9 / 16)
+                    }
+                }.frame(width: geometry.size.width, height: geometry.size.height)
             }.padding(.horizontal, 16).padding(.top, 8)
             feedback
             audienceBar
         }
-        .frame(minWidth: 640, idealWidth: 900, minHeight: 420)
+        .frame(minWidth: showingJoinCodes ? 640 + MonitorJoinCodesPanel.extraWidth : 640,
+            idealWidth: showingJoinCodes ? 900 + MonitorJoinCodesPanel.extraWidth : 900, minHeight: 420)
         .background(Color(nsColor: .windowBackgroundColor))
-        .background(WindowPersistence())
+        .background(WindowPersistence(presentation: windowPresentation))
         .toolbar {
             ToolbarItem(placement: .navigation) { sourceButton }
             ToolbarItem(placement: .principal) { Spacer() }
@@ -50,7 +59,7 @@ struct MainView: View {
             case .advanced: AdvancedView(model: model)
             case .incoming: IncomingSetupView(model: model)
             case .join: JoinCodesView(model: model)
-            case .viewingWiFi: ViewingWiFiView(model: model)
+            case .viewingWiFi: ViewingWiFiView(model: model, returnsToJoinCodes: !showingJoinCodes)
             case .viewers: ViewerStatusView(model: model)
             case .setupCheck: SetupCheckView(model: model)
             case .rename: SessionNameView(model: model)
@@ -58,9 +67,6 @@ struct MainView: View {
             }
         }
         .onChange(of: model.sheet) { _, sheet in if sheet != nil { popover = nil } }
-        .onChange(of: model.state.sharing) { _, sharing in
-            if !sharing && popover == .invite { popover = nil }
-        }
         .onAppear { model.launch() }
     }
 
@@ -162,13 +168,15 @@ struct MainView: View {
             }
             Spacer(minLength: 12)
             if model.busy || model.outgoingIsChanging { ProgressView().controlSize(.mini).accessibilityLabel("Updating session") }
+            if model.state.sharing || showingJoinCodes {
+                Button(action: toggleJoinCodes) {
+                    Label(showingJoinCodes ? "Hide QR codes" : "Show QR codes", systemImage: "qrcode")
+                }.buttonStyle(.bordered).controlSize(.regular)
+                    .help(showingJoinCodes ? "Hide Wi-Fi and viewing codes" : "Show Wi-Fi and viewing codes beside the picture")
+                    .accessibilityIdentifier("joinCodesToggle")
+            }
             if model.state.sharing {
                 HStack(spacing: 10) {
-                    Button { togglePopover(.invite) } label: { Image(systemName: "qrcode").frame(width: 24, height: 22) }
-                        .help("Invite viewers").accessibilityLabel("Invite viewers")
-                        .popover(isPresented: presentation(.invite), arrowEdge: .top) {
-                            MonitorInvitePopover(model: model, show: showSheet)
-                        }
                     if model.state.holding { holdButton.tint(.orange).buttonStyle(.borderedProminent) }
                     else { holdButton.buttonStyle(.bordered) }
                     Button { model.stopSharing() } label: { Image(systemName: "stop.fill").frame(width: 24, height: 22) }
@@ -222,16 +230,28 @@ struct MainView: View {
     }
     private func togglePopover(_ item: MonitorPopover) { popover = popover == item ? nil : item }
     private func showSheet(_ sheet: AppSheet) { popover = nil; model.sheet = sheet }
+    private func toggleJoinCodes() {
+        let showing = !showingJoinCodes
+        if showing { model.loadPrivateSettings() }
+        popover = nil
+        windowPresentation.resizeForJoinCodes(showing: showing, animate: !reduceMotion)
+        showingJoinCodes = showing
+    }
 }
 
 private struct WindowPersistence: NSViewRepresentable {
-    func makeNSView(context: Context) -> NSView { MainWindowAnchor() }
+    let presentation: MainWindowPresentation
+    func makeNSView(context: Context) -> NSView { MainWindowAnchor(presentation: presentation) }
     func updateNSView(_ nsView: NSView, context: Context) {}
     private final class MainWindowAnchor: NSView {
+        private let presentation: MainWindowPresentation
         private var configured = false
+        init(presentation: MainWindowPresentation) { self.presentation = presentation; super.init(frame: .zero) }
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
             guard let window, !configured else { return }; configured = true
+            presentation.window = window
             window.titleVisibility = .hidden
             window.toolbarStyle = .unified
             let name = CommandLine.arguments.contains("--integration-demo") ? "SetbeamIntegrationMain" : "SetbeamMain"
@@ -239,6 +259,28 @@ private struct WindowPersistence: NSViewRepresentable {
             window.setFrameAutosaveName(name)
             if !NSScreen.screens.contains(where: { $0.visibleFrame.intersects(window.frame) }) { window.center() }
         }
+    }
+}
+
+private final class MainWindowPresentation: ObservableObject {
+    weak var window: NSWindow?
+    private var addedWidth: CGFloat = 0
+
+    func resizeForJoinCodes(showing: Bool, animate: Bool) {
+        guard let window, !window.styleMask.contains(.fullScreen) else { return }
+        var frame = window.frame
+        if showing {
+            let screen = window.screen?.visibleFrame ?? frame
+            let width = min(frame.width + MonitorJoinCodesPanel.extraWidth, screen.width)
+            addedWidth = max(0, width - frame.width)
+            frame.size.width = width
+            frame.origin.x = max(screen.minX, min(frame.minX, screen.maxX - width))
+        } else {
+            frame.size.width = max(640, frame.width - addedWidth)
+            addedWidth = 0
+        }
+        // Apply after SwiftUI updates the content's minimum width for the new layout.
+        DispatchQueue.main.async { [weak window] in window?.setFrame(frame, display: true, animate: animate) }
     }
 }
 

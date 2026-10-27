@@ -21,6 +21,9 @@ import SetbeamCore
             if values.contains("--recovery-test") {
                 try await testReconnects(tools: tools, fixtures: fixtures, output: output); return
             }
+            if values.contains("--format-test") {
+                try await testMediaFormats(tools: tools, fixtures: fixtures, output: output); return
+            }
             if values.contains("--accsoon-test") {
                 try await testAccsoon(tools: tools, fixtures: fixtures, output: output); return
             }
@@ -132,9 +135,9 @@ import SetbeamCore
                 let beforeServerFailure = await runtime.processIDs()
                 guard let serverPID = beforeServerFailure.first else { throw SetbeamError.runtime("No media server to exercise failure reporting.") }
                 kill(serverPID, SIGKILL)
-                try await Task.sleep(nanoseconds: 300_000_000)
-                let failedServer = await runtime.snapshot()
-                guard !failedServer.sourceAvailable else { throw SetbeamError.runtime("A failed server was incorrectly reported healthy.") }
+                // The engine owns its watchdog; observing status no longer initiates repair.
+                // Give it time to discover the dead server without any caller requests.
+                try await Task.sleep(nanoseconds: 3_000_000_000)
                 var serverRecovered = false
                 for _ in 0..<100 {
                     let snapshot = await runtime.snapshot()
@@ -158,6 +161,7 @@ import SetbeamCore
     static func testSafeSwitching(tools: URL, fixtures: URL, output: URL) async throws {
         let runtime = MediaRuntime(paths: RuntimePaths(tools: tools, fixtures: fixtures))
         var sender: ManagedChild?
+        var continuousReader: ManagedChild?
         func waitFor(_ predicate: (RuntimeSnapshot) -> Bool) async throws -> RuntimeSnapshot {
             let deadline = Date().addingTimeInterval(25)
             while Date() < deadline {
@@ -165,13 +169,14 @@ import SetbeamCore
                 if predicate(snapshot) { return snapshot }
                 try await Task.sleep(nanoseconds: 200_000_000)
             }
-            throw SetbeamError.runtime("Safe source-change media did not reach the expected state.")
+            throw SetbeamError.runtime("Safe source-change media did not reach the expected state. \(await runtime.diagnosticStatus())")
         }
         do {
             _ = try await runtime.prepare(source: .sample, viewerAddress: "127.0.0.1")
             _ = try await waitFor { $0.sourceAvailable }
             _ = try await runtime.startSharing()
             let original = try await waitFor { $0.sourceAvailable && $0.audienceAvailable }
+            guard let serverPID = await runtime.processIDs().first else { throw SetbeamError.runtime("Missing source-change server.") }
             let localURL = await runtime.localRTSP()
             guard original.sourceHasAudio && original.audienceHasAudio else { throw SetbeamError.runtime("Sample audio track status was not observed.") }
             do {
@@ -185,8 +190,23 @@ import SetbeamCore
             let offline = try await waitFor { !$0.sourceAvailable && $0.audienceAvailable }
             guard offline.guestToken == original.guestToken, offline.audience == original.audience,
                   await runtime.localRTSP() == localURL,
+                  await runtime.processIDs().first == serverPID,
                   await runtime.diagnosticStatus()["holding"] as? Bool == true else {
                 throw SetbeamError.runtime("An offline replacement changed the viewing identity or escaped Hold.")
+            }
+            guard let holdingPID = await runtime.processIDs().last else { throw SetbeamError.runtime("Missing holding publisher.") }
+            let holdingRevision = offline.audienceRevision
+            continuousReader = try ManagedChild(name: "Continuous audience decoder", executable: tools.appendingPathComponent("ffmpeg"),
+                arguments: ["-nostdin", "-hide_banner", "-loglevel", "error", "-progress", "pipe:1", "-stats_period", "0.25",
+                    "-rtsp_transport", "tcp", "-i", await runtime.localRTSP("live"), "-map", "0:v:0", "-an", "-c:v", "wrapped_avframe", "-f", "null", "-"], directory: output)
+            func assertHoldingContinues() async throws {
+                let value = await runtime.snapshot(), pids = await runtime.processIDs()
+                guard pids.first == serverPID, pids.last == holdingPID, value.audienceRevision == holdingRevision,
+                      value.guestToken == original.guestToken, value.audienceAvailable,
+                      continuousReader?.isRunning == true,
+                      let frame = continuousReader?.lastVideoFrameAt, Date().timeIntervalSince(frame) < 3 else {
+                    throw SetbeamError.runtime("An input change interrupted the existing server, holding publisher, or continuous audience decoder.")
+                }
             }
             let offlineAudio = try await audioPeak(runtime: runtime, tools: tools, directory: output, name: "switch-offline-hold")
             guard offlineAudio < 8 else { throw SetbeamError.runtime("Offline replacement leaked source audio.") }
@@ -195,6 +215,7 @@ import SetbeamCore
                 arguments: ["-nostdin", "-hide_banner", "-loglevel", "error", "-re", "-stream_loop", "-1", "-i", fixtures.appendingPathComponent("Demo.mp4").path,
                     "-c:v", "copy", "-an", "-f", "flv", destination.server + "/" + destination.streamKey], directory: output)
             let silent = try await waitFor { $0.sourceAvailable && $0.audienceAvailable }
+            try await assertHoldingContinues()
             guard !silent.sourceHasAudio, await runtime.diagnosticStatus()["holding"] as? Bool == true else {
                 throw SetbeamError.runtime("A fresh replacement resumed automatically or invented source audio.")
             }
@@ -203,6 +224,56 @@ import SetbeamCore
             guard try Data(contentsOf: output.appendingPathComponent("switch-private-input.jpg")) != Data(contentsOf: output.appendingPathComponent("switch-audience-hold.jpg")) else {
                 throw SetbeamError.runtime("A held replacement leaked its private source picture.")
             }
+            let occupiedPort = try NetworkAddress.freeTCPPort()
+            let occupiedSocket = socket(AF_INET, SOCK_STREAM, 0)
+            guard occupiedSocket >= 0 else { throw SetbeamError.runtime("Could not create occupied input fixture.") }
+            defer { close(occupiedSocket) }
+            var occupiedAddress = sockaddr_in()
+            occupiedAddress.sin_len = UInt8(MemoryLayout<sockaddr_in>.size); occupiedAddress.sin_family = sa_family_t(AF_INET)
+            occupiedAddress.sin_addr.s_addr = inet_addr("127.0.0.1"); occupiedAddress.sin_port = occupiedPort.bigEndian
+            let didBind = withUnsafePointer(to: &occupiedAddress) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                bind(occupiedSocket, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) == 0
+            } }
+            guard didBind, listen(occupiedSocket, 1) == 0 else { throw SetbeamError.runtime("Could not occupy input fixture port.") }
+            do {
+                _ = try await runtime.replaceSource(.incoming(port: occupiedPort, key: UUID().uuidString.replacingOccurrences(of: "-", with: "")), inputAddress: "127.0.0.1")
+                throw SetbeamError.runtime("An occupied incoming destination was accepted.")
+            } catch SetbeamError.unavailable { }
+            try await assertHoldingContinues()
+            guard await runtime.snapshot().sourceAvailable,
+                  await runtime.incomingDestination()?.streamKey == destination.streamKey else {
+                throw SetbeamError.runtime("A failed incoming binding interrupted the original private source.")
+            }
+            // Replacing an incoming key on the same listener must end the old
+            // sender's existing authorization without touching audience readers.
+            let replacementKey = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+            _ = try await runtime.replaceSource(.incoming(port: port, key: replacementKey), inputAddress: "127.0.0.1")
+            _ = try await waitFor { !$0.sourceAvailable && $0.audienceAvailable }
+            try await assertHoldingContinues()
+            let senderDeadline = Date().addingTimeInterval(5)
+            while sender?.isRunning == true && Date() < senderDeadline { try await Task.sleep(nanoseconds: 100_000_000) }
+            guard sender?.isRunning == false else { throw SetbeamError.runtime("The old incoming credential retained an active publisher.") }
+            sender?.stop(); sender = nil
+            guard let changedDestination = await runtime.incomingDestination(), changedDestination.streamKey != destination.streamKey else {
+                throw SetbeamError.runtime("The replacement incoming credential was not applied.")
+            }
+            sender = try ManagedChild(name: "Replacement credential sender", executable: tools.appendingPathComponent("ffmpeg"),
+                arguments: ["-nostdin", "-hide_banner", "-loglevel", "error", "-re", "-stream_loop", "-1", "-i", fixtures.appendingPathComponent("Demo.mp4").path,
+                    "-c:v", "copy", "-an", "-f", "flv", changedDestination.server + "/" + changedDestination.streamKey], directory: output)
+            _ = try await waitFor { $0.sourceAvailable && $0.audienceAvailable }
+            try await assertHoldingContinues()
+            sender?.stop(); sender = nil
+            let absentRTSPPort = try NetworkAddress.freeTCPPort()
+            _ = try await runtime.replaceSource(.network("rtsp://127.0.0.1:\(absentRTSPPort)/absent"))
+            _ = try await waitFor { !$0.sourceAvailable && $0.audienceAvailable }
+            try await assertHoldingContinues()
+            _ = try await runtime.replaceSource(.incoming(port: port, key: replacementKey), inputAddress: "127.0.0.1")
+            sender = try ManagedChild(name: "Returned incoming sender", executable: tools.appendingPathComponent("ffmpeg"),
+                arguments: ["-nostdin", "-hide_banner", "-loglevel", "error", "-re", "-stream_loop", "-1", "-i", fixtures.appendingPathComponent("Demo.mp4").path,
+                    "-c:v", "copy", "-an", "-f", "flv", changedDestination.server + "/" + changedDestination.streamKey], directory: output)
+            _ = try await waitFor { $0.sourceAvailable && $0.audienceAvailable }
+            try await assertHoldingContinues()
+            continuousReader?.stop(); continuousReader = nil
             try await runtime.setHold(false)
             _ = try await waitFor { $0.sourceAvailable && $0.audienceAvailable && !$0.audienceHasAudio }
             sender?.stop(); sender = nil
@@ -217,9 +288,124 @@ import SetbeamCore
             let ids = await runtime.processIDs()
             await runtime.shutdown()
             guard ids.allSatisfy({ kill($0, 0) != 0 }) else { throw SetbeamError.runtime("Source changes left owned processes running.") }
-            print("PASS: invalid source preserves live sharing; offline replacement holds real video/audio; fresh replacement stays held; return and explicit Resume preserve viewing identity")
+            print("PASS: invalid source preserves live sharing; input swaps and an occupied incoming port retain the same server and holding publisher with continuous decoded audience video; incoming key rotation disconnects the old sender")
+            print("PASS: offline RTSP/RTMP replacements hold real video/audio; fresh replacements stay held; return and explicit Resume preserve viewing identity")
             print("PASS: received/outgoing audio track status distinguishes sample audio, silent Hold, and a video-only input; owned processes exit")
-        } catch { sender?.stop(); await runtime.shutdown(); throw error }
+        } catch { continuousReader?.stop(); sender?.stop(); await runtime.shutdown(); throw error }
+    }
+
+    /// Feed incompatible encoded media into the generic adapter rather than
+    /// testing it only with another Setbeam instance's already-normalized output.
+    static func testMediaFormats(tools: URL, fixtures: URL, output: URL) async throws {
+        let runtime = MediaRuntime(paths: RuntimePaths(tools: tools, fixtures: fixtures))
+        let fixtureDirectory = output.appendingPathComponent("formats-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: fixtureDirectory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: fixtureDirectory) }
+        let port = try NetworkAddress.freeTCPPort()
+        var controlPort = try NetworkAddress.freeTCPPort()
+        while controlPort == port { controlPort = try NetworkAddress.freeTCPPort() }
+        let password = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+        let configuration: [String: Any] = ["logLevel": "warn", "api": true, "apiAddress": "127.0.0.1:\(controlPort)",
+            "rtspAddress": "127.0.0.1:\(port)", "rtspTransports": ["tcp"], "rtmp": false, "hls": false,
+            "webrtc": false, "srt": false, "moq": false,
+            "authInternalUsers": [["user": "fixture", "pass": password, "ips": ["127.0.0.1"],
+                "permissions": [["action": "publish", "path": "fixture"], ["action": "read", "path": "fixture"], ["action": "api"]]]],
+            "paths": ["fixture": ["source": "publisher", "overridePublisher": false]]]
+        let configurationURL = fixtureDirectory.appendingPathComponent("mediamtx.json")
+        try JSONSerialization.data(withJSONObject: configuration).write(to: configurationURL)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configurationURL.path)
+        let server = try ManagedChild(name: "Codec fixture server", executable: tools.appendingPathComponent("mediamtx"), arguments: [configurationURL.path], directory: fixtureDirectory)
+        var sender: ManagedChild?
+        defer { sender?.stop(); server.stop() }
+        func fixtureStatus() async throws -> [String: Any] {
+            var request = URLRequest(url: URL(string: "http://127.0.0.1:\(controlPort)/v3/paths/get/fixture")!, timeoutInterval: 2)
+            request.setValue("Basic " + Data("fixture:\(password)".utf8).base64EncodedString(), forHTTPHeaderField: "Authorization")
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard (response as? HTTPURLResponse)?.statusCode == 200,
+                  let value = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw SetbeamError.runtime("Fixture server not ready.") }
+            return value
+        }
+        func waitFor(_ predicate: (RuntimeSnapshot) -> Bool) async throws -> RuntimeSnapshot {
+            let deadline = Date().addingTimeInterval(35)
+            while Date() < deadline {
+                let value = await runtime.snapshot()
+                if predicate(value) { return value }
+                try await Task.sleep(nanoseconds: 200_000_000)
+            }
+            throw SetbeamError.runtime("Codec/format transition timed out. \(await runtime.diagnosticStatus())")
+        }
+        func verifyOutput(_ path: String, width: Int, height: Int, rate: String, audio: Bool) async throws {
+            let data = try await run(tools: tools, args: ["-v", "error", "-rtsp_transport", "tcp", "-show_streams", "-of", "json", await runtime.localRTSP(path)], directory: fixtureDirectory, executable: "ffprobe")
+            guard let value = try JSONSerialization.jsonObject(with: data) as? [String: Any], let streams = value["streams"] as? [[String: Any]],
+                  let video = streams.first(where: { $0["codec_type"] as? String == "video" }),
+                  video["codec_name"] as? String == "h264", (video["profile"] as? String ?? "").lowercased().contains("baseline"),
+                  video["has_b_frames"] as? Int == 0, ["yuv420p", "yuvj420p"].contains(video["pix_fmt"] as? String ?? ""),
+                  video["width"] as? Int == width, video["height"] as? Int == height,
+                  streams.contains(where: { $0["codec_name"] as? String == "opus" }) == audio else {
+                throw SetbeamError.runtime("The \(path) relay did not satisfy the H.264 baseline/no-B-frame/Opus contract at \(width)x\(height) \(rate). \(String(decoding: data, as: UTF8.self))")
+            }
+            // RTSP's declared rate can be inferred from the first few packets and
+            // vary between probes. Measure the decoded presentation timeline.
+            let timingData = try await run(tools: tools, args: ["-v", "error", "-rtsp_transport", "tcp", "-select_streams", "v:0",
+                "-read_intervals", "%+2", "-show_frames", "-show_entries", "frame=best_effort_timestamp_time", "-of", "json", await runtime.localRTSP(path)], directory: fixtureDirectory, executable: "ffprobe")
+            let timing = try JSONSerialization.jsonObject(with: timingData) as? [String: Any]
+            let frames = (timing?["frames"] as? [[String: Any]] ?? []).compactMap { ($0["best_effort_timestamp_time"] as? String).flatMap(Double.init) }
+            let ratio = rate.split(separator: "/").compactMap { Double($0) }, expected = ratio[0] / ratio[1]
+            guard let first = frames.first, let last = frames.last, last - first >= 1, frames.count > 1 else {
+                throw SetbeamError.runtime("Not enough decoded video presentation time for the \(path) cadence check.")
+            }
+            let intervals = zip(frames.dropFirst(), frames).map(-)
+            let measured = Double(frames.count - 1) / (last - first)
+            guard abs(measured - expected) / expected < 0.02,
+                  intervals.allSatisfy({ $0 > 0 && $0 < 1.5 / expected }) else {
+                throw SetbeamError.runtime("The \(path) relay changed decoded cadence: expected \(expected) fps, measured \(measured), largest frame interval \(intervals.max() ?? 0) seconds.")
+            }
+        }
+        do {
+            let serverDeadline = Date().addingTimeInterval(5)
+            while (try? await fixtureStatus()) == nil && Date() < serverDeadline { try await Task.sleep(nanoseconds: 100_000_000) }
+            guard server.isRunning else { throw SetbeamError.runtime("Codec fixture server failed. \(server.recentError)") }
+            let upstream = "rtsp://fixture:\(password)@127.0.0.1:\(port)/fixture"
+            _ = try await runtime.prepare(source: .network(upstream), viewerAddress: "127.0.0.1")
+            guard !(await runtime.snapshot()).sourceAvailable else { throw SetbeamError.runtime("Offline codec fixture was reported ready.") }
+            var stableServer: Int32?, stableHolding: Int32?, stableCredential: String?, stableRevision: Int?
+            let formats: [(String, String, Int, Int, String, Bool)] = [
+                ("Compatibility-HEVC.mp4", "HEVC Main with B frames", 640, 360, "30/1", false),
+                ("Compatibility-H264.mp4", "H.264 High with B frames", 960, 540, "60/1", false),
+                ("Demo.mp4", "H.264 with AAC audio", 1280, 720, "24/1", true)]
+            for (index, format) in formats.enumerated() {
+                sender = try ManagedChild(name: "Codec fixture sender", executable: tools.appendingPathComponent("ffmpeg"),
+                    arguments: ["-nostdin", "-hide_banner", "-loglevel", "error", "-re", "-stream_loop", "-1", "-i", fixtures.appendingPathComponent(format.0).path,
+                        "-c", "copy", "-f", "rtsp", "-rtsp_transport", "tcp", upstream], directory: fixtureDirectory)
+                let value = try await waitFor { $0.sourceAvailable && $0.sourceHasAudio == format.5 }
+                try await verifyOutput("local", width: format.2, height: format.3, rate: format.4, audio: format.5)
+                if index == 0 {
+                    _ = try await runtime.startSharing()
+                    _ = try await waitFor { $0.audienceAvailable }
+                    try await verifyOutput("live", width: format.2, height: format.3, rate: format.4, audio: false)
+                    try await runtime.setHold(true)
+                    let held = try await waitFor { $0.audienceAvailable }
+                    let pids = await runtime.processIDs()
+                    stableServer = pids.first; stableHolding = pids.last; stableCredential = held.guestToken; stableRevision = held.audienceRevision
+                } else {
+                    let pids = await runtime.processIDs()
+                    guard pids.first == stableServer, pids.last == stableHolding,
+                          value.guestToken == stableCredential, value.audienceRevision == stableRevision,
+                          await runtime.diagnosticStatus()["holding"] as? Bool == true else {
+                        throw SetbeamError.runtime("A source format change interrupted the independent audience Hold.")
+                    }
+                }
+                let status = try await fixtureStatus()
+                guard (status["readers"] as? [[String: Any]])?.count == 1 else {
+                    throw SetbeamError.runtime("Monitoring and sharing opened more than one upstream connection.")
+                }
+                print("PASS: \(format.1) normalizes to baseline H.264 without B frames at \(format.2)x\(format.3) \(format.4), optional audio is accurate, upstream received once")
+                sender?.stop(); sender = nil
+                _ = try await waitFor { !$0.sourceAvailable && $0.audienceAvailable }
+            }
+            await runtime.shutdown()
+            print("PASS: codec, resolution, cadence, and audio format changes recover at the same RTSP address while the server and holding publisher remain running")
+        } catch { await runtime.shutdown(); throw error }
     }
 
     /// Real media disappears and returns at the same authenticated destination.

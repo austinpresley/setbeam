@@ -10,7 +10,7 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
 
 @MainActor final class SessionModel: ObservableObject {
     @Published var title: String { didSet { if !integration { defaults.set(title, forKey: "sessionTitle") }; publishGatewayState() } }
-    @Published var state = SessionState()
+    @Published private(set) var state: SessionState
     @Published var source: VideoSource = .sample
     @Published var setup: SourceSetup?
     @Published var provenSetup: SourceSetup?
@@ -63,8 +63,8 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
     private var gatewayPort: UInt16?
     private var viewerInterface: String
     private var viewerNetworkNeedsUpdate = false
-    private var nextGatewayRetry = Date.distantPast
     private var pollTask: Task<Void, Never>?
+    private var runtimeUpdates: Task<Void, Never>?
     private var launched = false, shuttingDown = false
     private var readiness = SetupReadiness()
     private var activeNetworkURL: String?
@@ -77,7 +77,8 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
     private var observers: [NSObjectProtocol] = []
     private lazy var floating = FloatingPreviewWindow(model: self)
 
-    init() {
+    init(initialState: SessionState = SessionState()) {
+        state = initialState
         integration = CommandLine.arguments.contains("--integration-demo")
         let args = CommandLine.arguments
         if let index = args.firstIndex(of: "--preferences-suite"), index + 1 < args.count {
@@ -216,6 +217,16 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
         localPlayer.onPlaybackState = nativePlaybackState
         audiencePlayer.onPlaybackState = { [weak self] playing, _ in self?.audiencePreviewPlaying = playing }
         localPlayer.onSoundUnavailable = { [weak self] message in self?.localMuted = true; self?.error = message }
+        runtimeUpdates = Task { [weak self, runtime] in
+            for await snapshot in await runtime.updates() {
+                guard !Task.isCancelled, let self, !self.shuttingDown else { return }
+                self.apply(snapshot)
+                self.localPlayer.checkHealth(sourceAvailable: snapshot.sourceAvailable)
+                self.audiencePlayer.checkHealth(sourceAvailable: snapshot.session.sharing && snapshot.audienceAvailable)
+                self.publishGatewayState()
+                self.confirmSetupIfReady()
+            }
+        }
         refreshCaptureDevices()
         let center = NSWorkspace.shared.notificationCenter
         observers.append(center.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
@@ -234,28 +245,17 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
                     if self.sheet == .connection || self.setup?.kind == .accsoon { await self.refreshWireless() }
                 }
                 guard self.state.monitoring, !self.busy else { self.writeExperienceState(); continue }
-                let snapshot = await self.runtime.snapshot()
-                guard !self.shuttingDown else { return }
-                self.apply(snapshot)
-                self.localPlayer.checkHealth(sourceAvailable: snapshot.sourceAvailable)
-                if self.state.sharing { self.audiencePlayer.checkHealth(sourceAvailable: snapshot.audienceAvailable) }
                 self.viewers = self.gateway.viewers
-                self.publishGatewayState()
-                if self.state.sharing, !self.gateway.isRunning, let port = self.gatewayPort, Date() >= self.nextGatewayRetry {
-                    self.nextGatewayRetry = Date().addingTimeInterval(3)
-                    do { _ = try await self.gateway.start(address: self.viewerAddress, port: port) }
-                    catch { self.lastRuntimeProblem = "The viewing network is reconnecting." }
-                }
-                self.lastRuntimeProblem = snapshot.message ?? ""
                 self.confirmSetupIfReady()
                 self.writeExperienceState()
             }
         }
     }
-    private func apply(_ snapshot: RuntimeSnapshot) {
-        currentRuntime = snapshot; preview = snapshot.preview
+    func apply(_ snapshot: RuntimeSnapshot) {
+        currentRuntime = snapshot; preview = snapshot.session.monitoring ? snapshot.preview : nil
         sourceHasAudio = snapshot.sourceHasAudio; audienceHasAudio = snapshot.audienceHasAudio
-        state.updateSource(available: snapshot.sourceAvailable); state.updateAudience(available: snapshot.audienceAvailable)
+        state = snapshot.session
+        lastRuntimeProblem = snapshot.message ?? ""
         outgoingTransition.observeReady(outgoingReady)
         if let frame = snapshot.lastFrameAt { lastFrameAt = frame }
     }
@@ -296,22 +296,21 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
             }
             guard !shuttingDown else { return }
             let changingSource = state.monitoring
+            let originalSelection = (setup: setup, source: source, address: activeNetworkURL, remember: rememberSetup, confirmed: setupConfirmed)
             if localReady, let setup {
                 previousSource = (setup, activeNetworkURL, rememberSetup)
             }
             if state.sharing {
                 outgoingTransition.begin(.hold)
-                try? state.setHold(true); state.updateAudience(available: false); publishGatewayState()
             }
             preparingConnection = true
             defer { preparingConnection = false }
             localPlayer.stop(); audiencePlayer.stop(); audiencePreviewPlaying = false
             if !changingSource {
-                gateway.stop(); gatewayPort = nil; viewerURL = nil; viewers = []; state.end(); releasePowerAssertion()
+                gateway.stop(); gatewayPort = nil; viewerURL = nil; viewers = []; releasePowerAssertion()
                 currentRuntime = nil
             }
             preview = nil; nativePreviewPlaying = false; sourceHasAudio = false; audienceHasAudio = false; testSoundConfirmed = false
-            state.updateSource(available: false)
             readiness = SetupReadiness(); setupConfirmed = false; lastFrameAt = nil; connectedAt = Date()
             rememberFailed = false
             setup = candidate; activeNetworkURL = address; rememberSetup = remember
@@ -322,20 +321,43 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
                 if changingSource { snapshot = try await runtime.replaceSource(chosen, inputAddress: inputAddress) }
                 else { snapshot = try await runtime.prepare(source: chosen, viewerAddress: viewerAddress, inputAddress: inputAddress) }
                 guard !shuttingDown else { return }
-                state.beginMonitoring(); apply(snapshot); publishGatewayState()
+                apply(snapshot); publishGatewayState()
                 if let destination = await runtime.incomingDestination() { incomingServer = destination.server; incomingStreamKey = destination.streamKey }
-                try localPlayer.start(url: await runtime.localRTSP())
-                if state.sharing { try audiencePlayer.start(url: await runtime.localRTSP("live")) }
+                let localURL = await runtime.localRTSP()
+                let audienceURL = state.sharing ? await runtime.localRTSP("live") : nil
+                guard !shuttingDown else { busy = false; return }
+                try localPlayer.start(url: localURL)
+                if let audienceURL { try audiencePlayer.start(url: audienceURL) }
                 if restoreFloating { floating.show() }
                 busy = false
                 if candidate.kind == .incoming && candidate.confirmedAt == nil { sheet = .incoming }
                 if integration && !changingSource { await startSharingNow(); writeIntegrationSession() }
             } catch {
+                guard !shuttingDown else { busy = false; return }
                 localPlayer.stop(); busy = false
-                if !changingSource { await runtime.shutdown(); state.end() }
+                if !changingSource { await runtime.shutdown(); apply(await runtime.snapshot()) }
+                else {
+                    let actual = await runtime.snapshot()
+                    if actual.source != chosen {
+                        setup = originalSelection.setup; source = originalSelection.source
+                        activeNetworkURL = originalSelection.address; rememberSetup = originalSelection.remember
+                        setupConfirmed = originalSelection.confirmed
+                    }
+                    apply(actual)
+                    if actual.session.monitoring {
+                        let localURL = await runtime.localRTSP()
+                        guard !shuttingDown else { return }
+                        try? localPlayer.start(url: localURL)
+                    }
+                }
                 self.error = state.sharing ? "The new input could not start. Viewers remain on Hold. Retry or return to the previous source." : "The connection could not start. Retry, or return to the previous source."
-                lastRuntimeProblem = Redaction.text(error.localizedDescription); preview = nil
-                if state.sharing { try? audiencePlayer.start(url: await runtime.localRTSP("live")) }
+                lastRuntimeProblem = Redaction.text(error.localizedDescription)
+                if !state.monitoring { preview = nil }
+                if state.sharing {
+                    let audienceURL = await runtime.localRTSP("live")
+                    guard !shuttingDown else { return }
+                    try? audiencePlayer.start(url: audienceURL)
+                }
                 publishGatewayState()
             }
         }
@@ -364,7 +386,11 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
         if state.monitoring && !permissionDenied {
             busy = true
             connectedAt = Date()
-            Task { await runtime.retrySource(); localPlayer.retry(); apply(await runtime.snapshot()); busy = false }
+            Task {
+                await runtime.retrySource()
+                guard !shuttingDown else { return }
+                localPlayer.retry(); apply(await runtime.snapshot()); busy = false
+            }
             return
         }
         permissionDenied = false
@@ -393,20 +419,27 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
     }
     func startSharing() { guard !busy else { return }; Task { await startSharingNow() } }
     private func startSharingNow() async {
-        guard state.monitoring, !state.sharing, (localReady || integration) else { return }
+        guard !shuttingDown, state.monitoring, !state.sharing, (localReady || integration) else { return }
         busy = true; error = nil
         outgoingTransition.begin(.startSharing)
         do {
             await refreshNetworks()
-            currentRuntime = try await runtime.startSharing(); try state.startSharing()
-            if let snapshot = currentRuntime { state.updateAudience(available: snapshot.audienceAvailable) }
+            guard !shuttingDown else { busy = false; return }
+            apply(try await runtime.startSharing())
+            guard !shuttingDown else { busy = false; return }
             outgoingTransition.observeReady(outgoingReady)
             publishGatewayState()
             if gatewayPort == nil { gatewayPort = try await gateway.start(address: viewerAddress) }
+            guard !shuttingDown else { busy = false; return }
             if let port = gatewayPort, let snapshot = currentRuntime { viewerURL = URL(string: "http://\(viewerAddress):\(port)/s/\(snapshot.guestToken)/") }
-            try audiencePlayer.start(url: await runtime.localRTSP("live"))
+            let audienceURL = await runtime.localRTSP("live")
+            guard !shuttingDown else { busy = false; return }
+            try audiencePlayer.start(url: audienceURL)
             networkChanged = false; acquirePowerAssertion()
-        } catch { await runtime.stopSharing(); state.stopSharing(); outgoingTransition.reset(); audiencePlayer.stop(); self.error = "Sharing could not start. Check the viewing network and try again."; lastRuntimeProblem = Redaction.text(error.localizedDescription) }
+        } catch {
+            guard !shuttingDown else { busy = false; return }
+            gateway.stop(); gatewayPort = nil; viewerURL = nil; await runtime.stopSharing(); apply(await runtime.snapshot()); outgoingTransition.reset(); audiencePlayer.stop(); self.error = "Sharing could not start. Check the viewing network and try again."; lastRuntimeProblem = Redaction.text(error.localizedDescription)
+        }
         busy = false; writeIntegrationSession()
     }
     func toggleHold() {
@@ -417,12 +450,18 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
         testSoundConfirmed = false
         Task {
             do {
-                try state.setHold(value); state.updateAudience(available: false); publishGatewayState()
                 try await runtime.setHold(value)
+                let snapshot = await runtime.snapshot()
+                let audienceURL = await runtime.localRTSP("live")
+                guard !shuttingDown else { busy = false; return }
+                apply(snapshot)
                 audiencePlayer.stop(); audiencePreviewPlaying = false
-                try? audiencePlayer.start(url: await runtime.localRTSP("live"))
+                try? audiencePlayer.start(url: audienceURL)
             }
-            catch { outgoingTransition.reset(); self.error = "The audience change did not finish. Retry the audience control."; lastRuntimeProblem = Redaction.text(error.localizedDescription) }
+            catch {
+                guard !shuttingDown else { busy = false; return }
+                apply(await runtime.snapshot()); outgoingTransition.reset(); self.error = "The audience change did not finish. Retry the audience control."; lastRuntimeProblem = Redaction.text(error.localizedDescription)
+            }
             publishGatewayState()
             busy = false
         }
@@ -432,10 +471,11 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
         Task { await endSharing(); busy = false }
     }
     private func endSharing() async {
-        state.stopSharing(); publishGatewayState(); releasePowerAssertion()
+        releasePowerAssertion()
         outgoingTransition.reset()
         audiencePlayer.stop(); audiencePreviewPlaying = false; audienceHasAudio = false; testSoundConfirmed = false
         await runtime.stopSharing()
+        apply(await runtime.snapshot()); publishGatewayState()
     }
     private func publishGatewayState() {
         guard let snapshot = currentRuntime else { return }
@@ -462,12 +502,14 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
         viewerAddress = address
         do {
             try await runtime.updateViewerAddress(address)
+            guard !shuttingDown else { return }
             if state.monitoring { apply(await runtime.snapshot()) }
             if state.sharing, let port = gatewayPort, let snapshot = currentRuntime {
                 // Preserve audience intent, Hold, credential, and port through network recovery.
                 publishGatewayState()
                 viewerURL = URL(string: "http://\(address):\(port)/s/\(snapshot.guestToken)/")
                 networkChanged = true
+                guard !shuttingDown else { return }
                 _ = try await gateway.start(address: address, port: port)
             } else { gateway.stop(); gatewayPort = nil; viewerURL = nil; viewers = [] }
             viewerNetworkNeedsUpdate = false
@@ -500,7 +542,7 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
     }
     func loadPrivateSettings() {
         savedNetworkURL = activeNetworkURL ?? provenSetup.flatMap { $0.kind == .network ? SecureSettings.read($0.credentialAccount) : nil } ?? ""
-        if !wifiSSID.isEmpty { wifiPassword = SecureSettings.read("viewing-wifi-\(wifiSSID)") ?? "" }
+        if !integration && !wifiSSID.isEmpty { wifiPassword = SecureSettings.read("viewing-wifi-\(wifiSSID)") ?? "" }
         refreshCaptureDevices()
     }
     func openWiFiSettings() { NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.wifi-settings-extension")!) }
@@ -531,8 +573,8 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
     }
     private func releasePowerAssertion() { if powerAssertion != 0 { IOPMAssertionRelease(powerAssertion); powerAssertion = 0 } }
     func shutdown() async {
-        shuttingDown = true; pollTask?.cancel(); sourceBrowser.stop(); observers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
-        floating.close(); localPlayer.stop(); audiencePlayer.stop(); gateway.stop(); releasePowerAssertion(); await runtime.shutdown(); state.end()
+        shuttingDown = true; pollTask?.cancel(); runtimeUpdates?.cancel(); sourceBrowser.stop(); observers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
+        floating.close(); localPlayer.stop(); audiencePlayer.stop(); gateway.stop(); releasePowerAssertion(); await runtime.shutdown(); apply(await runtime.snapshot())
     }
     private func writeIntegrationSession() {
         guard let viewerURL else { return }

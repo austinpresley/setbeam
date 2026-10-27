@@ -137,3 +137,20 @@ Austin approved the full-width monitor mockup and requested the native implement
 ## Build 9 outgoing-status correction
 
 Austin reported the repeated outgoing-reconnection text and requested a quick, uncaptioned click-through with a visible pointer and moving sample video. Build 9 distinguishes explicit audience preparation from actual outgoing loss and keeps thumbnail readiness separate. The reproduction, regression tests, packaged checks, and recorded demo are in [outgoing-status verification](verification-outgoing-status-2026-10-21.md).
+
+## Build 10 architecture pass
+
+Austin approved all four first-principles recommendations on 2026-10-22:
+
+- Give the non-UI session module authoritative ownership of intent, health, and autonomous recovery, with observational snapshot updates.
+- Replace JPEG preview and independent audio decoding with one timestamped native video/audio decode and a shared playback clock.
+- Define and verify a browser-compatible media contract for every supported external input while preserving dimensions and cadence.
+- Retain the running server and holding publisher across source changes and failed input setup.
+
+Acceptance uses real bundled-media tests, independent recovery without status reads, decoded frame timestamp/cadence checks, continuous outgoing-media decoding through source changes, failure injection, native main/floating and browser playback, and self-contained packaged-runtime verification. Physical latency, audible synchronization, and long-session qualification remain separate evidence. Results are recorded in [architecture verification](verification-architecture-2026-10-23.md).
+
+## Build 11 persistent join-code panel
+
+Austin chose the existing numeric-IP session invitations and approved an optional Show/Hide QR codes panel to the right of the picture. Wi-Fi sits above the feed code, with each section using half the picture height. The main window widens when room permits and collapses when hidden. No permanent printed-link mechanism or online lookup is added.
+
+Acceptance covers exact decoding of both native codes, adding/editing viewing Wi-Fi without replacing the session link, persistent presentation through other controls and Hold, removal of the viewing code after Stop, refresh after Start, default and compact native layouts, on-screen window expansion, the existing packaged regression checks, and delivery of the finished developer build. Results are recorded in [QR panel verification](verification-qr-panel-2026-10-23.md). Physical phone scanning and Wi-Fi association remain separate checks.
