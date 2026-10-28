@@ -17,6 +17,7 @@ function browser(options = {}) {
       style: {setProperty(name, value) { this[name] = value; }}, parentElement: {attributes: {}, toggleAttribute(name, enabled) { if (enabled) this.attributes[name] = ''; else delete this.attributes[name]; }}, writes: 0,
       attributes: {}, contains(target) { return target === this; }, addEventListener(name, fn) { listeners[id + ':' + name] = fn; },
       getAttribute(name) { return this.attributes[name]; }, setAttribute(name, value) { this.attributes[name] = value; },
+      focus() { context.document.activeElement = this; },
       play() {
         this.plays++;
         // Browsers reject blocked autoplay with NotAllowedError, and a replaced source with AbortError.
@@ -278,6 +279,19 @@ test('fullscreen keeps the whole player and shortcuts ignore editable fields', a
   key('m'); await b.settle(); assert.equal(b.elements.get('video').muted, false);
   key('m', true); await b.settle(); assert.equal(b.elements.get('video').muted, false);
   key('f'); assert.equal(b.context.document.fullscreenElement, null);
+});
+
+test('Escape from the viewer-name field closes help and returns focus to Help', async () => {
+  const b = browser(); await b.settle();
+  const panel = b.context.document.getElementById('help-panel'); panel.hidden = true;
+  b.listeners['help:click']();
+  const input = b.elements.get('viewer-name'); input.focus();
+  let prevented = false;
+  b.listeners.keydown({key: 'Escape', target: {closest: () => true}, preventDefault() { prevented = true; }});
+  assert.equal(panel.hidden, true);
+  assert.equal(b.elements.get('help').getAttribute('aria-expanded'), 'false');
+  assert.equal(b.context.document.activeElement, b.elements.get('help'));
+  assert.equal(prevented, true);
 });
 
 test('Hold closes picture in picture and detaches and mutes its source', async () => {

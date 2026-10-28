@@ -5,7 +5,7 @@ import AVFoundation
 import IOKit.pwr_mgt
 import SetbeamCore
 
-enum AppSheet: String, Identifiable { case connection, advanced, incoming, join, viewingWiFi, viewers, setupCheck, rename, about; var id: String { rawValue } }
+enum AppSheet: String, Identifiable { case connection, picture, advanced, incoming, join, viewingWiFi, viewers, setupCheck, rename, about; var id: String { rawValue } }
 enum AdvancedSection: Hashable { case workspace, connection, network, diagnostics }
 
 @MainActor final class SessionModel: ObservableObject {
@@ -123,6 +123,7 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
     var sourceLabel: String { setup?.name ?? "Choose a source" }
     var hardwareLabel: String { setup?.deviceName ?? (setup?.kind == .sample ? "Sample video and test tone" : setup?.kind == .network ? "Network video" : "No input selected") }
     var viewerNetworkLabel: String { networks.first(where: { $0.address == viewerAddress })?.name ?? "This Mac only" }
+    var canInviteOtherDevices: Bool { viewerAddress != "127.0.0.1" }
     var viewingInstructions: String {
         if viewerAddress == "127.0.0.1" { return "This viewing link works on this Mac only." }
         if !wifiSSID.isEmpty { return "Join \(wifiSSID), then scan to watch." }
@@ -167,10 +168,18 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
         return previousSource.setup.name
     }
     var verifiedViewers: Int { viewers.filter(\.playing).count }
+    var strugglingViewers: [ViewerActivity] {
+        guard state.sharing, !state.holding else { return [] }
+        return viewers.filter { $0.health == .struggling }
+    }
+    var viewersForDetails: [ViewerActivity] {
+        let struggling = Set(strugglingViewers.map(\.id))
+        return strugglingViewers + viewers.filter { !struggling.contains($0.id) }
+    }
     var openedViewers: Int { viewers.count }
     var otherDeviceViewers: Int { viewers.filter { $0.playing && !$0.onThisMac }.count }
     var setupCheck: SetupCheck {
-        SetupCheck(picture: localReady, viewingAddress: state.sharing && gateway.isRunning && viewerAddress != "127.0.0.1",
+        SetupCheck(picture: localReady, viewingAddress: state.sharing && gateway.isRunning && canInviteOtherDevices,
             otherDevicePlaying: otherDeviceViewers > 0, expectsAudio: expectsAudio,
             outgoingAudio: state.audience == .live && audienceHasAudio, soundConfirmed: testSoundConfirmed)
     }

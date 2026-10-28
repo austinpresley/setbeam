@@ -207,10 +207,12 @@
   });
   document.addEventListener('click', event => { if (!help.contains(event.target) && !document.getElementById('help-panel').contains(event.target)) closeHelp(); });
   document.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && !document.getElementById('help-panel').hidden) {
+      event.preventDefault(); closeHelp(); help.focus(); return;
+    }
     if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey || event.repeat || event.target.closest?.('input,textarea,select,[contenteditable]')) return;
     if (event.key.toLowerCase() === 'm') { event.preventDefault(); toggleSound(); }
     if (event.key.toLowerCase() === 'f') { event.preventDefault(); toggleFullscreen(); }
-    if (event.key === 'Escape') closeHelp();
   });
   async function request(url, options = {}) {
     const controller = new AbortController();

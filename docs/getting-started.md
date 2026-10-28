@@ -39,21 +39,23 @@ Your monitor shows the picture as received. Transmitter and network streams are 
 
 The speaker control changes sound on this Mac. The adjacent picture-in-picture control opens the resizable floating preview. Zoom or pan there to inspect detail; double-click or press `0` to restore the whole picture.
 
-The gear menu contains **Test my setup**, viewing-network settings, capture audio routing when applicable, **Save frame**, Advanced, and diagnostics.
+The gear menu contains **Picture settings**, **Test my setup**, viewing-network settings, capture audio routing when applicable, **Save frame**, Advanced, and diagnostics.
 
 Native audible output remains unverified. On the development Mac, the audio device stalled during startup; Setbeam returned to mute with an explanation. The outgoing stream contains audio, and silent Hold is verified. See [current limits](status.md#remaining-evidence-and-release-work).
 
 ## Invite viewers
 
-Click **Start sharing**, then open the QR control in the footer. Viewers can scan the code or open a copied link. **Show join codes** opens a sheet you can leave visible for a group. The sharing state and playback count open the actual outgoing picture, audience sound, and opened/playing counts.
+Click **Start sharing**, then open the QR control in the footer. Viewers can scan the code or open a copied link. **Show join codes** opens a sheet you can leave visible for a group. The sharing state and playback count open the actual outgoing picture, audience sound, and opened/playing counts. When viewers are struggling, an amber warning opens Viewer details with those sessions first.
+
+If the viewing network is **This Mac only**, invitations show **Choose viewing network** instead of a QR code. Select a network your viewers can reach, then start sharing again.
 
 Viewers need network access to the Mac. Ethernet can serve viewers while Wi-Fi receives a transmitter. Optional viewing Wi-Fi details add a join code without changing the Mac's Wi-Fi connection.
 
-Each viewer receives a separate copy of the picture. With several phones on one Wi-Fi network, choose a lighter **Viewer picture** in Advanced (12, 6, or 3 Mbps per viewer). Your local monitor is unaffected. Open viewer pages reconnect at the new rate.
+Each viewer receives a separate copy of the picture. With several phones on one Wi-Fi network, open **Picture settings** in the gear menu and choose a lighter **Picture quality** (12, 6, or 3 Mbps per viewer). Your local monitor is unaffected. Open viewer pages reconnect at the new rate.
 
-For Capture One or other still-image review, set **Viewer frame rate** to **1 fps** in Advanced. Keep **Viewer picture** at Best when image detail matters more than motion. FPS changes keep the same image dimensions and bitrate allowance, and external-source local monitoring keeps its original cadence. **Match source** restores the incoming rate, up to 30 fps.
+For Capture One or other still-image review, set the viewers' **Frame rate** to **1 fps** in Picture settings. Keep **Picture quality** at Best when image detail matters more than motion. FPS changes keep the same image dimensions and bitrate allowance, and external-source local monitoring keeps its original cadence. **Match source** restores the incoming rate, up to 30 fps.
 
-When using **This Mac's screen**, **Screen capture frame rate** in Advanced independently controls the local capture rate. Choose **1 fps** there as well to reduce capture work, or leave **Match display** for the display's rate, up to 30 fps. Both FPS choices are remembered; relaunch still starts privately.
+When using **This Mac's screen**, **Capture frame rate** in Picture settings independently controls the local capture rate. Choose **1 fps** there as well to reduce capture work, or leave **Match display** for the display's rate, up to 30 fps. Both FPS choices are remembered; relaunch still starts privately.
 
 Viewer pages and signaling use local HTTP. Use a trusted local network and keep the viewing link private. It grants read-only viewing access. Setbeam has no internet relay or remote account service.
 
