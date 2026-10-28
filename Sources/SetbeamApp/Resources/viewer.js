@@ -16,6 +16,11 @@
   // Pushed state replaces 1.5 s polling while the stream stays healthy. Polling remains the fallback.
   let events, eventsAt = 0, eventsHeard = false, eventsRetryAt = 0, applying = Promise.resolve(), pushes = 0;
   let heartbeatAt = 0, reportedPlaying;
+  let viewerName = '';
+  try { viewerName = sessionStorage.getItem('setbeam-viewer-name') || ''; } catch { /* Naming also works without storage. */ }
+  const nameInput = document.getElementById('viewer-name');
+  nameInput.value = viewerName;
+  let healthGeneration = 0, statsPrevious, statsPending = false, healthQuality = 'checking', healthAt = 0, badSamples = 0, goodSamples = 0;
   let keepAwake = false, wakeLock, wakeLockPending = false;
   const id = globalThis.crypto?.randomUUID?.() || Math.random().toString(36).slice(2) + Date.now().toString(36);
   const playing = () => mode === 'live' && receivedTrack && !video.paused && video.readyState >= 2 && Date.now() - lastFrameAt < 6000;
@@ -92,6 +97,7 @@
   video.addEventListener('loadedmetadata', aspectRatio); video.addEventListener('resize', aspectRatio);
   function closeReader() {
     readerGeneration++; exitPip(); hasAudio = false;
+    resetHealth();
     if (video.webkitDisplayingFullscreen) { try { video.webkitExitFullscreen(); } catch {} }
     reader?.close(); reader = undefined; receivedTrack = false; lastFrameAt = 0; lastTime = -1;
     video.srcObject = null; video.muted = true;
@@ -217,8 +223,59 @@
   }
   function heartbeat() {
     heartbeatAt = Date.now(); reportedPlaying = playing();
-    return request('heartbeat', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({id, mobile: /iPhone|iPad|Android/.test(navigator.userAgent), playing: reportedPlaying, revision})}).catch(() => {});
+    sampleHealth();
+    return request('heartbeat', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({id, mobile: /iPhone|iPad|Android/.test(navigator.userAgent), name: viewerName, playing: reportedPlaying, health: viewerHealth(), revision})}).catch(() => {});
   }
+  function resetHealth() {
+    healthGeneration++;
+    statsPrevious = undefined; statsPending = false; healthQuality = 'checking'; healthAt = 0; badSamples = 0; goodSamples = 0;
+  }
+  function viewerHealth() {
+    if (document.hidden) return 'background';
+    if (playBlocked) return 'ready';
+    if (receivedTrack && video.paused) return 'paused';
+    if (!playing()) return everPlayed ? 'reconnecting' : 'connecting';
+    if (typeof reader?.getStats !== 'function') return 'playing';
+    return Date.now() - healthAt < 7000 ? healthQuality : 'checking';
+  }
+  function sampleHealth() {
+    if (!playing() || document.hidden || statsPending || typeof reader?.getStats !== 'function') return;
+    const generation = healthGeneration;
+    statsPending = true;
+    reader.getStats().then(report => {
+      if (generation !== healthGeneration) return;
+      const inbound = [...report.values()].find(s => s.type === 'inbound-rtp' && s.kind === 'video' && Number.isFinite(s.packetsReceived) && Number.isFinite(s.packetsLost) && Number.isFinite(s.timestamp));
+      const previous = statsPrevious;
+      statsPrevious = inbound && {...inbound};
+      healthAt = Date.now();
+      if (!inbound) { healthQuality = 'playing'; return; }
+      if (!previous || previous.id !== inbound.id || inbound.timestamp <= previous.timestamp || inbound.packetsReceived < previous.packetsReceived) {
+        healthQuality = 'checking'; badSamples = 0; goodSamples = 0; return;
+      }
+      const received = inbound.packetsReceived - previous.packetsReceived;
+      const lost = Math.max(0, inbound.packetsLost - previous.packetsLost);
+      // Zero new packets is inconclusive. The existing decoded-frame watchdog handles a frozen peer.
+      if (received + lost <= 0) { healthQuality = 'checking'; return; }
+      const transport = report.get(inbound.transportId);
+      const rtt = report.get(transport?.selectedCandidatePairId)?.currentRoundTripTime;
+      const decoded = inbound.framesDecoded - previous.framesDecoded;
+      const dropped = inbound.framesDropped - previous.framesDropped;
+      const bad = lost / (received + lost) > 0.03 || inbound.jitter > 0.08 || rtt > 0.3 || (dropped > 0 && dropped / (decoded + dropped) > 0.1);
+      badSamples = bad ? badSamples + 1 : 0; goodSamples = bad ? 0 : goodSamples + 1;
+      if (badSamples >= 2) healthQuality = 'struggling';
+      else if (goodSamples >= 2) healthQuality = 'good';
+    }).catch(() => {
+      if (generation === healthGeneration) { healthQuality = 'playing'; healthAt = Date.now(); statsPrevious = undefined; }
+    }).finally(() => { if (generation === healthGeneration) statsPending = false; });
+  }
+  document.getElementById('viewer-name-form').addEventListener('submit', event => {
+    event.preventDefault();
+    viewerName = [...nameInput.value.replace(/[\u0000-\u0008\u000e-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u206f]/g, '').trim().replace(/\s+/g, ' ')].slice(0, 40).join('');
+    nameInput.value = viewerName;
+    try { sessionStorage.setItem('setbeam-viewer-name', viewerName); } catch { /* Keep the name for this page. */ }
+    text(document.getElementById('viewer-name-status'), viewerName ? 'Name saved for this tab. Shown to the operator.' : 'Using your browser label.');
+    heartbeat();
+  });
   async function applyState(state) {
     const previous = mode; mode = state.state;
     if (mode === 'live' && revision >= 0 && revision !== state.revision) {
@@ -273,7 +330,8 @@
   window.addEventListener('online', poll);
   window.addEventListener('pagehide', closeReader);
   window.addEventListener('pageshow', poll);
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) { acquireAwake(); poll(); } });
+  document.addEventListener('visibilitychange', () => { resetHealth(); heartbeat(); if (!document.hidden) { acquireAwake(); poll(); } });
+  video.addEventListener('pause', () => { resetHealth(); heartbeat(); });
   setInterval(() => {
     update();
     if (events && !streaming()) dropEvents();

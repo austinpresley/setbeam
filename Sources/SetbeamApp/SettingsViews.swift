@@ -348,7 +348,15 @@ struct ViewerStatusView: View {
             Text("Picture and viewers").font(.title2.weight(.semibold))
             statusRow(model.localReady ? "Your picture is playing" : model.recoveryTitle, detail: model.setup?.kind == .sample ? "Sample media. No physical source connected." : model.hardwareLabel, good: model.localReady)
             statusRow(model.audienceLabel, detail: model.state.holding ? "Viewers receive a holding picture and silence. Your monitor continues." : model.state.sharing ? "\(model.openedViewers) opened · \(model.verifiedViewers) playing" : "Start sharing when you are ready to invite viewers.", good: model.state.audience == .live)
-            ForEach(model.viewers) { viewer in statusRow(viewer.label + (viewer.onThisMac ? " · This Mac" : " · Another device"), detail: viewer.playing ? "Fresh video playback confirmed" : "Link opened. Waiting for a picture.", good: viewer.playing) }
+            if !model.viewers.isEmpty {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 16) {
+                        ForEach(model.viewers) { ViewerActivityRow(viewer: $0) }
+                    }.padding(.vertical, 2)
+                }.frame(maxHeight: 280)
+                Text("Each row is a browser session. Viewers can add a name in Connection help. Health describes their playback.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
             if model.state.sharing && model.viewers.isEmpty { Text("Ask a viewer to scan the code. Playback is confirmed when their browser receives fresh video.").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
             HStack { Spacer(); Button("Done") { model.sheet = nil }.keyboardShortcut(.defaultAction) }
         }.padding(28).frame(width: 440)

@@ -7,7 +7,9 @@ const controller = fs.readFileSync('Sources/SetbeamApp/Resources/viewer.js', 'ut
 
 function browser(options = {}) {
   let now = 1_000, interval, requests = 0, hung = false, deferState = false, releaseState;
-  const timers = new Map(), readers = [], listeners = {}, urls = [], sources = [], locks = [];
+  const timers = new Map(), readers = [], listeners = {}, urls = [], sources = [], locks = [], heartbeats = [];
+  const storage = new Map(Object.entries(options.storage || {}));
+  let stats, statsError = false, resolveStats;
   const elements = new Map();
   function element(id) {
     if (!elements.has(id)) elements.set(id, {
@@ -31,16 +33,25 @@ function browser(options = {}) {
   const context = {
     document: {getElementById: element, pictureInPictureEnabled: !!options.pip, hidden: false, addEventListener(name, fn) { listeners[name] = fn; }},
     navigator: {userAgent: 'test'}, crypto: {randomUUID: () => 'viewer-test'},
+    sessionStorage: {getItem(key) { return storage.get(key); }, setItem(key, value) { storage.set(key, value); }},
     Date: class extends Date { static now() { return now; } },
     AbortController,
     setTimeout(fn, delay) { const id = {}; timers.set(id, {fn, due: now + delay}); return id; },
     clearTimeout(id) { timers.delete(id); }, setInterval(fn) { interval = fn; },
     MediaMTXWebRTCReader: class {
-      constructor(config) { this.config = config; this.closed = false; readers.push(this); }
+      constructor(config) {
+        this.config = config; this.closed = false; readers.push(this);
+        if (options.stats) this.getStats = () => {
+          if (statsError) return Promise.reject(new Error('Statistics unavailable'));
+          if (options.deferStats) return new Promise(resolve => { resolveStats = resolve; });
+          return Promise.resolve(stats || new Map());
+        };
+      }
       close() { this.closed = true; }
     },
     fetch(url, options = {}) {
       requests++; urls.push(url);
+      if (url === 'heartbeat') heartbeats.push(JSON.parse(options.body));
       if (deferState && url === 'state.json') {
         // Capture this response now and deliver it only when the test releases it.
         deferState = false; const snapshot = {...state};
@@ -71,7 +82,9 @@ function browser(options = {}) {
   vm.runInNewContext(controller, context);
   const settle = async () => { for (let n = 0; n < 30; n++) await Promise.resolve(); };
   return {
-    readers, state, elements, listeners, settle, sources, locks, context, stream, audio, audioListeners,
+    readers, state, elements, listeners, settle, sources, locks, context, stream, audio, audioListeners, heartbeats, storage,
+    set stats(value) { stats = value; }, set statsError(value) { statsError = value; },
+    async releaseStats(value) { resolveStats(value); await settle(); },
     get requests() { return requests; }, set hung(value) { hung = value; },
     deferNextState() { deferState = true; }, async releaseState() { releaseState(); await settle(); },
     count(url) { return urls.filter(value => value === url).length; },
@@ -294,4 +307,84 @@ test('a negotiated audio receiver without audio packets offers no sound control'
   assert.equal(b.elements.get('sound').hidden, false, 'real audio arriving exposes the control');
   b.audio.muted = true; b.audioListeners.mute();
   assert.equal(b.elements.get('sound').hidden, true);
+});
+
+function reception(packets, lost = 0, jitter = 0.005, rtt = 0.01, decoded = packets, dropped = 0, id = 'video') {
+  return new Map([
+    [id, {id, type: 'inbound-rtp', kind: 'video', packetsReceived: packets, packetsLost: lost, jitter,
+      framesDecoded: decoded, framesDropped: dropped, timestamp: packets + lost, transportId: 'transport'}],
+    ['transport', {selectedCandidatePairId: 'pair'}], ['pair', {currentRoundTripTime: rtt}]
+  ]);
+}
+async function sample(b, stats) {
+  b.stats = stats; b.frame(); await b.tick(3000);
+}
+
+test('viewer names are optional, saved per tab, bounded, and included only in heartbeats', async () => {
+  const b = browser({storage: {'setbeam-viewer-name': "Sam's iPad"}}); await b.settle();
+  assert.equal(b.heartbeats.at(-1).name, "Sam's iPad");
+  b.elements.get('viewer-name').value = '  Alex\n\u202e  ' + 'x'.repeat(70);
+  b.listeners['viewer-name-form:submit']({preventDefault() {}}); await b.settle();
+  const name = b.heartbeats.at(-1).name;
+  assert.equal(name.length, 40); assert.ok(!name.includes('\u202e')); assert.ok(!name.includes('\n'));
+  assert.equal(b.storage.get('setbeam-viewer-name'), name);
+  b.elements.get('viewer-name').value = '   ';
+  b.listeners['viewer-name-form:submit']({preventDefault() {}}); await b.settle();
+  assert.equal(b.heartbeats.at(-1).name, '');
+});
+
+test('health needs sustained measurements and remains good at one decoded frame per sample', async () => {
+  const b = browser({eventSource: true, stats: true}); await b.settle(); await b.push(); await b.track();
+  for (let n = 1; n <= 5; n++) await sample(b, reception(n * 100, 0, 0.005, 0.01, n));
+  assert.equal(b.heartbeats.at(-1).health, 'good');
+  assert.equal(b.readers.length, 1, 'health never opens another peer');
+  await sample(b, reception(600, 30));
+  await sample(b, reception(700, 30));
+  assert.equal(b.heartbeats.at(-1).health, 'good', 'one bad interval must not flash a warning');
+  for (let n = 8; n <= 11; n++) await sample(b, reception(n * 100, 30 + (n - 7) * 20));
+  assert.equal(b.heartbeats.at(-1).health, 'struggling');
+  for (let n = 12; n <= 15; n++) await sample(b, reception(n * 100, 110));
+  assert.equal(b.heartbeats.at(-1).health, 'good', 'two clean intervals recover the indicator');
+});
+
+test('sustained jitter, round trip delay, and dropped frames each report struggling', async () => {
+  for (const problem of ['jitter', 'rtt', 'drops']) {
+    const b = browser({eventSource: true, stats: true}); await b.settle(); await b.push(); await b.track();
+    for (let n = 1; n <= 5; n++) await sample(b, reception(n * 100, 0, problem === 'jitter' ? 0.15 : 0.005,
+      problem === 'rtt' ? 0.5 : 0.01, n * 10, problem === 'drops' ? n * 10 : 0));
+    assert.equal(b.heartbeats.at(-1).health, 'struggling', problem);
+  }
+});
+
+test('unsupported or failed statistics keep fresh playback visible without inventing a score', async () => {
+  for (const options of [{}, {stats: true}]) {
+    const b = browser({...options, eventSource: true}); await b.settle(); await b.push(); await b.track();
+    await sample(b, new Map()); await sample(b, new Map());
+    assert.equal(b.heartbeats.at(-1).health, 'playing');
+    b.statsError = true; await sample(b, reception(100)); await sample(b, reception(200));
+    assert.equal(b.heartbeats.at(-1).health, 'playing'); assert.equal(b.readers.length, 1);
+  }
+});
+
+test('background, blocked, paused, and stalled playback have distinct health states', async () => {
+  const b = browser({eventSource: true}); await b.settle(); await b.push(); await b.track();
+  b.context.document.hidden = true; b.listeners.visibilitychange(); await b.settle();
+  assert.equal(b.heartbeats.at(-1).health, 'background');
+  b.context.document.hidden = false; b.listeners.visibilitychange(); await b.settle();
+  b.elements.get('video').paused = true; b.listeners['video:pause'](); await b.settle();
+  assert.equal(b.heartbeats.at(-1).health, 'paused');
+  b.elements.get('video').paused = false; await b.tick(7000);
+  assert.equal(b.heartbeats.at(-1).health, 'reconnecting');
+  const blocked = browser({eventSource: true, autoplayBlocked: true}); await blocked.settle(); await blocked.push(); await blocked.track();
+  await blocked.tick(3000); assert.equal(blocked.heartbeats.at(-1).health, 'ready');
+});
+
+test('late statistics from a replaced peer cannot change the new viewer health', async () => {
+  const b = browser({eventSource: true, stats: true, deferStats: true}); await b.settle(); await b.push(); await b.track();
+  await b.tick(3000);
+  await b.push({...b.state, state: 'holding'});
+  await b.releaseStats(reception(500, 200));
+  await b.push({...b.state, revision: 2}); await b.track();
+  await b.tick(3000);
+  assert.equal(b.heartbeats.at(-1).health, 'checking');
 });
