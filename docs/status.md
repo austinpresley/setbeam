@@ -1,6 +1,6 @@
 # Setbeam status
 
-Updated: 2026-10-27. Version 0.2.0, build 14. The browser viewer now uses a larger picture, familiar icon controls, persistent Sample/status labels, source aspect ratios, and a styled unavailable-link page. It includes the merged Mac screen source and optional transmitter Wi-Fi rejoin, and preserves Build 12 media, pushed-state, and keep-awake behavior. Viewer verification is recorded in [viewer verification](verification-viewer-2026-10-27.md). Physical hardware was not retested for this viewer change.
+Updated: 2026-10-27. Version 0.2.0, build 16. Viewer details now distinguish numbered browser sessions with optional names and observational playback health. All 109 combined Swift tests, 24 viewer checks, and complete packaged media/recovery/switching/format/FPS probes pass. The isolated feature PR also passes 103 Swift tests and 24 viewer checks. Actual native/browser names, Good/Struggling recovery, 1 fps, background tabs, Hold/Resume/Stop, and final packaged playback pass. Sol approved in one round. See [viewer health verification](verification-viewer-health-2026-10-27.md) for evidence and limits.
 
 ## Product scope
 

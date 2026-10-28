@@ -22,6 +22,32 @@ public struct ViewerActivity: Sendable, Identifiable {
     public let onThisMac: Bool
     public let revision: Int
     public let lastSeen: Date
+    public let number: Int
+    public let name: String?
+    public let health: ViewerHealth
+
+    public var displayName: String { name ?? "\(label) \(number)" }
+}
+
+public enum ViewerHealth: String, Sendable {
+    case good, struggling, checking, playing, connecting, reconnecting, paused, background, ready, holding
+
+    static func observed(_ reported: ViewerHealth, playing: Bool, revision: Int, session: ViewerSession?, age: TimeInterval) -> ViewerHealth {
+        if session?.state == .holding { return .holding }
+        if age >= 8 { return .reconnecting }
+        if revision != session?.revision { return .connecting }
+        if [.background, .paused, .ready].contains(reported) { return reported }
+        guard playing, session?.state == .live else { return reported == .connecting ? .connecting : .reconnecting }
+        return [.good, .struggling, .checking].contains(reported) ? reported : .playing
+    }
+
+    static func viewerName(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let clean = String(String.UnicodeScalarView(value.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) || CharacterSet.whitespacesAndNewlines.contains($0) }))
+        let words = clean.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }.joined(separator: " ")
+        let name = String(words.prefix(40)).trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? nil : name
+    }
 }
 
 /// A small, authenticated static viewer host. It exposes no media-control proxy or file browsing.
@@ -34,6 +60,7 @@ public final class ViewerGateway: @unchecked Sendable {
     private var stoppedListener: NWListener?
     private var session: ViewerSession?
     private var activity: [String: ViewerActivity] = [:]
+    private var nextViewerNumber = 1
     private var running = false
     private var generation = UUID()
     private var listenerAttempt = UUID()
@@ -72,6 +99,7 @@ public final class ViewerGateway: @unchecked Sendable {
             // A new token is a new viewing link. Readers of the old link must reconnect and get 404.
             if previous?.token != session.token {
                 activity.removeAll()
+                nextViewerNumber = 1
                 let closed = Array(streams.values); streams.removeAll()
                 return (closed, false)
             }
@@ -84,8 +112,10 @@ public final class ViewerGateway: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         activity = activity.filter { Date().timeIntervalSince($0.value.lastSeen) < 12 }
         return activity.values.map { item in
-            ViewerActivity(id: item.id, label: item.label, playing: item.playing && item.revision == session?.revision && session?.state == .live && Date().timeIntervalSince(item.lastSeen) < 8, onThisMac: item.onThisMac, revision: item.revision, lastSeen: item.lastSeen)
-        }.sorted { $0.id < $1.id }
+            let age = Date().timeIntervalSince(item.lastSeen)
+            return ViewerActivity(id: item.id, label: item.label, playing: item.playing && item.revision == session?.revision && session?.state == .live && age < 8, onThisMac: item.onThisMac, revision: item.revision, lastSeen: item.lastSeen,
+                number: item.number, name: item.name, health: ViewerHealth.observed(item.health, playing: item.playing, revision: item.revision, session: session, age: age))
+        }.sorted { $0.number < $1.number }
     }
     public var isRunning: Bool { lock.lock(); defer { lock.unlock() }; return running }
 
@@ -119,7 +149,7 @@ public final class ViewerGateway: @unchecked Sendable {
             let previous = (listener, retry, startup, Array(streams.values))
             generation = UUID(); listenerAttempt = UUID(); desiredListener = nil
             stoppedListener = listener; listener = nil; retry = nil; startup = nil
-            running = false; activity.removeAll(); streams.removeAll()
+            running = false; activity.removeAll(); nextViewerNumber = 1; streams.removeAll()
             return previous
         }
         previous.3.forEach { $0.cancel() }
@@ -302,8 +332,11 @@ public final class ViewerGateway: @unchecked Sendable {
                 else { host = "" }
                 let local = host == "127.0.0.1" || host == "::1" || NetworkAddress.available().contains { $0.address == host }
                 lock.lock()
-                if activity.count < 64 || activity[id] != nil {
-                    activity[id] = ViewerActivity(id: id, label: label, playing: data["playing"] as? Bool ?? false, onThisMac: local, revision: data["revision"] as? Int ?? -1, lastSeen: Date())
+                if session?.token == current.token, activity.count < 64 || activity[id] != nil {
+                    let number = activity[id]?.number ?? nextViewerNumber
+                    if activity[id] == nil { nextViewerNumber += 1 }
+                    activity[id] = ViewerActivity(id: id, label: label, playing: data["playing"] as? Bool ?? false, onThisMac: local, revision: data["revision"] as? Int ?? -1, lastSeen: Date(),
+                        number: number, name: ViewerHealth.viewerName(data["name"] as? String), health: (data["health"] as? String).flatMap(ViewerHealth.init(rawValue:)) ?? .playing)
                 }
                 lock.unlock()
             }

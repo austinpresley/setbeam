@@ -64,6 +64,11 @@ class MediaMTXWebRTCReader {
     }
   }
 
+  // Read the existing peer only. Diagnostics never opens another media connection.
+  getStats() {
+    return this.#pc?.getStats() ?? Promise.resolve(new Map());
+  }
+
   static #supportsNonAdvertisedCodec(codec, fmtp) {
     return new Promise((resolve) => {
       const pc = new RTCPeerConnection({ iceServers: [] });
