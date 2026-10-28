@@ -17,7 +17,13 @@ function browser(options = {}) {
       style: {setProperty(name, value) { this[name] = value; }}, parentElement: {attributes: {}, toggleAttribute(name, enabled) { if (enabled) this.attributes[name] = ''; else delete this.attributes[name]; }}, writes: 0,
       attributes: {}, contains(target) { return target === this; }, addEventListener(name, fn) { listeners[id + ':' + name] = fn; },
       getAttribute(name) { return this.attributes[name]; }, setAttribute(name, value) { this.attributes[name] = value; },
-      play() { this.plays++; if (id === 'video' && options.autoplayBlocked) return Promise.reject(new Error('Autoplay blocked')); this.paused = false; return Promise.resolve(); }, pause() { this.paused = true; }
+      play() {
+        this.plays++;
+        // Browsers reject blocked autoplay with NotAllowedError, and a replaced source with AbortError.
+        if (id === 'video' && options.autoplayBlocked) return Promise.reject(Object.assign(new Error('Autoplay blocked'), {name: 'NotAllowedError'}));
+        if (id === 'video' && options.playInterrupted) return Promise.reject(Object.assign(new Error('The play() request was interrupted by a new load request.'), {name: 'AbortError'}));
+        this.paused = false; return Promise.resolve();
+      }, pause() { this.paused = true; }
     });
     const el = elements.get(id);
     if (!Object.getOwnPropertyDescriptor(el, 'textContent').get) {
@@ -297,6 +303,16 @@ test('blocked autoplay offers Play feed, and Hold removes that action', async ()
   assert.equal(b.elements.get('retry').hidden, true);
   assert.equal(b.elements.get('slate-icon').parentElement.attributes.hidden, undefined);
   assert.equal(b.elements.get('state').textContent, 'On hold');
+});
+
+test('an interrupted play request is not blocked playback, and the stale-peer watchdog still reconnects', async () => {
+  // A second track replaced the source while the first play() was pending; 4K frames had not yet decoded.
+  const b = browser({playInterrupted: true}); await b.settle(); await b.track();
+  assert.notEqual(b.elements.get('state').textContent, 'Ready to play');
+  assert.equal(b.elements.get('retry').hidden, true);
+  const readers = b.readers.length;
+  await b.tick(11000);
+  assert.ok(b.readers.length > readers, 'a peer that never decodes must still be replaced');
 });
 
 test('a negotiated audio receiver without audio packets offers no sound control', async () => {

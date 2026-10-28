@@ -58,6 +58,8 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
     @Published var incomingServer = ""
     @Published var incomingStreamKey = ""
     @Published private(set) var audienceQuality: AudienceQuality
+    @Published private(set) var audienceFrameRate: VideoFrameRate
+    @Published private(set) var screenFrameRate: VideoFrameRate
     @Published private(set) var transmitterRejoin: Bool
     @Published var transmitterWiFiPassword = ""
     @Published var rejoinProblem: String?
@@ -92,11 +94,12 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
     private var observers: [NSObjectProtocol] = []
     private lazy var floating = FloatingPreviewWindow(model: self)
 
-    init(initialState: SessionState = SessionState()) {
+    init(initialState: SessionState = SessionState(), preferences: UserDefaults? = nil) {
         state = initialState
         integration = CommandLine.arguments.contains("--integration-demo")
         let args = CommandLine.arguments
-        if let index = args.firstIndex(of: "--preferences-suite"), index + 1 < args.count {
+        if let preferences { defaults = preferences }
+        else if let index = args.firstIndex(of: "--preferences-suite"), index + 1 < args.count {
             defaults = UserDefaults(suiteName: args[index + 1])!
         } else { defaults = .standard }
         store = ProvenSetupStore(defaults: defaults)
@@ -112,6 +115,8 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
         provenSetup = integration ? nil : store.setup
         localMuted = integration ? true : defaults.object(forKey: "localMuted") as? Bool ?? true
         audienceQuality = defaults.string(forKey: "audienceQuality").flatMap(AudienceQuality.init(rawValue:)) ?? .best
+        audienceFrameRate = VideoFrameRate(rawValue: defaults.integer(forKey: "audienceFrameRate")) ?? .source
+        screenFrameRate = VideoFrameRate(rawValue: defaults.integer(forKey: "screenFrameRate")) ?? .source
         transmitterRejoin = integration ? false : defaults.bool(forKey: "transmitterWiFiRejoin")
     }
 
@@ -237,7 +242,6 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
         let info = Bundle.main.infoDictionary
         SessionLog.shared.record("app.launch", ["version": info?["CFBundleShortVersionString"] as? String ?? "development",
             "build": info?["CFBundleVersion"] as? String ?? "development", "integration": integration])
-        Task { await runtime.setAudienceQuality(audienceQuality) }
         localPlayer.muted = localMuted
         localPlayer.onPlaybackState = nativePlaybackState
         audiencePlayer.onPlaybackState = { [weak self] playing, _ in self?.audiencePreviewPlaying = playing }
@@ -353,7 +357,10 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
                 let inputAddress = candidate.kind == .incoming ? networks.first(where: \.wireless)?.address ?? "127.0.0.1" : nil
                 let snapshot: RuntimeSnapshot
                 if changingSource { snapshot = try await runtime.replaceSource(chosen, inputAddress: inputAddress) }
-                else { snapshot = try await runtime.prepare(source: chosen, viewerAddress: viewerAddress, inputAddress: inputAddress) }
+                else {
+                    await runtime.setVideoSettings(quality: audienceQuality, frameRate: audienceFrameRate, screenFrameRate: screenFrameRate)
+                    snapshot = try await runtime.prepare(source: chosen, viewerAddress: viewerAddress, inputAddress: inputAddress)
+                }
                 guard !shuttingDown else { return }
                 apply(snapshot); publishGatewayState()
                 if let destination = await runtime.incomingDestination() { incomingServer = destination.server; incomingStreamKey = destination.streamKey }
@@ -569,10 +576,17 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
         if selectionChanged { Task { if state.sharing { await endSharing(); networkChanged = true }; await refreshNetworks() } }
     }
     func setAudienceQuality(_ quality: AudienceQuality) {
-        guard quality != audienceQuality else { return }
-        audienceQuality = quality
-        if !integration { defaults.set(quality.rawValue, forKey: "audienceQuality") }
-        Task { await runtime.setAudienceQuality(quality) }
+        setVideoSettings(quality: quality, frameRate: audienceFrameRate, screenRate: screenFrameRate)
+    }
+    func setVideoSettings(quality: AudienceQuality, frameRate: VideoFrameRate, screenRate: VideoFrameRate) {
+        guard quality != audienceQuality || frameRate != audienceFrameRate || screenRate != screenFrameRate else { return }
+        audienceQuality = quality; audienceFrameRate = frameRate; screenFrameRate = screenRate
+        if !integration {
+            defaults.set(quality.rawValue, forKey: "audienceQuality")
+            defaults.set(frameRate.rawValue, forKey: "audienceFrameRate")
+            defaults.set(screenRate.rawValue, forKey: "screenFrameRate")
+        }
+        Task { await runtime.setVideoSettings(quality: quality, frameRate: frameRate, screenFrameRate: screenRate) }
     }
     /// Opt-in. Joining another Wi-Fi network is never automatic unless the operator enables it here.
     func setTransmitterRejoin(_ enabled: Bool, password: String) {
@@ -694,6 +708,7 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
             "sourceName": sourceLabel, "kind": setup?.kind.rawValue ?? "none", "savedSetupID": provenSetup?.id.uuidString ?? "",
             "floatingVisible": pipVisible, "localMuted": localMuted, "viewersOpened": openedViewers, "viewersPlaying": verifiedViewers,
             "status": statusLabel, "audience": state.audience.rawValue, "connectionStage": connectionStage?.rawValue ?? "",
+            "viewerFPS": audienceFrameRate.rawValue, "screenFPS": screenFrameRate.rawValue,
             "audiencePreviewPlaying": audiencePreviewPlaying, "sourceHasAudio": sourceHasAudio, "audienceHasAudio": audienceHasAudio,
             "otherDeviceViewers": otherDeviceViewers, "setupCheckPassed": setupCheck.passed, "previousSource": previousSourceName ?? ""])
     }

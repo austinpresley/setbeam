@@ -16,13 +16,34 @@ public enum AudienceQuality: String, CaseIterable, Sendable {
     }
 }
 
+/// A saved maximum cadence. Matching the source preserves its original timing up to 30 fps.
+/// Nothing Setbeam encodes exceeds 30 fps: stills and screens gain little from more, and two 4K60
+/// encodes saturated the hardware encoder.
+public enum VideoFrameRate: Int, CaseIterable, Sendable {
+    case source = 0, fps1 = 1, fps5 = 5, fps10 = 10, fps15 = 15, fps24 = 24, fps25 = 25, fps30 = 30
+    public static let maximum = 30
+
+    public var title: String { self == .source ? "Match source, up to 30 fps" : "\(rawValue) fps" }
+    public func captureRate(for sourceRate: Int) -> Int {
+        let available = max(1, min(Self.maximum, sourceRate))
+        return self == .source ? available : min(available, rawValue)
+    }
+}
+
 /// Local monitoring keeps the received encoding whenever it can be relayed, so the operator
 /// sees the source rather than a second generation. Only the audience output is normalized
 /// for browsers. Raw capture input is encoded once, for fidelity, before the private relay.
 public enum MediaOutputContract {
-    public static func audienceVideoArguments(_ quality: AudienceQuality = .best) -> [String] {
-        ["-vf", "scale=ceil(iw/2)*2:ceil(ih/2)*2,format=yuv420p",
-         "-c:v", "h264_videotoolbox", "-realtime", "1", "-b:v", "\(quality.kilobits)k",
+    public static func audienceVideoArguments(_ quality: AudienceQuality = .best, frameRate: VideoFrameRate = .source) -> [String] {
+        // Select at most one frame per time bucket before encoding. Actual timestamps keep
+        // slow/variable sources slow even when RTSP reports an unknown or implausible rate.
+        // Rounding buckets tolerates capture-clock jitter without dropping alternate 1 fps frames.
+        let rate = frameRate == .source ? VideoFrameRate.maximum : frameRate.rawValue
+        let cadence = "select='isnan(prev_selected_t)+gt(floor((t-start_t)*\(rate)+0.5),floor((prev_selected_t-start_t)*\(rate)+0.5))',"
+        return ["-vf", cadence + "scale=ceil(iw/2)*2:ceil(ih/2)*2,format=yuv420p",
+         // VideoToolbox overshoots an average for keyframe-only low cadences. Its one-second limit
+         // keeps the allowance real and each 4K picture small enough for browsers to assemble.
+         "-c:v", "h264_videotoolbox", "-realtime", "1", "-b:v", "\(quality.kilobits)k", "-maxrate", "\(quality.kilobits)k",
          "-bf", "0", "-g", "60", "-force_key_frames", "expr:gte(t,n_forced*1)",
          "-profile:v", "baseline", "-fps_mode", "passthrough"]
     }

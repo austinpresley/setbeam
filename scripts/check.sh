@@ -18,6 +18,10 @@ if [[ -x Vendor/bin/ffmpeg && -x Vendor/bin/mediamtx ]]; then
   cat build/logs/source-switching.log
   swift run --skip-build SetbeamProbe --format-test --tools "${SETBEAM_TEST_TOOLS:-$ROOT/Vendor/bin}" --fixtures "${SETBEAM_TEST_FIXTURES:-$ROOT/Fixtures}" > build/logs/media-formats.log 2>&1 || { cat build/logs/media-formats.log; exit 1; }
   cat build/logs/media-formats.log
+  swift run --skip-build SetbeamProbe --frame-rate-test --tools "${SETBEAM_TEST_TOOLS:-$ROOT/Vendor/bin}" --fixtures "${SETBEAM_TEST_FIXTURES:-$ROOT/Fixtures}" > build/logs/frame-rates.log 2>&1 || { cat build/logs/frame-rates.log; exit 1; }
+  cat build/logs/frame-rates.log
+  swift run --skip-build SetbeamProbe --keyframe-test --tools "${SETBEAM_TEST_TOOLS:-$ROOT/Vendor/bin}" --fixtures "${SETBEAM_TEST_FIXTURES:-$ROOT/Fixtures}" > build/logs/keyframe-bursts.log 2>&1 || { cat build/logs/keyframe-bursts.log; exit 1; }
+  cat build/logs/keyframe-bursts.log
 else
   echo 'Media integration not run: build the bundled runtime first.'
   exit 1

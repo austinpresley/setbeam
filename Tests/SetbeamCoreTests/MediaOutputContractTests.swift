@@ -31,9 +31,19 @@ final class MediaOutputContractTests: XCTestCase {
         let audience = MediaOutputContract.audienceVideoArguments(.balanced)
         XCTAssertEqual(audience[audience.firstIndex(of: "-profile:v")! + 1], "baseline")
         XCTAssertEqual(audience[audience.firstIndex(of: "-b:v")! + 1], "6000k")
+        // An average alone let 4K keyframes reach 4.5 MiB: three times the allowance at 1 fps,
+        // and larger than browsers' WebRTC stacks assemble. The one-second limit bounds both.
+        XCTAssertEqual(audience[audience.firstIndex(of: "-maxrate")! + 1], "6000k")
         XCTAssertEqual(audience[audience.firstIndex(of: "-bf")! + 1], "0")
         let monitoring = MediaOutputContract.monitoringVideoArguments
         XCTAssertEqual(monitoring[monitoring.firstIndex(of: "-profile:v")! + 1], "high")
         XCTAssertEqual(AudienceQuality.allCases.map(\.kilobits), [12_000, 6_000, 3_000])
+    }
+    func testReaderQueueHoldsALargestKeyframeBurst() {
+        // MediaMTX exits on a non-power-of-two queue. Its largest accepted access unit is
+        // 8 MiB, sent as RTP payloads of at most 1,460 bytes.
+        let packets = MediaRuntime.readerQueuePackets
+        XCTAssertEqual(packets & (packets - 1), 0)
+        XCTAssertGreaterThanOrEqual(packets, 8 * 1024 * 1024 / 1460)
     }
 }

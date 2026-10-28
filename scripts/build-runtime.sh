@@ -28,7 +28,10 @@ for item in lock['sourceMaterials']:
     if hashlib.sha256(archive.read_bytes()).hexdigest()!=item['sha256']:
         raise SystemExit('Checksum mismatch: '+item['archive'])
 PY
-cp Vendor/sources/mediamtx/mediamtx Vendor/bin/mediamtx
+if ! cmp -s Vendor/sources/mediamtx/mediamtx Vendor/bin/mediamtx; then
+  cp Vendor/sources/mediamtx/mediamtx Vendor/bin/mediamtx.next
+  mv -f Vendor/bin/mediamtx.next Vendor/bin/mediamtx
+fi
 cp Vendor/sources/mediamtx/LICENSE Vendor/licenses/MediaMTX-MIT.txt
 if [[ ! -f Vendor/opus/lib/libopus.a || "${SETBEAM_REBUILD_OPUS:-0}" == 1 ]]; then
   (
@@ -43,7 +46,7 @@ if [[ ! -f Vendor/opus/lib/libopus.a || "${SETBEAM_REBUILD_OPUS:-0}" == 1 ]]; th
 fi
 cp Vendor/sources/opus-1.6.1/COPYING Vendor/licenses/Opus-BSD.txt
 python3 scripts/patch-avfoundation.py Vendor/sources/ffmpeg-9.0.2
-if [[ ! -x Vendor/bin/ffmpeg || "${SETBEAM_REBUILD_FFMPEG:-0}" == 1 ]] || ! Vendor/bin/ffmpeg -hide_banner -h demuxer=avfoundation 2>&1 | grep -q video_device_unique_id || ! Vendor/bin/ffmpeg -hide_banner -demuxers 2>&1 | grep -q ' hevc '; then
+if [[ ! -x Vendor/bin/ffmpeg || "${SETBEAM_REBUILD_FFMPEG:-0}" == 1 ]] || ! Vendor/bin/ffmpeg -hide_banner -h demuxer=avfoundation 2>&1 | grep -q video_device_unique_id || ! Vendor/bin/ffmpeg -hide_banner -demuxers 2>&1 | grep -q ' hevc ' || ! Vendor/bin/ffmpeg -hide_banner -filters 2>&1 | grep -q ' select '; then
   (
     cd Vendor/sources/ffmpeg-9.0.2
     [[ ! -f Makefile ]] || make clean
@@ -62,10 +65,13 @@ if [[ ! -x Vendor/bin/ffmpeg || "${SETBEAM_REBUILD_FFMPEG:-0}" == 1 ]] || ! Vend
       --enable-decoder=h264,hevc,aac,aac_latm,opus,libopus,rawvideo,wrapped_avframe,mjpeg,png,pcm_s16le,pcm_s24le,pcm_s32le,pcm_f32le,pcm_f64le \
       --enable-encoder=h264_videotoolbox,libopus,aac,mjpeg,png,wrapped_avframe,pcm_s16le,rawvideo \
       --enable-parser=h264,hevc,aac,aac_latm,opus,mjpeg,png \
-      --enable-filter=testsrc2,color,sine,anullsrc,anull,scale,format,aresample,aformat,fps,null,volume,split,asplit,setpts,asetpts,trim,atrim \
+      --enable-filter=testsrc2,color,sine,anullsrc,anull,scale,format,aresample,aformat,fps,select,null,volume,split,asplit,setpts,asetpts,trim,atrim \
       --enable-bsf=h264_mp4toannexb,aac_adtstoasc,extract_extradata,filter_units,setts
     make -j "$JOBS"
-    cp ffmpeg ffprobe "$ROOT/Vendor/bin/"
+    for binary in ffmpeg ffprobe; do
+      cp "$binary" "$ROOT/Vendor/bin/$binary.next"
+      mv -f "$ROOT/Vendor/bin/$binary.next" "$ROOT/Vendor/bin/$binary"
+    done
     cp ffbuild/config.mak "$ROOT/Vendor/licenses/FFmpeg-build-configuration.txt"
   ) > build/logs/ffmpeg-build.log 2>&1
 fi

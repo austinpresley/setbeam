@@ -52,6 +52,7 @@ static int open_decoder(AVFormatContext *input, enum AVMediaType type, Decoder *
     int error=avcodec_parameters_to_context(out->codec,out->stream->codecpar);
     if(error<0)return error;
     out->codec->thread_count=2;
+    out->codec->thread_type=FF_THREAD_SLICE;
     out->codec->pkt_timebase=out->stream->time_base;
     return avcodec_open2(out->codec,codec,NULL);
 }
@@ -77,7 +78,8 @@ int main(int argc,char **argv) {
     input->interrupt_callback=(AVIOInterruptCB){interrupt_io,NULL};
     AVDictionary *options=NULL;
     av_dict_set(&options,"rtsp_transport","tcp",0);av_dict_set(&options,"rw_timeout","5000000",0);
-    av_dict_set(&options,"analyzeduration","500000",0);av_dict_set(&options,"probesize","1000000",0);
+    av_dict_set(&options,"analyzeduration","2000000",0);av_dict_set(&options,"probesize","1000000",0);
+    av_dict_set(&options,"fpsprobesize","0",0);av_dict_set(&options,"max_ts_probe","0",0);
     int result=avformat_open_input(&input,argv[1],NULL,&options);av_dict_free(&options);
     Decoder video={.index=-1},audio={.index=-1};
     struct SwsContext *scale=NULL;SwrContext *resample=NULL;
@@ -117,7 +119,7 @@ int main(int argc,char **argv) {
                  * time base. Actual presentation deltas are the reliable cadence. */
                 int64_t duration=cadence.num>0?av_rescale_q(1,av_inv_q(cadence),AV_TIME_BASE_Q):33333;
                 int64_t pts=timestamp(decoder,frame,duration);
-                if(previous_video_pts!=AV_NOPTS_VALUE&&pts>previous_video_pts&&pts-previous_video_pts<=1000000)duration=pts-previous_video_pts;
+                if(previous_video_pts!=AV_NOPTS_VALUE&&pts>previous_video_pts&&pts-previous_video_pts<=2000000)duration=pts-previous_video_pts;
                 previous_video_pts=pts;decoder->next_pts=pts+duration;
                 if(max_fps>0&&last_video!=INT64_MIN&&pts>=last_video&&pts-last_video<1000000/max_fps){av_frame_unref(frame);continue;}
                 last_video=pts;

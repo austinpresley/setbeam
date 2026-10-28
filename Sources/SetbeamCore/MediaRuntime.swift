@@ -66,7 +66,10 @@ public actor MediaRuntime {
     private let accsoonReceiver = AccsoonReceiver()
     private var accsoonVideoPort: UInt16 = 0, accsoonAudioPort: UInt16?
     private var audienceQuality = AudienceQuality.best
+    private var audienceFrameRate = VideoFrameRate.source
+    private var screenFrameRate = VideoFrameRate.source
     private let log: SessionLog
+    private let serverWarnings = ServerWarnings()
 
     public init(paths: RuntimePaths, log: SessionLog = .shared) {
         self.paths = paths; self.log = log
@@ -144,6 +147,10 @@ public actor MediaRuntime {
             ["action": "read", "path": "source"], ["action": "read", "path": "local"], ["action": "read", "path": "live"]]
         let configuration: [String: Any] = [
             "logLevel": "warn", "api": true, "apiAddress": "127.0.0.1:\(apiPort)",
+            // Each keyframe arrives as one burst of RTP packets. The default 512-packet reader
+            // queue holds about 750 KB, so detailed monitoring-quality keyframes were discarded
+            // mid-picture. 8192 holds MediaMTX's largest accepted 8 MiB access unit.
+            "writeQueueSize": Self.readerQueuePackets,
             "rtsp": true, "rtspAddress": "127.0.0.1:\(rtspPort)", "rtspTransports": ["tcp"],
             "rtmp": true, "rtmpAddress": "127.0.0.1:\(rtmpPort)", "hls": false, "srt": false, "moq": false,
             "webrtc": true, "webrtcAddress": ":\(webPort)",
@@ -186,11 +193,13 @@ public actor MediaRuntime {
         switch source {
         case .macScreen(let id):
             let display = try MacDisplay.resolve(id, in: MacDisplay.connected())
-            args += Self.screenInputArguments(frameRate: display.frameRate)
+            args += Self.screenInputArguments(frameRate: screenFrameRate.captureRate(for: display.frameRate))
         case .sample:
             args += ["-re", "-stream_loop", "-1", "-i", paths.fixtures.appendingPathComponent("Demo.mp4").path]
         case .network, .incoming:
-            args += ["-analyzeduration", "500000", "-probesize", "1000000", "-rtsp_transport", "tcp", "-i", publisherURL("source")]
+            // External encodings can contain B pictures. Keep FFmpeg's DTS discovery
+            // before stream copy; bypassing it can collapse/reorder their timestamps.
+            args += ["-analyzeduration", "2000000", "-fpsprobesize", "0", "-probesize", "1000000", "-rtsp_transport", "tcp", "-i", publisherURL("source")]
         case .capture(let video, let audio):
             // Request the device's own format and cadence; a fixed rate halves 60p inputs
             // or fails on devices without that mode.
@@ -230,19 +239,25 @@ public actor MediaRuntime {
         return args + publishArguments("local")
     }
 
+    /// Per-reader RTP queue. MediaMTX refuses to start unless this is a power of two.
+    static let readerQueuePackets = 8192
+
     /// The elementary-stream pipe carries no timestamps. Generated ones advanced one 90 kHz tick per
     /// frame under stream copy, so stamp each frame by arrival from the constant-rate capture clock.
     static func screenInputArguments(frameRate: Int) -> [String] {
-        ["-use_wallclock_as_timestamps", "1", "-f", "h264", "-framerate", String(frameRate), "-i", "pipe:0"]
+        // The normal rate probe can wait for dozens of pictures. At 1 fps that exceeds
+        // the source watchdog, even though capture is producing valid frames every second.
+        ["-use_wallclock_as_timestamps", "1", "-analyzeduration", "2000000", "-fpsprobesize", "0", "-max_ts_probe", "0",
+         "-f", "h264", "-framerate", String(frameRate), "-i", "pipe:0"]
     }
     private var commonFFmpegArguments: [String] {
         ["-nostdin", "-hide_banner", "-loglevel", "warning", "-progress", "pipe:1", "-stats_period", "1"]
     }
     private func publisherURL(_ path: String) -> String { "rtsp://publisher:\(publisherPassword)@127.0.0.1:\(rtspPort)/\(path)" }
     private func publishArguments(_ path: String) -> [String] { ["-f", "rtsp", "-rtsp_transport", "tcp", publisherURL(path)] }
-    private func child(_ name: String, _ executable: String, _ arguments: [String]) throws -> ManagedChild {
+    private func child(_ name: String, _ executable: String, _ arguments: [String], onOutput: (@Sendable (Data) -> Void)? = nil) throws -> ManagedChild {
         guard let directory else { throw SetbeamError.runtime("Media session has not been prepared.") }
-        return try ManagedChild(name: name, executable: paths.tools.appendingPathComponent(executable), arguments: arguments, directory: directory)
+        return try ManagedChild(name: name, executable: paths.tools.appendingPathComponent(executable), arguments: arguments, directory: directory, onOutput: onOutput)
     }
 
     private func launchServer() async throws {
@@ -250,7 +265,12 @@ public actor MediaRuntime {
         let configuration = directory.appendingPathComponent("mediamtx.yml")
         try Self.json(configurationObject()).write(to: configuration, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configuration.path)
-        mediaServer = try child("MediaMTX", "mediamtx", [configuration.path])
+        // MediaMTX logs reader discards and rejected input on stdout.
+        mediaServer = try child("MediaMTX", "mediamtx", [configuration.path]) { [serverWarnings, log] data in
+            for entry in serverWarnings.consume(String(decoding: data, as: UTF8.self)) {
+                log.record("server.warning", ["message": entry.message, "repeats": entry.repeats])
+            }
+        }
         let deadline = Date().addingTimeInterval(5)
         while Date() < deadline {
             guard mediaServer?.isRunning == true else { throw SetbeamError.runtime("The video service could not start.") }
@@ -272,7 +292,7 @@ public actor MediaRuntime {
                 sourcePublisher = try ManagedChild(name: "Screen input", executable: paths.tools.appendingPathComponent("ffmpeg"), arguments: sourceArguments, directory: directory, standardInput: pipe.fileHandleForReading)
                 try pipe.fileHandleForReading.close()
                 screenCapture = capture
-                try await capture.start(displayUUID: id, output: pipe.fileHandleForWriting)
+                try await capture.start(displayUUID: id, output: pipe.fileHandleForWriting, frameRate: screenFrameRate)
             } catch {
                 capture.stop(); screenCapture = nil; sourcePublisher?.stop(); sourcePublisher = nil
                 throw error
@@ -330,7 +350,7 @@ public actor MediaRuntime {
         guestPassword = MediaRuntime.secret()
         _ = try await api("/v3/config/global/patch", method: "PATCH", object: ["authInternalUsers": users()])
         try sessionState.startSharing(); sessionState.updateAudience(available: false); audienceFailures = 0
-        log.record("sharing.start", ["quality": audienceQuality.rawValue])
+        log.record("sharing.start", ["quality": audienceQuality.rawValue, "fps": audienceFrameRate.rawValue])
         publishSnapshot()
         try launchAudience()
         return await refreshSnapshot()
@@ -457,27 +477,51 @@ public actor MediaRuntime {
             args += ["-re", "-stream_loop", "-1", "-i", paths.fixtures.appendingPathComponent("Hold.mp4").path,
                      "-c:v", "copy", "-c:a", "libopus", "-b:a", "64k", "-ar", "48000", "-ac", "2"]
         } else {
-            args += ["-analyzeduration", "500000", "-probesize", "1000000", "-rtsp_transport", "tcp", "-i", publisherURL("local"),
+            // Frame-threaded decoding can buffer a core-count's worth of pictures. At
+            // 1 fps that can exceed the publisher watchdog before producing its first frame.
+            args += ["-analyzeduration", "2000000", "-fpsprobesize", "0", "-max_ts_probe", "0", "-probesize", "1000000",
+                     "-threads:v", "2", "-thread_type:v", "slice", "-rtsp_transport", "tcp", "-i", publisherURL("local"),
                      "-map", "0:v:0", "-map", "0:a:0?"]
-            // The private relay keeps the source encoding. Browsers get their own bounded H.264
-            // Baseline encode; only the verified bundled sample is copied.
-            if case .sample = source { args += ["-c", "copy"] }
-            else { args += MediaOutputContract.audienceVideoArguments(audienceQuality) + ["-c:a", "copy"] }
+            // Every source, including the sample, honors viewer bitrate and cadence settings.
+            args += MediaOutputContract.audienceVideoArguments(audienceQuality, frameRate: audienceFrameRate) + ["-c:a", "copy"]
         }
         audiencePublisher = try child(holding ? "Audience holding output" : "Audience relay", "ffmpeg", args + publishArguments("live"))
         audienceStartedAt = Date(); audienceRevision += 1
     }
     /// Applies to the next audience encode. An active, unheld audience reconnects at the new rate.
     public func setAudienceQuality(_ quality: AudienceQuality) async {
+        await setVideoSettings(quality: quality)
+    }
+
+    /// Applies saved video settings together, replacing at most one source and audience publisher.
+    /// Viewer-only changes preserve full-rate local monitoring. Screen capture changes retain
+    /// the server, viewing identity, sharing intent, and any already-running holding output.
+    public func setVideoSettings(quality: AudienceQuality? = nil, frameRate: VideoFrameRate? = nil,
+                                 screenFrameRate: VideoFrameRate? = nil) async {
         await acquireOperation()
         defer { releaseOperation() }
-        guard quality != audienceQuality else { return }
-        audienceQuality = quality
-        log.record("audience.quality", ["quality": quality.rawValue])
-        guard sharing, !holding, audiencePublisher != nil else { return }
-        audiencePublisher?.stop(); audiencePublisher = nil
-        sessionState.updateAudience(available: false); publishSnapshot()
-        try? launchAudience()
+        let quality = quality ?? audienceQuality, rate = frameRate ?? audienceFrameRate
+        let screenRate = screenFrameRate ?? self.screenFrameRate
+        let audienceChanged = quality != audienceQuality || rate != audienceFrameRate
+        let screenChanged = screenRate != self.screenFrameRate
+        guard audienceChanged || screenChanged else { return }
+        audienceQuality = quality; audienceFrameRate = rate; self.screenFrameRate = screenRate
+        log.record("video.settings", ["quality": quality.rawValue, "viewerFPS": rate.rawValue, "screenFPS": screenRate.rawValue])
+        let restartScreen: Bool
+        if case .macScreen = source { restartScreen = screenChanged && directory != nil }
+        else { restartScreen = false }
+        let restartAudience = sharing && !holding && (audienceChanged || restartScreen)
+        if restartAudience {
+            audiencePublisher?.stop(); audiencePublisher = nil
+            sessionState.updateAudience(available: false)
+        }
+        if restartScreen {
+            screenCapture?.stop(); screenCapture = nil; sourcePublisher?.stop(); sourcePublisher = nil
+            sessionState.updateSource(available: false); observedFrameAt = nil
+        }
+        publishSnapshot()
+        if restartScreen { try? await launchSource() }
+        if restartAudience { try? launchAudience() }
         _ = await refreshSnapshot()
     }
     public func stopSharing() async {
@@ -542,6 +586,7 @@ public actor MediaRuntime {
         defer { releaseOperation() }
         guard expected == lifetime, directory != nil, !Task.isCancelled else { return }
         let problem = await reconcile()
+        for entry in serverWarnings.due() { log.record("server.warning", ["message": entry.message, "repeats": entry.repeats]) }
         _ = await refreshSnapshot(problem: problem)
     }
     private func reconcile() async -> String? {
@@ -642,6 +687,11 @@ public actor MediaRuntime {
     public func diagnosticStatus() async -> [String: Any] {
         let value = await snapshot()
         return ["source": source.label, "sourceAvailable": value.sourceAvailable, "connectionStage": value.connectionStage.rawValue, "sharing": sharing, "holding": holding,
+                "viewerQuality": audienceQuality.rawValue, "viewerFPS": audienceFrameRate.rawValue, "screenFPS": screenFrameRate.rawValue,
+                "audienceError": Redaction.text(audiencePublisher?.recentError ?? ""),
+                "audienceProgress": audiencePublisher?.capturedOutput.suffix(1200).description ?? "",
+                "sourceFrameAge": sourcePublisher?.lastVideoFrameAt.map { Date().timeIntervalSince($0) } ?? -1,
+                "audienceFrameAge": audiencePublisher?.lastVideoFrameAt.map { Date().timeIntervalSince($0) } ?? -1,
                 "processes": ["server": mediaServer?.isRunning ?? false, "source": sourcePublisher?.isRunning ?? false, "audience": audiencePublisher?.isRunning ?? false],
                 "lastError": Redaction.text(value.message ?? sourcePublisher?.recentError ?? ""), "wirelessError": accsoonReceiver.lastError ?? "", "wirelessStatistics": accsoonReceiver.statistics]
     }

@@ -1,12 +1,11 @@
 import AppKit
 import AVFoundation
-import CoreImage
 import SetbeamCore
 
 /// One timestamped decode of the private relay serves the main and floating windows.
 /// Audio and picture use the same native playback clock. Audience controls never touch it.
 @MainActor final class NativePreview: ObservableObject {
-    @Published private(set) var image: NSImage?
+    @Published private(set) var picture: PreviewPicture?
     private var decoder: ManagedChild?
     private var playback: PreviewPlayback?
     private var url: String?
@@ -59,7 +58,7 @@ import SetbeamCore
         let output = PreviewPlayback(audioEnabled: audioEnabled, muted: muted) { [weak self] frame in
             Task { @MainActor in
                 guard let self, self.generation == current else { return }
-                self.image = frame; self.lastFrameAt = Date()
+                self.picture = frame; self.lastFrameAt = Date()
             }
         }
         playback = output
@@ -76,7 +75,7 @@ import SetbeamCore
     func checkHealth(sourceAvailable: Bool) { sourceReady = sourceAvailable; observeHealth() }
     private func observeHealth() {
         let stats = diagnostics
-        let playing = image != nil && Date().timeIntervalSince(lastFrameAt) < 2
+        let playing = picture != nil && Date().timeIntervalSince(lastFrameAt) < PreviewPlaybackTiming.freshnessInterval(sourceFPS: stats.sourceFPS)
         onPlaybackState?(playing, playing ? nil : stats.error ?? decoder?.recentError)
         if audioEnabled, !muted, playing, !soundFailureReported {
             let timedOut = soundRequestedAt.map { Date().timeIntervalSince($0) > 4 } ?? false
@@ -123,7 +122,7 @@ import SetbeamCore
         watchdog?.cancel(); watchdog = nil; generation = UUID()
         decoder?.stop(); decoder = nil; playback?.stop(); playback = nil
         if let directory { try? FileManager.default.removeItem(at: directory) }
-        directory = nil; url = nil; image = nil; lastFrameAt = .distantPast; sourceReady = false
+        directory = nil; url = nil; picture = nil; lastFrameAt = .distantPast; sourceReady = false
     }
 }
 
@@ -144,7 +143,8 @@ private final class PreviewPlayback: @unchecked Sendable {
     private var inbox = PreviewInbox()
     private var stats = PreviewPlaybackStats()
     private var stopped = false, muted: Bool, audioBusy = false, audioReset = false
-    private var latestImage: NSImage?, deliveryPending = false
+    private var latestImage: PreviewPicture?, deliveryPending = false
+    private var pool: CVPixelBufferPool?, poolFormat = (width: 0, height: 0, format: OSType(0))
     private var latestPTS = 0.0
     private var latestWidth = 0, latestHeight = 0
     private let audioEnabled: Bool
@@ -154,9 +154,9 @@ private final class PreviewPlayback: @unchecked Sendable {
     private let audioQueue = DispatchQueue(label: "app.setbeam.preview-sound", qos: .userInitiated)
     private var timer: DispatchSourceTimer?
     private var anchored = false
-    private let onFrame: @Sendable (NSImage) -> Void
+    private let onFrame: @Sendable (PreviewPicture) -> Void
 
-    init(audioEnabled: Bool, muted: Bool, onFrame: @escaping @Sendable (NSImage) -> Void) {
+    init(audioEnabled: Bool, muted: Bool, onFrame: @escaping @Sendable (PreviewPicture) -> Void) {
         self.audioEnabled = audioEnabled; self.muted = muted; self.onFrame = onFrame
         synchronizer.delaysRateChangeUntilHasSufficientMediaData = false
         let timer = DispatchSource.makeTimerSource(queue: videoQueue)
@@ -189,12 +189,8 @@ private final class PreviewPlayback: @unchecked Sendable {
     private func tick() {
         lock.lock()
         guard !stopped else { lock.unlock(); return }
-        let first = inbox.video.first
-        let latest = inbox.video.last
         let clock = CMTimeGetSeconds(synchronizer.currentTime())
-        let discontinuity = inbox.discontinuity
-        // A large jump or a suspended consumer restarts one shared clock for both media.
-        if let first, let latest, !anchored || discontinuity || first.seconds - clock > 0.25 || PreviewPlaybackTiming.arrivedTooLate(latest, clock: clock) {
+        if PreviewPlaybackTiming.needsAnchor(inbox, anchored: anchored, clock: clock), let latest = inbox.video.last {
             // Stream probing can deliver a buffered burst before steady live packets.
             // Anchor to current decoded media availability, and reset audio on that
             // same clock, rather than letting the startup burst leave sound late.
@@ -208,7 +204,7 @@ private final class PreviewPlayback: @unchecked Sendable {
         if shouldAudio { audioBusy = true }
         stats.clockPTS = now
         lock.unlock()
-        if let frame, let image = makeImage(frame) {
+        if let frame, let image = makePicture(frame) {
             lock.lock()
             if latestImage != nil { stats.droppedPresentationFrames += 1 }
             latestImage = image; latestPTS = frame.seconds
@@ -266,11 +262,17 @@ private final class PreviewPlayback: @unchecked Sendable {
         if renderer.status == .failed { stats.audioError = "Local sound could not start. Check the Mac's sound output and try again. Video monitoring continues." }
         lock.unlock()
     }
-    private func makeImage(_ frame: PreviewPacket) -> NSImage? {
-        var pixelBuffer: CVPixelBuffer?
+    /// Runs on the picture queue only. Pooled IOSurfaces avoid mapping a new 12 MB surface per 4K frame.
+    private func makePicture(_ frame: PreviewPacket) -> PreviewPicture? {
         let format = frame.flags & 1 != 0 ? kCVPixelFormatType_420YpCbCr8BiPlanarFullRange : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
-        guard CVPixelBufferCreate(kCFAllocatorDefault, frame.width, frame.height, format,
-            [kCVPixelBufferIOSurfacePropertiesKey: [:]] as CFDictionary, &pixelBuffer) == kCVReturnSuccess, let pixelBuffer else { return nil }
+        if pool == nil || poolFormat != (frame.width, frame.height, format) {
+            let attributes: [CFString: Any] = [kCVPixelBufferPixelFormatTypeKey: format, kCVPixelBufferWidthKey: frame.width,
+                                               kCVPixelBufferHeightKey: frame.height, kCVPixelBufferIOSurfacePropertiesKey: [:]]
+            pool = nil; CVPixelBufferPoolCreate(kCFAllocatorDefault, nil, attributes as CFDictionary, &pool)
+            poolFormat = (frame.width, frame.height, format)
+        }
+        var pixelBuffer: CVPixelBuffer?
+        guard let pool, CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &pixelBuffer) == kCVReturnSuccess, let pixelBuffer else { return nil }
         CVPixelBufferLockBaseAddress(pixelBuffer, [])
         frame.payload.withUnsafeBytes { bytes in
             guard let source = bytes.baseAddress else { return }
@@ -279,16 +281,15 @@ private final class PreviewPlayback: @unchecked Sendable {
                 let start = plane == 0 ? 0 : frame.width * frame.height
                 guard let destination = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, plane) else { continue }
                 let stride = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, plane)
+                if stride == frame.width { memcpy(destination, source.advanced(by: start), rows * frame.width); continue }
                 for row in 0..<rows { memcpy(destination.advanced(by: row * stride), source.advanced(by: start + row * frame.width), frame.width) }
             }
         }
         CVPixelBufferUnlockBaseAddress(pixelBuffer, [])
         let matrix = frame.matrix == 1 ? kCVImageBufferYCbCrMatrix_ITU_R_709_2 : frame.matrix == 9 ? kCVImageBufferYCbCrMatrix_ITU_R_2020 : kCVImageBufferYCbCrMatrix_ITU_R_601_4
         CVBufferSetAttachment(pixelBuffer, kCVImageBufferYCbCrMatrixKey, matrix, .shouldPropagate)
-        let representation = NSCIImageRep(ciImage: CIImage(cvPixelBuffer: pixelBuffer))
         let size = NSSize(width: Double(frame.width) * Double(frame.aspectNumerator) / Double(frame.aspectDenominator), height: Double(frame.height))
-        let image = NSImage(size: size); image.addRepresentation(representation)
-        return image
+        return PreviewPicture(pixelBuffer: pixelBuffer, size: size)
     }
     private func makeAudioBuffer(_ packet: PreviewPacket) -> CMSampleBuffer? {
         var description = AudioStreamBasicDescription(mSampleRate: 48_000, mFormatID: kAudioFormatLinearPCM,

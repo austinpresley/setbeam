@@ -84,6 +84,8 @@ struct PreviewInbox {
     private(set) var decodedFrames = 0
     private(set) var sourceFrameDuration = 0.0
     private(set) var discontinuity = false
+    /// Capacity evicted a picture before the clock reached it, so the clock is behind arrivals.
+    private(set) var overrun = false
     static let maximumVideoFrames = 6
     static let maximumVideoBytes = 32 * 1024 * 1024
     static let maximumAudioSeconds = 0.4
@@ -99,7 +101,7 @@ struct PreviewInbox {
             sourceFrameDuration = packet.durationSeconds
             video.append(packet); videoBytes += packet.payload.count
             while video.count > Self.maximumVideoFrames || video.count > 1 && videoBytes > Self.maximumVideoBytes {
-                videoBytes -= video.removeFirst().payload.count; droppedVideo += 1
+                videoBytes -= video.removeFirst().payload.count; droppedVideo += 1; overrun = true
             }
         case .audio:
             audio.append(packet)
@@ -125,7 +127,7 @@ struct PreviewInbox {
         }
         return result
     }
-    mutating func acknowledgeDiscontinuity() { discontinuity = false }
+    mutating func acknowledgeDiscontinuity() { discontinuity = false; overrun = false }
     mutating func clearMedia() {
         droppedVideo += video.count; droppedAudio += audio.count
         video.removeAll(); audio.removeAll(); videoBytes = 0
@@ -133,12 +135,25 @@ struct PreviewInbox {
 }
 
 enum PreviewPlaybackTiming {
+    /// At 1 fps, allow several frame intervals of scheduling jitter before showing recovery.
+    /// Keep the bound short enough that a frozen picture still becomes unavailable.
+    static func freshnessInterval(sourceFPS: Double) -> Double {
+        guard sourceFPS.isFinite, sourceFPS > 0 else { return 2 }
+        return max(2, min(6, 3 / sourceFPS))
+    }
     /// Playout delay must fit inside the queue at the incoming dimensions/cadence.
     /// Otherwise a full-resolution high-rate source could evict every frame before it is due.
     static func playoutDelay(for packet: PreviewPacket) -> Double {
         let memoryDepth = max(1, PreviewInbox.maximumVideoBytes / max(1, packet.payload.count))
         let depth = min(PreviewInbox.maximumVideoFrames, memoryDepth)
         return min(0.04, max(0, packet.durationSeconds) * Double(depth - 1) / 2)
+    }
+    /// A large jump or a suspended consumer restarts one shared clock for both media. So does a
+    /// clock left behind by a late arrival: only two 4K pictures fit the queue, so waiting for them
+    /// would evict every picture before it is due.
+    static func needsAnchor(_ inbox: PreviewInbox, anchored: Bool, clock: Double) -> Bool {
+        guard let first = inbox.video.first, let latest = inbox.video.last else { return false }
+        return !anchored || inbox.discontinuity || inbox.overrun || first.seconds - clock > 0.25 || arrivedTooLate(latest, clock: clock)
     }
     static func arrivedTooLate(_ packet: PreviewPacket, clock: Double) -> Bool {
         clock - packet.seconds > max(0.06, packet.durationSeconds * 2)

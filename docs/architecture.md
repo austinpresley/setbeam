@@ -41,25 +41,51 @@ when MediaMTX observes exactly one H.264, H.265, or Motion JPEG picture with
 nonzero dimensions and optional Opus; the bundled decoder and audience encoder
 both accept those codecs.
 
+Each keyframe reaches MediaMTX as one burst of RTP packets, and MediaMTX
+discards packets for any reader whose queue is full. Its default 512-packet
+reader queue holds about 750 KB, less than one detailed monitoring-quality
+keyframe, so the runtime sets 8192 packets. That holds MediaMTX's largest
+accepted 8 MiB access unit. MediaMTX drops a larger access unit at ingest for
+every reader, whatever the queue size.
+
 The browser transport is WebRTC. The audience `live` output is its own encode
 of the relay, made only while sharing: H.264 Baseline without B frames,
-preserving dimensions and cadence and rounding odd dimensions to even values
+preserving dimensions and, by default, cadence, and rounding odd dimensions to even values
 for 4:2:0, with the relay's Opus copied. Each viewer receives a separate WebRTC
 copy, so the operator chooses a per-viewer ceiling of 12, 6, or 3 Mbps; a change
-restarts only the audience encode under the same viewing credential. Only the
-verified bundled sample copies its video to viewers. Observed `live` metadata
+restarts only the audience encode under the same viewing credential. That
+allowance is also the encoder's one-second limit: an average alone let 4K
+keyframes reach 4.5 MiB, three times the allowance at 1 fps and too large for
+browsers' WebRTC stacks to assemble. The saved Viewer frame rate can match the
+source up to 30 fps or cap it at 1, 5, 10, 15, 24, 25, or 30 fps. Nothing Setbeam
+encodes exceeds 30 fps: two 4K60 encodes saturated the hardware encoder, and stills
+and screens gain little from more. FFmpeg's bundled select filter keeps at most
+one frame per rounded timestamp bucket before encoding. It preserves presentation timestamps and never
+duplicates a slower input, including when RTSP frame-rate metadata is missing.
+Dimensions and the bitrate allowance stay
+unchanged. The sample uses this same audience encode so both settings apply to
+every source. Observed `live` metadata
 must satisfy this browser contract before the audience output is ready.
 
 The separate bundled `setbeam-preview` helper links the pinned FFmpeg libraries
 and decodes the private local RTSP relay once. A versioned, bounded pipe carries
-NV12 video and stereo Float32 PCM with source presentation timestamps. The native
-renderer presents shared pixel-buffer images in the main and floating windows;
-there is no JPEG encode/decode or fixed 24 fps/1280-pixel main-preview limit.
-Audio and video use one AVSampleBufferRenderSynchronizer clock. Bounded queues,
-stale-frame dropping, timestamp discontinuity handling, and a decoder watchdog
-keep playback current. Audio-device initialization stays off the UI thread and
+NV12 video and stereo Float32 PCM with source presentation timestamps. Each
+picture is copied into a pooled IOSurface pixel buffer that the main window,
+floating preview, and setup-check thumbnail show through
+AVSampleBufferDisplayLayer. The GPU compositor converts NV12 for display; there is
+no CPU RGB conversion, per-frame CoreImage context, JPEG encode/decode, or fixed
+24 fps/1280-pixel main-preview limit. Audio and video use one
+AVSampleBufferRenderSynchronizer clock. Bounded queues, stale-frame dropping,
+timestamp discontinuity handling, and a decoder watchdog keep playback current.
+The 32 MB video queue holds only two 4K pictures, so a clock left behind by a
+late arrival would otherwise evict every later picture before it is due. When
+capacity evicts an unpresented picture, the shared clock restarts at the newest
+one. Audio-device initialization stays off the UI thread and
 has an operator-visible timeout. The main preview preserves source cadence;
 the silent outgoing thumbnail explicitly requests its smaller size and rate.
+Both the audience and native decoders use two slice threads instead of buffering
+whole frames across automatic frame threads. That keeps a 1 fps input from
+waiting many seconds for a decoder thread queue to fill.
 Guest permission grants read access
 only to the audience output. Control and publishing credentials are private.
 
@@ -131,7 +157,10 @@ SessionLog writes a private, size-bounded JSON-lines timeline to
 files. It records lifecycle commands, process restarts with the decoded exit
 status and a redacted error tail, connection stages, viewer counts, and each
 source or audience readiness change with the inputs behind it: relay
-availability, decodable metadata, receiver state, and frame age. Every string
+availability, decodable metadata, receiver state, and frame age. MediaMTX
+warnings and errors, such as reader discards and rejected input, are recorded as
+`server.warning`; repeats of one kind within ten seconds are counted into the
+next entry. Every string
 passes through Redaction, which removes URL credentials, query secrets,
 key/pass parameters, viewing-link tokens, and long secret-like runs. Nothing is
 written until the app or probe configures a directory; the probe writes under
@@ -171,13 +200,13 @@ MacScreenCapture owns one in-app ScreenCaptureKit stream. The display filter exc
 
 The chooser lists localized display names and native pixel dimensions without requesting recording permission. SourceSetup persists the CG display UUID in videoID, never an enumeration index. Every retry resolves that UUID again. A disconnected display remains the selected source; another connected display is never substituted. Proven setup confirmation and private relaunch use the existing readiness gate.
 
-ScreenCaptureKit includes the cursor and captures video only, labeled No sound. Pixels are preserved up to a 3840 by 2160 bounding box, maintaining aspect ratio and even dimensions. Cadence follows the display mode rounded to the nearest whole frame rate up to 60 fps, with 60 as the fallback for a variable/unspecified refresh rate. A timer encodes the latest complete screen frame even while the desktop is unchanged. ScreenCaptureKit errors clear that picture and close the publisher input so normal runtime recovery retries the selected display.
+ScreenCaptureKit includes the cursor and captures video only, labeled No sound. Pixels are preserved up to a 3840 by 2160 bounding box, maintaining aspect ratio and even dimensions. By default cadence follows the display mode rounded to the nearest whole frame rate up to 30 fps; a variable or unspecified refresh rate uses 30. The separate saved Screen capture frame rate can reduce that cadence, including to 1 fps, without changing pixel dimensions. Its resolved rate drives ScreenCaptureKit, the encoding timer, VideoToolbox, and the pipe demuxer together. Changing it restarts only the selected screen source and any live audience encode, retaining the server, viewer credential, sharing intent, and any running holding output. Viewer-only FPS changes leave the source publisher and local decoder alone. A timer encodes the latest complete screen frame even while the desktop is unchanged. ScreenCaptureKit errors clear that picture and close the publisher input so normal runtime recovery retries the selected display.
 
-VideoToolbox encodes H.264 without B frames, at least 40 Mbps, scaling the bitrate with pixel count and cadence, with a keyframe every second. The screen publisher copies this monitoring-quality video to local like other received encodings, and browsers receive the audience output's own bounded encode. An Annex B pipe feeds the existing bundled FFmpeg H.264 demuxer. The pipe carries no timestamps, so FFmpeg stamps each frame on arrival from the constant-rate capture clock; generated timestamps advanced only one 90 kHz tick per frame under stream copy. ManagedChild accepts an explicit stdin handle while retaining its existing process group and supervisor. Nonblocking writes and an 8 MiB pending limit bound backpressure; a blocked/broken pipe closes capture output and enters existing recovery. No new executable or external runtime dependency is required. Native monitoring, floating preview, sharing, Hold and Stop all continue to consume the single local relay.
+VideoToolbox encodes H.264 without B frames, at least 40 Mbps, scaling the bitrate with pixel count and cadence, with a keyframe every second. ScreenEncoder keeps every picture within 6 MiB, below the 8 MiB that VideoPipeWriter and MediaMTX each accept. VideoToolbox's data-rate limits do not bound a single keyframe, and after one oversized keyframe it stopped emitting keyframes. An oversized picture is therefore withheld with the pictures that depend on it, and the encoder restarts with a minimum QP six steps higher; the restart begins with a keyframe. The floor steps back down when a keyframe is at most half the limit. Each restart is recorded as `screen.encoder`. Ordinary screens never reach the limit and keep the unrestricted encode. The screen publisher copies this monitoring-quality video to local like other received encodings, and browsers receive the audience output's own bounded encode. An Annex B pipe feeds the existing bundled FFmpeg H.264 demuxer. The pipe carries no timestamps, so FFmpeg stamps each frame on arrival from the constant-rate capture clock; generated timestamps advanced only one 90 kHz tick per frame under stream copy. ManagedChild accepts an explicit stdin handle while retaining its existing process group and supervisor. VideoPipeWriter drains nonblocking writes on pipe writability, independently of capture ticks, and cancels idle notifications. Its 8 MiB pending limit bounds backpressure; a blocked/broken pipe closes capture output and enters existing recovery. Low-rate demuxing and native decoding allow a two-second picture-analysis window and skip the FPS/initial-DTS probes that can otherwise require dozens of frames when timing metadata is missing. Native freshness permits three frame intervals at 1 fps, bounded to six seconds. No new executable or external runtime dependency is required. Native monitoring, floating preview, sharing, Hold and Stop all continue to consume the single local relay.
 
 ## Browser viewer presentation
 
-The viewer's full-screen element contains the feed name, Sample/status strip, picture, icon toolbar, and connection help. The picture fits its decoded `videoWidth`/`videoHeight` within the available viewport without cropping. First connection is separate from later recovery, Hold uses a neutral blue pause presentation, and blocked autoplay has a large play affordance. Live-region text changes only when its value changes.
+The viewer's full-screen element contains the feed name, Sample/status strip, picture, icon toolbar, and connection help. The picture fits its decoded `videoWidth`/`videoHeight` within the available viewport without cropping. First connection is separate from later recovery, Hold uses a neutral blue pause presentation, and blocked autoplay has a large play affordance. Only `NotAllowedError` counts as blocked; a play request aborted by a replaced source keeps the stale-peer watchdog running. Live-region text changes only when its value changes.
 
 Audio control availability follows non-ended, unmuted incoming audio tracks and their add/remove/mute/unmute events. A negotiated WebRTC audio receiver alone does not establish that the source has audio. These observations affect only viewer presentation and its local mute choice. PiP is feature-detected; closing or replacing a peer exits PiP and detaches its video. Native video full screen on phones and native video PiP display the video rather than arbitrary page elements, so the page's Sample/status strip does not accompany those native views. Physical browser behavior remains separate evidence.
 

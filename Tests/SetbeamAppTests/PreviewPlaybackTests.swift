@@ -84,6 +84,23 @@ final class PreviewPlaybackTests: XCTestCase {
             XCTAssertLessThanOrEqual(PreviewPlaybackTiming.playoutDelay(for: frame), Double(depth - 1) / 60)
         }
     }
+    func testA4KClockBehindItsArrivalsStillPresentsPictures() {
+        // A late arrival anchored the clock 150 ms behind, so later 4K pictures arrive that early.
+        // Few 4K pictures fit the bounded queue; they must not all be evicted before they are due.
+        var inbox = PreviewInbox()
+        var offset = -0.15, presented = 0, next: Int64 = 0
+        for step in 0..<250 {
+            let now = Double(step) * 0.008
+            while Double(next) / 1_000_000 <= now { inbox.append(video(next, width: 3840, height: 2160)); next += 16_667 }
+            var clock = now + offset
+            if PreviewPlaybackTiming.needsAnchor(inbox, anchored: true, clock: clock), let latest = inbox.video.last {
+                offset = latest.seconds - PreviewPlaybackTiming.playoutDelay(for: latest) - now; clock = now + offset
+                inbox.acknowledgeDiscontinuity()
+            }
+            if inbox.takeVideo(at: clock) != nil { presented += 1 }
+        }
+        XCTAssertGreaterThan(presented, 100, "120 pictures arrived in two seconds")
+    }
     func testClockRecoversFromBufferedStartupWithoutTreatingOrdinaryFrameCadenceAsAnOutage() {
         let frame = video(1_000_000)
         XCTAssertTrue(PreviewPlaybackTiming.arrivedTooLate(frame, clock: 1.14))

@@ -125,7 +125,8 @@ import SwiftUI
     var onHover: ((Bool) -> Void)?
     var onScale: ((CGFloat) -> Void)?
     var onAspect: ((NSSize) -> Void)?
-    private var image: NSImage?
+    private var picture: PreviewPicture?
+    private let pictureView = PictureLayerView(gravity: .resize)
     private var viewport = PreviewViewport()
     private var frames: AnyCancellable?
     private var tracking: NSTrackingArea?
@@ -141,12 +142,14 @@ import SwiftUI
         setAccessibilityElement(true); setAccessibilityRole(.image)
         setAccessibilityLabel("Floating feed preview")
         setAccessibilityHelp("Pinch or scroll to zoom. Drag a zoomed picture to pan. Double-click or press 0 to restore the full picture. At full picture, drag to move the window.")
+        addSubview(pictureView)
         recovery.frame = bounds; recovery.autoresizingMask = [.width, .height]; addSubview(recovery)
-        frames = model.localPlayer.$image.sink { [weak self] image in
+        frames = model.localPlayer.$picture.sink { [weak self] picture in
             guard let self else { return }
-            let previous = self.image?.size; self.image = image
-            if let image, image.size != previous { self.resetInspection(); self.refreshAspect() }
-            self.needsDisplay = true
+            let previous = self.picture?.size; self.picture = picture
+            self.pictureView.show(picture)
+            if let picture, picture.size != previous { self.resetInspection(); self.refreshAspect() }
+            if picture == nil || picture?.size != previous { self.layoutPicture() }
         }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -154,20 +157,22 @@ import SwiftUI
     override var acceptsFirstResponder: Bool { true }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
-    func refreshAspect() { if let image { onAspect?(image.size) } }
+    func refreshAspect() { if let picture { onAspect?(picture.size) } }
     func resetInspection() { viewport.reset(); inspectionChanged() }
     private func inspectionChanged() {
-        onScale?(viewport.scale); needsDisplay = true; window?.invalidateCursorRects(for: self)
+        onScale?(viewport.scale); layoutPicture(); window?.invalidateCursorRects(for: self)
         setAccessibilityValue(viewport.scale > 1.001 ? "Zoomed \(Int((viewport.scale * 100).rounded())) percent" : "Full picture")
     }
-    override func draw(_ dirtyRect: NSRect) {
-        NSColor.black.setFill(); bounds.fill()
-        if let image { image.draw(in: viewport.imageRect(source: image.size, bounds: bounds), from: .zero,
-            operation: .sourceOver, fraction: 1, respectFlipped: true, hints: [.interpolation: NSImageInterpolation.high]) }
+    override func draw(_ dirtyRect: NSRect) { NSColor.black.setFill(); bounds.fill() }
+    /// The picture view occupies the zoomed image rectangle; this view's layer clips it.
+    private func layoutPicture() {
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        pictureView.frame = picture.map { viewport.imageRect(source: $0.size, bounds: bounds) } ?? .zero
+        CATransaction.commit()
     }
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
-        if let image { viewport.constrain(source: image.size, bounds: bounds) }; needsDisplay = true
+        if let picture { viewport.constrain(source: picture.size, bounds: bounds) }; layoutPicture()
     }
     override func updateTrackingAreas() {
         super.updateTrackingAreas(); if let tracking { removeTrackingArea(tracking) }
@@ -205,8 +210,8 @@ import SwiftUI
         zoom(by: exp(delta), at: convert(event.locationInWindow, from: nil))
     }
     private func zoom(by factor: CGFloat, at point: CGPoint) {
-        guard let image else { return }
-        viewport.zoom(by: factor, at: point, source: image.size, bounds: bounds)
+        guard let picture else { return }
+        viewport.zoom(by: factor, at: point, source: picture.size, bounds: bounds)
         inspectionChanged(); onHover?(true)
     }
     override func mouseDown(with event: NSEvent) {
@@ -233,9 +238,9 @@ import SwiftUI
                                           y: start.origin.y + pointer.y - start.pointer.y))
             return
         }
-        guard let previous = dragPoint, let image else { return }
+        guard let previous = dragPoint, let picture else { return }
         let point = convert(event.locationInWindow, from: nil)
-        viewport.pan(by: CGSize(width: point.x - previous.x, height: point.y - previous.y), source: image.size, bounds: bounds)
+        viewport.pan(by: CGSize(width: point.x - previous.x, height: point.y - previous.y), source: picture.size, bounds: bounds)
         dragPoint = point; inspectionChanged()
     }
     override func mouseUp(with event: NSEvent) {
@@ -256,7 +261,7 @@ import SwiftUI
             case 126: delta = CGSize(width: 0, height: 24)
             default: super.keyDown(with: event); return
             }
-            if let image { viewport.pan(by: delta, source: image.size, bounds: bounds); inspectionChanged() }
+            if let picture { viewport.pan(by: delta, source: picture.size, bounds: bounds); inspectionChanged() }
         }
     }
 }
