@@ -138,6 +138,8 @@ struct AdvancedView: View {
     @State private var password: String
     @State private var audio: String
     @State private var quality: AudienceQuality
+    @State private var frameRate: VideoFrameRate
+    @State private var screenRate: VideoFrameRate
     @State private var rejoin: Bool
     @State private var rejoinPassword: String
     @State private var remember = true
@@ -150,6 +152,7 @@ struct AdvancedView: View {
         _network = State(initialValue: model.networkChoice); _ssid = State(initialValue: model.wifiSSID)
         _password = State(initialValue: model.wifiPassword); _audio = State(initialValue: model.setup?.audioID ?? "")
         _quality = State(initialValue: model.audienceQuality)
+        _frameRate = State(initialValue: model.audienceFrameRate); _screenRate = State(initialValue: model.screenFrameRate)
         _rejoin = State(initialValue: model.transmitterRejoin); _rejoinPassword = State(initialValue: model.transmitterWiFiPassword)
         _showStream = State(initialValue: model.setup?.kind == .network)
     }
@@ -165,6 +168,14 @@ struct AdvancedView: View {
                         if model.provenSetup != nil { Button("Forget saved connection") { model.forgetSetup(); remember = false } }
                     }.id(AdvancedSection.workspace)
                     Section("Connection") {
+                        if model.setup?.kind == .macScreen {
+                            Picker("Screen capture frame rate", selection: $screenRate) {
+                                ForEach(VideoFrameRate.allCases, id: \.self) { rate in
+                                    Text(rate == .source ? "Match display, up to 30 fps" : rate.title).tag(rate)
+                                }
+                            }
+                            Text("Applies to this screen's local preview and sharing. Choose 1 fps for still-image review with less capture work. Image dimensions stay the same.").font(.caption).foregroundStyle(.secondary)
+                        }
                         if model.setup?.kind == .accsoon, let device = model.wirelessDevices.first(where: { $0.id == model.setup?.wirelessUID }) {
                             LabeledContent("Transmission system", value: device.name)
                             LabeledContent("Firmware", value: device.firmwareLabel ?? "Unknown")
@@ -204,6 +215,10 @@ struct AdvancedView: View {
                         Picker("Viewer picture", selection: $quality) {
                             ForEach(AudienceQuality.allCases, id: \.self) { Text($0.title).tag($0) }
                         }
+                        Picker("Viewer frame rate", selection: $frameRate) {
+                            ForEach(VideoFrameRate.allCases, id: \.self) { Text($0.title).tag($0) }
+                        }
+                        Text("Lower frame rates favor image detail over motion at the same bitrate. Try 1 fps for Capture One review. Image dimensions and local monitoring stay the same.").font(.caption).foregroundStyle(.secondary)
                         Text("Each viewer receives its own copy. Choose a lighter picture for many phones on one Wi-Fi network. Your local monitor is unaffected; open viewers reconnect.").font(.caption).foregroundStyle(.secondary)
                     }.id(AdvancedSection.network)
                     Section("Diagnostics") {
@@ -232,7 +247,7 @@ struct AdvancedView: View {
     }
     private func save() {
         model.title = title.isEmpty ? "My feed" : title
-        model.setAudienceQuality(quality)
+        model.setVideoSettings(quality: quality, frameRate: frameRate, screenRate: screenRate)
         if model.setup?.kind == .accsoon, rejoin != model.transmitterRejoin || rejoinPassword != model.transmitterWiFiPassword {
             model.setTransmitterRejoin(rejoin, password: rejoinPassword)
         }

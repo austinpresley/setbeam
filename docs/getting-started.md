@@ -51,6 +51,10 @@ Viewers need network access to the Mac. Ethernet can serve viewers while Wi-Fi r
 
 Each viewer receives a separate copy of the picture. With several phones on one Wi-Fi network, choose a lighter **Viewer picture** in Advanced (12, 6, or 3 Mbps per viewer). Your local monitor is unaffected. Open viewer pages reconnect at the new rate.
 
+For Capture One or other still-image review, set **Viewer frame rate** to **1 fps** in Advanced. Keep **Viewer picture** at Best when image detail matters more than motion. FPS changes keep the same image dimensions and bitrate allowance, and external-source local monitoring keeps its original cadence. **Match source** restores the incoming rate, up to 30 fps.
+
+When using **This Mac's screen**, **Screen capture frame rate** in Advanced independently controls the local capture rate. Choose **1 fps** there as well to reduce capture work, or leave **Match display** for the display's rate, up to 30 fps. Both FPS choices are remembered; relaunch still starts privately.
+
 Viewer pages and signaling use local HTTP. Use a trusted local network and keep the viewing link private. It grants read-only viewing access. Setbeam has no internet relay or remote account service.
 
 ## Hold, resume, or stop

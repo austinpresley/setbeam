@@ -23,6 +23,7 @@
 - Watch in the main window or a resizable floating preview above your other apps.
 - Invite viewers with a QR code or link. No viewer app or account required.
 - Use Hold to replace the shared picture with a holding screen and silence. Your local monitor keeps playing, even after you stop sharing.
+- Choose 1 fps for still-image review, or a higher rate for motion. Viewer FPS and bitrate are independent; Mac screen capture has its own FPS control.
 - Reopen your last working source in private. Sharing starts when you choose.
 
 ## Get started
@@ -44,7 +45,7 @@ Choose a source, or try the labeled sample. Click **Start sharing**, then invite
 
 Direct Wi-Fi reception has been physically tested with the Accsoon CineView Master 4K on firmware 3.30 and a 1080p60 computer display. Other transmitters and physical capture hardware remain unverified.
 
-RTSP, incoming RTMP, and Mac capture inputs are also implemented. This Mac's screen captures a selected local display, including the cursor and excluding Setbeam windows. It requires Screen Recording permission and has no sound. Native capture verification is pending permission on the development Mac.
+RTSP, incoming RTMP, and Mac capture inputs are also implemented. This Mac's screen captures a selected local display, including the cursor and excluding Setbeam windows. It requires Screen Recording permission and has no sound. Actual 1920×1080 native capture and browser sharing have passed, including 1 fps, from a shell with Screen Recording access. Finder-launched permission handling, larger/additional displays, and display hot-unplug still need verification.
 
 [Setup guide](docs/getting-started.md) · [Test results](docs/hardware-tests.md) · [Current status and limits](docs/status.md) · [Architecture](docs/architecture.md)
 

@@ -22,6 +22,7 @@ holly-share.conf
 *.p8
 *.key
 *.pem
+/auto.crt
 *.mobileprovision
 
 # Generated builds, downloaded dependencies, and runtime state

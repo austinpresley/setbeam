@@ -105,7 +105,8 @@
   function play() {
     const generation = readerGeneration;
     return video.play().then(() => { if (generation === readerGeneration) { playBlocked = false; update(); } })
-      .catch(() => { if (generation === readerGeneration) { playBlocked = true; update(); } });
+      // Only the autoplay policy blocks playback. A replaced source aborts the earlier request.
+      .catch(error => { if (generation === readerGeneration && error?.name === 'NotAllowedError') { playBlocked = true; update(); } });
   }
   function startReader() {
     closeReader(); playBlocked = false; readerStartedAt = Date.now();

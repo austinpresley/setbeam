@@ -17,6 +17,9 @@ import SetbeamCore
             try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
             // Each probe run keeps the same redacted session timeline the app writes.
             SessionLog.shared.configure(directory: output.appendingPathComponent("session-log", isDirectory: true))
+            if values.contains("--frame-rate-test") {
+                try await testFrameRates(tools: tools, fixtures: fixtures, output: output); return
+            }
             if values.contains("--safety-test") {
                 try await testSafeSwitching(tools: tools, fixtures: fixtures, output: output); return
             }
@@ -25,6 +28,9 @@ import SetbeamCore
             }
             if values.contains("--format-test") {
                 try await testMediaFormats(tools: tools, fixtures: fixtures, output: output); return
+            }
+            if values.contains("--keyframe-test") {
+                try await testKeyframeBursts(tools: tools, fixtures: fixtures, output: output); return
             }
             if values.contains("--accsoon-test") {
                 try await testAccsoon(tools: tools, fixtures: fixtures, output: output); return
@@ -337,8 +343,9 @@ import SetbeamCore
             throw SetbeamError.runtime("Codec/format transition timed out. \(await runtime.diagnosticStatus())")
         }
         /// `passthrough` names the source codec the private relay must keep; nil requires the browser contract.
-        func verifyOutput(_ path: String, width: Int, height: Int, rate: String, audio: Bool, passthrough: String? = nil) async throws {
-            let data = try await run(tools: tools, args: ["-v", "error", "-rtsp_transport", "tcp", "-show_streams", "-of", "json", await runtime.localRTSP(path)], directory: fixtureDirectory, executable: "ffprobe")
+        func verifyOutput(_ path: String, width: Int, height: Int, rate: String, audio: Bool, passthrough: String? = nil, loopAudioPadding: Double = 0) async throws {
+            let data = try await run(tools: tools, args: ["-v", "error", "-analyzeduration", "2000000", "-fpsprobesize", "0", "-max_ts_probe", "0",
+                "-rtsp_transport", "tcp", "-show_streams", "-of", "json", await runtime.localRTSP(path)], directory: fixtureDirectory, executable: "ffprobe")
             guard let value = try JSONSerialization.jsonObject(with: data) as? [String: Any], let streams = value["streams"] as? [[String: Any]],
                   let video = streams.first(where: { $0["codec_type"] as? String == "video" }),
                   video["width"] as? Int == width, video["height"] as? Int == height,
@@ -357,18 +364,35 @@ import SetbeamCore
             }
             // RTSP's declared rate can be inferred from the first few packets and
             // vary between probes. Measure the decoded presentation timeline.
-            let timingData = try await run(tools: tools, args: ["-v", "error", "-rtsp_transport", "tcp", "-select_streams", "v:0",
-                "-read_intervals", "%+2", "-show_frames", "-show_entries", "frame=best_effort_timestamp_time", "-of", "json", await runtime.localRTSP(path)], directory: fixtureDirectory, executable: "ffprobe")
+            let ratio = rate.split(separator: "/").compactMap { Double($0) }
+            // Local monitoring keeps the received cadence; nothing Setbeam encodes for viewers exceeds 30 fps.
+            let expected = path == "live" ? min(ratio[0] / ratio[1], Double(VideoFrameRate.maximum)) : ratio[0] / ratio[1]
+            // An initial RTCP clock adjustment can end a relative-time read interval
+            // before it contains a measurable timeline. Count selected video packets.
+            let packets = Int(ceil(expected * 5)) + 4
+            let timingData = try await run(tools: tools, args: ["-v", "error", "-analyzeduration", "2000000", "-fpsprobesize", "0", "-max_ts_probe", "0",
+                "-threads:v", "2", "-thread_type:v", "slice", "-rtsp_transport", "tcp", "-select_streams", "v:0",
+                "-read_intervals", "%+#\(packets)", "-show_frames", "-show_entries", "frame=best_effort_timestamp_time", "-of", "json", await runtime.localRTSP(path)], directory: fixtureDirectory, executable: "ffprobe")
+            try timingData.write(to: output.appendingPathComponent("format-\(path)-\(width)-\(height)-timing.json"), options: .atomic)
             let timing = try JSONSerialization.jsonObject(with: timingData) as? [String: Any]
-            let frames = (timing?["frames"] as? [[String: Any]] ?? []).compactMap { ($0["best_effort_timestamp_time"] as? String).flatMap(Double.init) }
-            let ratio = rate.split(separator: "/").compactMap { Double($0) }, expected = ratio[0] / ratio[1]
+            // Closing a finite read can leave trailing B pictures without their future
+            // reference packets. Judge the interior timeline, outside the codec's reorder tail.
+            let reorderTail = max(1, (video["has_b_frames"] as? Int ?? 0) + 1)
+            let timed = (timing?["frames"] as? [[String: Any]] ?? []).compactMap { ($0["best_effort_timestamp_time"] as? String).flatMap(Double.init) }
+            // A sender report can align the initial RTP/NTP clocks after playback has
+            // started. Measure steady cadence after that startup mapping settles.
+            let steadyStart = (timed.first ?? 0) + 2
+            let frames = Array(timed.drop(while: { $0 < steadyStart }).dropLast(reorderTail))
             guard let first = frames.first, let last = frames.last, last - first >= 1, frames.count > 1 else {
                 throw SetbeamError.runtime("Not enough decoded video presentation time for the \(path) cadence check.")
             }
             let intervals = zip(frames.dropFirst(), frames).map(-)
             let measured = Double(frames.count - 1) / (last - first)
+            // Demo.mp4 repeats AAC's 1024-sample priming packet at its eight-second
+            // loop boundary. Stream copy must preserve that extra source interval.
+            let maximumGap = loopAudioPadding > 0 ? max(1.5 / expected, 1 / expected + loopAudioPadding + 0.001) : 1.5 / expected
             guard abs(measured - expected) / expected < 0.02,
-                  intervals.allSatisfy({ $0 > 0 && $0 < 1.5 / expected }) else {
+                  intervals.allSatisfy({ $0 > 0 && $0 < maximumGap }) else {
                 throw SetbeamError.runtime("The \(path) relay changed decoded cadence: expected \(expected) fps, measured \(measured), largest frame interval \(intervals.max() ?? 0) seconds.")
             }
         }
@@ -398,7 +422,8 @@ import SetbeamCore
                         throw SetbeamError.runtime("A source format change interrupted the independent audience Hold.")
                     }
                 }
-                try await verifyOutput("local", width: format.2, height: format.3, rate: format.4, audio: format.5, passthrough: format.6)
+                try await verifyOutput("local", width: format.2, height: format.3, rate: format.4, audio: format.5, passthrough: format.6,
+                                       loopAudioPadding: format.0 == "Demo.mp4" ? 1024.0 / 48000 : 0)
                 if index < 2 {
                     // Each received encoding reaches browsers through the audience's own Baseline encode.
                     if index == 0 { _ = try await runtime.startSharing() } else { try await runtime.setHold(false) }
@@ -430,7 +455,7 @@ import SetbeamCore
                     throw SetbeamError.runtime("Monitoring and sharing opened more than one upstream connection.")
                 }
                 print(index < 2
-                    ? "PASS: \(format.1) reaches local monitoring unchanged and browsers as baseline H.264 without B frames at \(format.2)x\(format.3) \(format.4), upstream received once"
+                    ? "PASS: \(format.1) reaches local monitoring unchanged at \(format.2)x\(format.3) \(format.4) and browsers as baseline H.264 without B frames at no more than 30 fps, upstream received once"
                     : "PASS: \(format.1) reaches local monitoring unchanged at \(format.2)x\(format.3) \(format.4) with accurate audio while viewers stay on Hold, upstream received once")
                 sender?.stop(); sender = nil
                 _ = try await waitFor { !$0.sourceAvailable && $0.audienceAvailable }
@@ -603,9 +628,9 @@ import SetbeamCore
         } catch { await runtime.shutdown(); throw error }
     }
 
-    static func run(tools: URL, args: [String], directory: URL, executable: String = "ffmpeg", expectSuccess: Bool = true) async throws -> Data {
+    static func run(tools: URL, args: [String], directory: URL, executable: String = "ffmpeg", expectSuccess: Bool = true, timeout: TimeInterval = 12) async throws -> Data {
         let task = try ManagedChild(name: executable, executable: tools.appendingPathComponent(executable), arguments: args, directory: directory)
-        let deadline = Date().addingTimeInterval(12)
+        let deadline = Date().addingTimeInterval(timeout)
         while task.isRunning && Date() < deadline { try await Task.sleep(nanoseconds: 50_000_000) }
         if task.isRunning { task.stop(); throw SetbeamError.runtime("Timed out during \(executable) check.") }
         try await Task.sleep(nanoseconds: 80_000_000)

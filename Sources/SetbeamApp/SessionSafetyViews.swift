@@ -9,8 +9,8 @@ struct AudiencePreviewView: View {
             Text("Viewers see").font(.caption.weight(.medium))
             ZStack {
                 Color.black
-                if model.audiencePreviewPlaying && model.state.audienceAvailable, let image = player.image {
-                    Image(nsImage: image).resizable().scaledToFit()
+                if model.audiencePreviewPlaying && model.state.audienceAvailable, let picture = player.picture {
+                    PictureView(picture: picture)
                 } else {
                     VStack(spacing: 5) {
                         ProgressView().controlSize(.small)
