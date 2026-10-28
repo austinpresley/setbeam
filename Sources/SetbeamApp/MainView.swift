@@ -56,6 +56,7 @@ struct MainView: View {
         .sheet(item: $model.sheet) { sheet in
             switch sheet {
             case .connection: ConnectionView(model: model)
+            case .picture: PictureSettingsView(model: model)
             case .advanced: AdvancedView(model: model)
             case .incoming: IncomingSetupView(model: model)
             case .join: JoinCodesView(model: model)
@@ -89,6 +90,7 @@ struct MainView: View {
 
     private var settingsMenu: some View {
         Menu {
+            Button("Picture settings…", systemImage: "slider.horizontal.3") { showSheet(.picture) }
             Button("Test my setup…", systemImage: "checkmark.circle") { showSheet(.setupCheck) }
             Button("Viewing network…", systemImage: "wifi") { model.openAdvanced(section: .network) }
             if model.setup?.kind == .capture {
@@ -147,21 +149,29 @@ struct MainView: View {
                 HStack(spacing: 8) {
                     if !model.state.sharing { Image(systemName: "lock").foregroundStyle(.secondary) }
                     else if outgoingNeedsAttention { Image(systemName: "exclamationmark.circle").foregroundStyle(.orange) }
-                    else { Circle().fill(model.state.holding ? Color.orange : Color.green).frame(width: 6, height: 6) }
+                    else { Circle().fill(model.state.holding ? Color.blue : Color.green).frame(width: 6, height: 6) }
                     Text(sharingTitle)
                 }.font(.caption).padding(.vertical, 7).contentShape(Rectangle())
             }.buttonStyle(.plain)
-                .foregroundStyle(model.state.holding || outgoingNeedsAttention ? Color.orange : Color.primary)
+                .foregroundStyle(outgoingNeedsAttention ? Color.orange : model.state.holding ? Color.blue : Color.primary)
                 .help("Sharing status and outgoing picture")
                 .accessibilityLabel("\(sharingTitle). Sharing status and outgoing picture")
                 .popover(isPresented: presentation(.sharing), arrowEdge: .top) {
                     MonitorSharingPopover(model: model, show: showSheet)
                 }
             if model.state.sharing && !model.state.holding {
-                Button { togglePopover(.sharing) } label: {
-                    Label("\(model.verifiedViewers)", systemImage: "person.2").font(.caption).foregroundStyle(.secondary)
-                }.buttonStyle(.plain).help("\(model.verifiedViewers) viewers playing")
-                    .accessibilityLabel("\(model.verifiedViewers) viewers playing. Show sharing status")
+                if !model.strugglingViewers.isEmpty {
+                    let count = model.strugglingViewers.count
+                    Button { showSheet(.viewers) } label: {
+                        Label("\(count) \(count == 1 ? "viewer" : "viewers") struggling", systemImage: "exclamationmark.circle")
+                            .font(.caption).foregroundStyle(.orange)
+                    }.buttonStyle(.plain).help("Show viewers with playback problems")
+                } else {
+                    Button { togglePopover(.sharing) } label: {
+                        Label("\(model.verifiedViewers)", systemImage: "person.2").font(.caption).foregroundStyle(.secondary)
+                    }.buttonStyle(.plain).help("\(model.verifiedViewers) viewers playing")
+                        .accessibilityLabel("\(model.verifiedViewers) viewers playing. Show sharing status")
+                }
             }
             if model.state.holding && model.localReady {
                 Text("Your monitor continues").font(.caption).foregroundStyle(.secondary).lineLimit(1)
@@ -177,7 +187,7 @@ struct MainView: View {
             }
             if model.state.sharing {
                 HStack(spacing: 10) {
-                    if model.state.holding { holdButton.tint(.orange).buttonStyle(.borderedProminent) }
+                    if model.state.holding { holdButton.tint(.blue).buttonStyle(.borderedProminent) }
                     else { holdButton.buttonStyle(.bordered) }
                     Button { model.stopSharing() } label: { Image(systemName: "stop.fill").frame(width: 24, height: 22) }
                         .disabled(model.busy).help("Stop sharing").accessibilityLabel("Stop sharing")

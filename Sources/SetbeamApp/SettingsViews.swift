@@ -40,6 +40,28 @@ struct ConnectionView: View {
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 19) {
+                    VStack(alignment: .leading, spacing: 9) {
+                        Text("Available now").font(.headline)
+                        ForEach(model.screenDisplays) { display in
+                            sourceRow("This Mac's screen · \(display.name)", detail: "\(display.width) × \(display.height) · No sound", symbol: "display") {
+                                model.connect(SourceSetup(kind: .macScreen, name: "This Mac's screen · \(display.name)", videoID: display.id, deviceName: display.name))
+                            }
+                        }
+                        ForEach(model.captureDevices.filter { !$0.audio }) { device in
+                            sourceRow(device.name, detail: "Detected on this Mac", symbol: device.builtIn ? "video" : "externaldrive.connected.to.line.below") {
+                                model.connect(SourceSetup(kind: .capture, name: device.name, videoID: device.id, deviceName: device.name))
+                            }
+                        }
+                        sourceRow("Sample feed", detail: "Try Setbeam with sample video and a test tone", symbol: "play.rectangle") {
+                            model.connect(SourceSetup(kind: .sample, name: "Sample feed"))
+                        }
+                        if model.captureDevices.filter({ !$0.audio }).isEmpty {
+                            DisclosureGroup("Connecting a camera or capture device…") {
+                                Text("Connect a camera by USB, or connect your receiver's HDMI or SDI output to a capture device on this Mac. Detected devices appear above.")
+                                    .foregroundStyle(.secondary).padding(.top, 5)
+                            }.font(.caption)
+                        }
+                    }
                     if let saved = model.provenSetup {
                         VStack(alignment: .leading, spacing: 9) {
                             Text("Last working setup").font(.headline)
@@ -49,7 +71,7 @@ struct ConnectionView: View {
                     VStack(alignment: .leading, spacing: 9) {
                         Text("Wireless transmitters").font(.headline)
                         if model.wirelessDevices.isEmpty && model.wirelessDiscoveryProblem == nil {
-                            Text("Join the Wi-Fi shown on your transmitter's display. Its name will appear here automatically.")
+                            Text("For CineView Master 4K, join the Wi-Fi shown on the transmitter's display. Your unit will appear here when detected.")
                                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                         }
                         ForEach(model.wirelessDevices.filter(\.recognized)) { device in
@@ -67,29 +89,6 @@ struct ConnectionView: View {
                         }
                         if let problem = model.wirelessDiscoveryProblem { Text(problem).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
                     }
-                    VStack(alignment: .leading, spacing: 9) {
-                        Text("On this Mac").font(.headline)
-                        ForEach(model.screenDisplays) { display in
-                            sourceRow("This Mac's screen · \(display.name)", detail: "\(display.width) × \(display.height) · No sound", symbol: "display") {
-                                model.connect(SourceSetup(kind: .macScreen, name: "This Mac's screen · \(display.name)", videoID: display.id, deviceName: display.name))
-                            }
-                        }
-                        if model.captureDevices.filter({ !$0.audio }).isEmpty {
-                            HStack(alignment: .top, spacing: 13) {
-                                HardwareArtwork(symbol: "cable.connector")
-                                VStack(alignment: .leading, spacing: 6) {
-                                    Text("Connect your input").font(.callout.weight(.medium))
-                                    Text("Connect a camera by USB, or connect your receiver's HDMI or SDI output to a capture device on this Mac. The device will appear here.")
-                                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                                }
-                            }.padding(.vertical, 8)
-                        }
-                        ForEach(model.captureDevices.filter { !$0.audio }) { device in
-                            sourceRow(device.name, detail: "Detected on this Mac", symbol: device.builtIn ? "video" : "externaldrive.connected.to.line.below") {
-                                model.connect(SourceSetup(kind: .capture, name: device.name, videoID: device.id, deviceName: device.name))
-                            }
-                        }
-                    }
                     if !browser.sources.isEmpty {
                         VStack(alignment: .leading, spacing: 9) {
                             Text("On your network").font(.headline)
@@ -99,10 +98,6 @@ struct ConnectionView: View {
                                 }
                             }
                         }
-                    }
-                    Divider()
-                    sourceRow("Sample feed", detail: "Try Setbeam with sample video and a test tone", symbol: "play.rectangle") {
-                        model.connect(SourceSetup(kind: .sample, name: "Sample feed"))
                     }
                 }.padding(.trailing, 3)
             }.frame(maxHeight: 410)
@@ -137,9 +132,6 @@ struct AdvancedView: View {
     @State private var ssid: String
     @State private var password: String
     @State private var audio: String
-    @State private var quality: AudienceQuality
-    @State private var frameRate: VideoFrameRate
-    @State private var screenRate: VideoFrameRate
     @State private var rejoin: Bool
     @State private var rejoinPassword: String
     @State private var remember = true
@@ -151,8 +143,6 @@ struct AdvancedView: View {
         _title = State(initialValue: model.title); _sourceWiFi = State(initialValue: model.setup?.sourceWiFi ?? "")
         _network = State(initialValue: model.networkChoice); _ssid = State(initialValue: model.wifiSSID)
         _password = State(initialValue: model.wifiPassword); _audio = State(initialValue: model.setup?.audioID ?? "")
-        _quality = State(initialValue: model.audienceQuality)
-        _frameRate = State(initialValue: model.audienceFrameRate); _screenRate = State(initialValue: model.screenFrameRate)
         _rejoin = State(initialValue: model.transmitterRejoin); _rejoinPassword = State(initialValue: model.transmitterWiFiPassword)
         _showStream = State(initialValue: model.setup?.kind == .network)
     }
@@ -168,14 +158,6 @@ struct AdvancedView: View {
                         if model.provenSetup != nil { Button("Forget saved connection") { model.forgetSetup(); remember = false } }
                     }.id(AdvancedSection.workspace)
                     Section("Connection") {
-                        if model.setup?.kind == .macScreen {
-                            Picker("Screen capture frame rate", selection: $screenRate) {
-                                ForEach(VideoFrameRate.allCases, id: \.self) { rate in
-                                    Text(rate == .source ? "Match display, up to 30 fps" : rate.title).tag(rate)
-                                }
-                            }
-                            Text("Applies to this screen's local preview and sharing. Choose 1 fps for still-image review with less capture work. Image dimensions stay the same.").font(.caption).foregroundStyle(.secondary)
-                        }
                         if model.setup?.kind == .accsoon, let device = model.wirelessDevices.first(where: { $0.id == model.setup?.wirelessUID }) {
                             LabeledContent("Transmission system", value: device.name)
                             LabeledContent("Firmware", value: device.firmwareLabel ?? "Unknown")
@@ -212,14 +194,6 @@ struct AdvancedView: View {
                         TextField("Wi-Fi name", text: $ssid, prompt: Text("Optional"))
                         SecureField("Wi-Fi password", text: $password)
                         Text("Wi-Fi details create a join code. Changing the viewer network stops sharing and keeps local monitoring running.").font(.caption).foregroundStyle(.secondary)
-                        Picker("Viewer picture", selection: $quality) {
-                            ForEach(AudienceQuality.allCases, id: \.self) { Text($0.title).tag($0) }
-                        }
-                        Picker("Viewer frame rate", selection: $frameRate) {
-                            ForEach(VideoFrameRate.allCases, id: \.self) { Text($0.title).tag($0) }
-                        }
-                        Text("Lower frame rates favor image detail over motion at the same bitrate. Try 1 fps for Capture One review. Image dimensions and local monitoring stay the same.").font(.caption).foregroundStyle(.secondary)
-                        Text("Each viewer receives its own copy. Choose a lighter picture for many phones on one Wi-Fi network. Your local monitor is unaffected; open viewers reconnect.").font(.caption).foregroundStyle(.secondary)
                     }.id(AdvancedSection.network)
                     Section("Diagnostics") {
                         Button(model.diagnosticCopied ? "Diagnostics copied" : "Copy diagnostics") { model.diagnostics() }
@@ -247,7 +221,6 @@ struct AdvancedView: View {
     }
     private func save() {
         model.title = title.isEmpty ? "My feed" : title
-        model.setVideoSettings(quality: quality, frameRate: frameRate, screenRate: screenRate)
         if model.setup?.kind == .accsoon, rejoin != model.transmitterRejoin || rejoinPassword != model.transmitterWiFiPassword {
             model.setTransmitterRejoin(rejoin, password: rejoinPassword)
         }
@@ -313,20 +286,22 @@ struct JoinCodesView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
             Text("Join the feed").font(.title2.weight(.semibold))
-            if let url = model.viewerURL, model.state.sharing {
+            if !model.canInviteOtherDevices {
+                ViewingNetworkRequiredView(model: model)
+            } else if let url = model.viewerURL, model.state.sharing {
                 HStack(alignment: .top, spacing: 28) {
                     if !model.wifiSSID.isEmpty {
                         VStack(spacing: 13) { Text("1. Join Wi-Fi").font(.headline); QRView(payload: QRCode.wifi(ssid: model.wifiSSID, password: model.wifiPassword), size: 190); Text(model.wifiSSID).font(.caption).foregroundStyle(.secondary) }
                     }
                     VStack(spacing: 13) { Text(model.wifiSSID.isEmpty ? "Scan to watch" : "2. Watch the feed").font(.headline); QRView(payload: url.absoluteString, size: 190); Text(model.title).font(.caption).foregroundStyle(.secondary) }
                 }.frame(maxWidth: .infinity)
-                Text(model.viewerAddress == "127.0.0.1" ? "This link works on this Mac only. Join a local network to invite phones." : model.viewingInstructions)
+                Text(model.viewingInstructions)
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 Button(model.wifiSSID.isEmpty ? "Add a Wi-Fi join code" : "Edit viewing Wi-Fi") { model.loadPrivateSettings(); model.sheet = .viewingWiFi }.buttonStyle(.link)
                 Text("\(model.openedViewers) opened · \(model.verifiedViewers) playing").font(.caption).foregroundStyle(.secondary)
             } else { Text("Start sharing to invite viewers. Your local preview stays private.").foregroundStyle(.secondary) }
             HStack {
-                Button(model.copiedLink ? "Link copied" : "Copy viewing link") { model.copyLink() }.disabled(!model.state.sharing)
+                Button(model.copiedLink ? "Link copied" : "Copy viewing link") { model.copyLink() }.disabled(!model.state.sharing || !model.canInviteOtherDevices)
                 Spacer(); Button("Done") { model.sheet = nil }.keyboardShortcut(.defaultAction)
             }
         }.padding(28).frame(width: model.wifiSSID.isEmpty ? 355 : 480)
@@ -366,7 +341,7 @@ struct ViewerStatusView: View {
             if !model.viewers.isEmpty {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 16) {
-                        ForEach(model.viewers) { ViewerActivityRow(viewer: $0) }
+                        ForEach(model.viewersForDetails) { ViewerActivityRow(viewer: $0) }
                     }.padding(.vertical, 2)
                 }.frame(maxHeight: 280)
                 Text("Each row is a browser session. Viewers can add a name in Connection help. Health describes their playback.")

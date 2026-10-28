@@ -38,7 +38,9 @@ struct SetupCheckView: View {
             row("Fresh picture on this Mac", detail: model.localReady ? model.sourceLabel : "Connect a source and wait for a fresh picture.", passed: model.setupCheck.picture)
             row("Viewing address available", detail: model.setupCheck.viewingAddress ? model.viewingInstructions : "Start sharing on a network your viewers can join.", passed: model.setupCheck.viewingAddress)
             row("Playback on another device", detail: model.otherDeviceViewers > 0 ? "\(model.otherDeviceViewers) other-device browser(s) reporting fresh video." : "Scan the code on a phone or another computer. A browser on this Mac does not complete this check.", passed: model.setupCheck.otherDevicePlaying)
-            if model.state.sharing, let url = model.viewerURL {
+            if model.state.sharing && !model.canInviteOtherDevices {
+                ViewingNetworkRequiredView(model: model)
+            } else if model.state.sharing, let url = model.viewerURL {
                 HStack(spacing: 18) {
                     QRView(payload: url.absoluteString, size: 144)
                     VStack(alignment: .leading, spacing: 9) {

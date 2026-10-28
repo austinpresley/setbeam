@@ -34,6 +34,7 @@ import AppKit
                     Divider()
                     Button("Choose Source…") { model.openSources() }.keyboardShortcut("o", modifiers: .command)
                     Button("Rename Session…") { model.sheet = .rename }
+                    Button("Picture Settings…") { model.sheet = .picture }
                     Button("Advanced…") { model.openAdvanced() }.keyboardShortcut(",", modifiers: .command)
                     Button("Test My Setup…") { model.sheet = .setupCheck }
                 }
