@@ -1,6 +1,7 @@
 import Foundation
 
 public enum InputKind: String, Codable, Sendable { case sample, macScreen, capture, network, incoming, accsoon }
+public enum NetworkSourceProfile: String, Codable, Sendable { case pyroH }
 
 /// A remembered connection, independent of the session's audience and credentials.
 public struct SourceSetup: Codable, Equatable, Identifiable, Sendable {
@@ -15,6 +16,7 @@ public struct SourceSetup: Codable, Equatable, Identifiable, Sendable {
     public var confirmedAt: Date?
     public var inputPort: UInt16 = 19350
     public var wirelessUID: UInt32?
+    public var networkProfile: NetworkSourceProfile?
 
     public init(id: UUID = UUID(), kind: InputKind, name: String, videoID: String? = nil,
                 audioID: String? = nil, deviceName: String? = nil, networkAddress: String = "", sourceWiFi: String = "") {

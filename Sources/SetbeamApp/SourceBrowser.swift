@@ -7,17 +7,60 @@ struct NetworkSourceChoice: Identifiable {
     let address: String
 }
 
-/// Discover only advertised RTSP services with an explicit stream path. Never guess a vendor endpoint.
+enum PyroHSearchState { case looking, found, noWiFi, unavailable, monitoring }
+
+/// Bonjour uses advertised paths. Pyro H separately probes only the upstream launcher's scoped /live route.
 @MainActor final class SourceBrowser: NSObject, ObservableObject, @preconcurrency NetServiceBrowserDelegate, @preconcurrency NetServiceDelegate {
     @Published var sources: [NetworkSourceChoice] = []
+    @Published private(set) var pyroHSources: [PyroHSource] = []
+    @Published private(set) var pyroHSearchState = PyroHSearchState.looking
     private let browser = NetServiceBrowser()
     private var services: [NetService] = []
     private var started = false
-    func start() {
+    private var pyroHTask: Task<Void, Never>?
+    private var generation = UUID()
+    private let pyroHNetworks: @Sendable () -> [PyroHNetwork]
+    private let pyroHPorts: [UInt16]
+    private let pyroHProbe: @Sendable ([PyroHNetwork], [UInt16]) async -> [PyroHSource]
+
+    init(pyroHNetworks: @escaping @Sendable () -> [PyroHNetwork] = { PyroHNetwork.connected() },
+         pyroHPorts: [UInt16] = PyroHDiscovery.ports,
+         pyroHProbe: @escaping @Sendable ([PyroHNetwork], [UInt16]) async -> [PyroHSource] = { await PyroHDiscovery.scan(networks: $0, ports: $1) }) {
+        self.pyroHNetworks = pyroHNetworks; self.pyroHPorts = pyroHPorts; self.pyroHProbe = pyroHProbe
+        super.init()
+    }
+
+    func start(pyroHScanAllowed: @escaping @MainActor () -> Bool = { true }) {
         guard !started else { return }; started = true
         browser.delegate = self; browser.searchForServices(ofType: "_rtsp._tcp.", inDomain: "local.")
+        generation = UUID(); let current = generation
+        pyroHTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self, self.started, self.generation == current else { return }
+                if !pyroHScanAllowed() {
+                    self.pyroHSources = []; self.pyroHSearchState = .monitoring
+                } else {
+                    let networks = self.pyroHNetworks()
+                    self.pyroHSearchState = networks.isEmpty ? .noWiFi : .looking
+                    let found = networks.isEmpty ? [] : await self.pyroHProbe(networks, self.pyroHPorts)
+                    guard !Task.isCancelled, self.started, self.generation == current else { return }
+                    if !pyroHScanAllowed() { self.pyroHSources = []; self.pyroHSearchState = .monitoring }
+                    else {
+                        let connected = Set(self.pyroHNetworks())
+                        self.pyroHSources = found.filter { connected.contains($0.network) }
+                        self.pyroHSearchState = connected.isEmpty ? .noWiFi : self.pyroHSources.isEmpty ? .unavailable : .found
+                    }
+                }
+                do { try await Task.sleep(nanoseconds: 6_000_000_000) } catch { return }
+            }
+        }
     }
-    func stop() { browser.stop(); services.forEach { $0.stop() }; services.removeAll(); sources.removeAll(); started = false }
+    @discardableResult func stop() -> Task<Void, Never>? {
+        let pending = pyroHTask
+        started = false; generation = UUID(); pyroHTask?.cancel(); pyroHTask = nil; pyroHSources = []
+        browser.stop(); services.forEach { $0.stop() }; services.removeAll(); sources.removeAll()
+        return pending
+    }
     func netServiceBrowser(_ browser: NetServiceBrowser, didFind service: NetService, moreComing: Bool) {
         services.append(service); service.delegate = self; service.resolve(withTimeout: 4)
     }

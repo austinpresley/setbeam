@@ -1,6 +1,14 @@
 # Setbeam status
 
-Updated: 2026-10-29. Version 0.2.0, build 19. Detailed 4K screen sharing keeps the native picture advancing, native windows display frames on the GPU, encodes stay at or below 30 fps, and 4K viewers at 1 fps receive a picture. Viewer details retain optional names and observational playback health. See [screen-sharing stability verification](verification-keyframe-bursts-2026-10-27.md) and [viewer health verification](verification-viewer-health-2026-10-27.md).
+Updated: 2026-10-29. Version 0.2.0, build 20. Detailed 4K screen sharing keeps the native picture advancing, native windows display frames on the GPU, encodes stay at or below 30 fps, and 4K viewers at 1 fps receive a picture. Viewer details retain optional names and observational playback health. See [screen-sharing stability verification](verification-keyframe-bursts-2026-10-27.md) and [viewer health verification](verification-viewer-health-2026-10-27.md).
+
+## Build 20 native Pyro H port, 2026-10-29
+
+Restores Holly Share's Pyro H connection flow in the native chooser. Bounded discovery checks only the current Wi-Fi router, binds that interface/address, and describes the known `/live` endpoint on ports 5554/554/8554. It requires a complete H.264 SDP, opens no streaming connection, cancels when the chooser closes, and drains before source selection. Discovery pauses during network monitoring. The normal RTSP adapter receives the source once; main/floating monitoring, sharing, Hold/Stop and recovery retain the existing pipeline. Proven profiles save their exact endpoint in Keychain and restore privately. A compatible stream does not establish a model or unique hardware identity.
+
+The initial complete check passed 127 Swift tests, 26 viewer checks, preview, Pyro H simulation, media, recovery and source switching, then hit the existing format assertion with a largest 50.067 ms interval at 30 fps. The unchanged full rerun with QA sessions closed passes all checks, including format/FPS/large-keyframe probes. Active dark/light native UI, simulated H.264/AAC main/floating/browser playback, zero upstream readers during discovery and one while monitoring/sharing, same-page Hold/Resume/Stop, exact-endpoint private restoration, and normal Quit cleanup pass. Strict signatures, system-only dependencies, resources/fixtures/notices, unchanged 99-file source matching, ZIP integrity and all 38 installed/extracted distribution files pass. Build 20 is installed locally, and private archive delivery completed with remote verification. See [Pyro H verification](verification-pyro-h-2026-10-29.md). All validation ran locally; hosted CI stayed disabled.
+
+Austin confirmed a physical Pyro H was unavailable. The software port is implemented and simulated; physical model/firmware, audio/A/V timing, source formats, single-client/power-cycle behavior, latency, range and endurance remain open. No additional transmitter compatibility or physical-test pass is claimed.
 
 ## Build 19 display source previews, 2026-10-29
 

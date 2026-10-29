@@ -17,6 +17,9 @@ import SetbeamCore
             try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
             // Each probe run keeps the same redacted session timeline the app writes.
             SessionLog.shared.configure(directory: output.appendingPathComponent("session-log", isDirectory: true))
+            if values.contains("--pyro-h-test") {
+                try await testPyroH(tools: tools, fixtures: fixtures, output: output); return
+            }
             if values.contains("--frame-rate-test") {
                 try await testFrameRates(tools: tools, fixtures: fixtures, output: output); return
             }

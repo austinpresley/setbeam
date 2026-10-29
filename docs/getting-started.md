@@ -31,6 +31,15 @@ For the physically tested Accsoon CineView Master 4K on firmware 3.30:
 
 Once Setbeam confirms a sustained picture and fresh local playback, it remembers the setup. The next launch restores private monitoring with sharing and Hold off. Complete network addresses and incoming credentials use Keychain.
 
+For the ported Hollyland Pyro H connection:
+
+1. Power the Pyro H transmitter and supply a live HDMI picture from a computer or camera.
+2. Join the **transmitter's** Wi-Fi on the Mac. Close HollyView or other clients receiving directly from that transmitter.
+3. Open **Choose a source**. Setbeam checks only that Wi-Fi router for the original launcher's `/live` stream on ports 5554, 554, and 8554. Choose **Hollyland Pyro H** when a compatible stream appears, after confirming the connected transmitter model.
+4. Check the private picture, then start sharing when ready. For another IP/port, enter the complete RTSP address under **Advanced → Network stream**.
+
+The Pyro H software path is tested with simulated H.264/AAC media; a physical Pyro H has not been verified in Setbeam. Discovery checks a compatible endpoint, not a unique transmitter identity. A proven setup restores its exact saved address privately and retries that address after loss. It does not switch Wi-Fi or substitute another discovered endpoint. Discovery pauses during network-source monitoring to protect transmitters with a single-client limit. See [Pyro H verification](verification-pyro-h-2026-10-29.md) for evidence and the remaining hardware checks.
+
 Connection route, model, and firmware matter. See [hardware tests](hardware-tests.md) for exact evidence and open checks. Other transmitters, camera-content formats, and physical capture hardware remain unverified.
 
 ## Monitor on your Mac

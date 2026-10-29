@@ -76,15 +76,32 @@ struct ConnectionView: View {
                             sourceRow(saved.name, detail: "Picture confirmed \(saved.confirmedAt?.formatted(date: .abbreviated, time: .shortened) ?? "previously")", symbol: symbol(for: saved.kind), action: { model.restore(saved) })
                         }
                     }
-                    VStack(alignment: .leading, spacing: 9) {
+                    VStack(alignment: .leading, spacing: 8) {
                         Text("Wireless transmitters").font(.headline)
                         if model.wirelessDevices.isEmpty && model.wirelessDiscoveryProblem == nil {
-                            Text("For CineView Master 4K, join the Wi-Fi shown on the transmitter's display. Your unit will appear here when detected.")
+                            Text("For CineView Master 4K or Pyro H, join the transmitter's Wi-Fi. Available connections appear here. Wi-Fi stays under your control.")
                                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                         }
                         ForEach(model.wirelessDevices.filter(\.recognized)) { device in
                             sourceRow(device.name, detail: device.videoAvailable ? device.wifiName : "\(device.wifiName) · Waiting for a source picture", symbol: "accsoon.master") { model.connectWireless(device) }
                         }
+                        if let current = model.setup, current.networkProfile == .pyroH, model.state.monitoring {
+                            sourceRow(current.name, detail: "Current source", symbol: "antenna.radiowaves.left.and.right") { model.sheet = nil }
+                        } else {
+                            ForEach(browser.pyroHSources) { device in
+                                sourceRow(device.network.interface == "lo0" ? "Pyro H test stream" : "Hollyland Pyro H",
+                                    detail: "Compatible stream found · Confirm transmitter model", symbol: "antenna.radiowaves.left.and.right") { model.connectPyroH(device) }
+                            }
+                            if browser.pyroHSearchState == .looking {
+                                Label("Looking for Pyro H…", systemImage: "antenna.radiowaves.left.and.right")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            } else if browser.pyroHSearchState == .monitoring {
+                                Text("Pyro H discovery pauses during network monitoring. Use Advanced to enter another stream address.")
+                                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                        Text("Pyro H: close HollyView or other direct viewers before connecting. Physical verification in Setbeam is pending. Use Advanced for another address.")
+                            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                         ForEach(model.wirelessDevices.filter { !$0.recognized }) { device in
                             HStack(alignment: .top, spacing: 13) {
                                 HardwareArtwork(symbol: "antenna.radiowaves.left.and.right")
@@ -115,7 +132,7 @@ struct ConnectionView: View {
                 Button("Advanced…") { model.openAdvanced() }
             }.font(.callout)
         }.padding(26).frame(width: 540)
-        .task { model.refreshCaptureDevices(); browser.start() }
+        .task { model.refreshCaptureDevices(); browser.start { model.canDiscoverPyroH } }
         .task(id: model.screenDisplays.map(\.id) + [monitoredDisplayID ?? ""]) {
             while !Task.isCancelled {
                 await displayPreviews.refresh(displays: model.screenDisplays, monitoredDisplayID: monitoredDisplayID)

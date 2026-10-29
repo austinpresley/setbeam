@@ -8,6 +8,7 @@ Austin scanned the sample session QR and followed the Safari viewing/sound workf
 
 | Target | Candidate route | Current evidence | Next physical check |
 | --- | --- | --- | --- |
+| Hollyland Pyro H | Direct transmitter Wi-Fi RTSP `/live`, upstream ports 5554/554/8554 | Native software port and simulated H.264/AAC discovery/media checks pass; physical Setbeam test not run | Record exact model/firmware, actual endpoint/SDP, picture/audio, single-client behavior, reconnect, Hold/Resume/Stop and source formats |
 | Hollyland Mars 300 Pro | Direct Wi-Fi investigation; receiver HDMI capture fallback | Vendor app monitoring documented; our input unverified | Confirm revision/firmware, vendor-app baseline, and usable Mac input |
 | Accsoon CineView Master 4K, product IDs 21 and 24 observed on the same unit, firmware 3.30, hardware raw 256 | Direct RTMS4 Wi-Fi input | Passed real 1080p60 computer display, encoded audio, native/browser/physical-phone playback, Hold/Stop, restoration and recovery after a power cycle with manual Wi-Fi rejoin on Apple Silicon/macOS 27 | Camera content, format changes, audible source sound/A/V timing, long sessions and coexistence; short-run continuous criterion failed 2/116 samples |
 | Original Hollyland Mars 300 | Receiver HDMI through compatible capture device | HDMI topology documented; no direct network input established | Confirm physical receiver output and captured picture/audio |

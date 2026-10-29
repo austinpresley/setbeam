@@ -33,7 +33,7 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
     @Published var audienceHasAudio = false
     @Published var expectsAudio = false
     @Published var testSoundConfirmed = false
-    let sourceBrowser = SourceBrowser()
+    let sourceBrowser: SourceBrowser
     @Published var pipVisible = false
     @Published var sheet: AppSheet?
     var advancedSection: AdvancedSection = .workspace
@@ -98,6 +98,10 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
         state = initialState
         integration = CommandLine.arguments.contains("--integration-demo")
         let args = CommandLine.arguments
+        if args.contains("--preferences-suite"), let index = args.firstIndex(of: "--pyro-h-fixture-port"), index + 1 < args.count,
+           let port = UInt16(args[index + 1]), port > 0 {
+            sourceBrowser = SourceBrowser(pyroHNetworks: { [.init(interface: "lo0", address: "127.0.0.1", router: "127.0.0.1")] }, pyroHPorts: [port])
+        } else { sourceBrowser = SourceBrowser() }
         if let preferences { defaults = preferences }
         else if let index = args.firstIndex(of: "--preferences-suite"), index + 1 < args.count {
             defaults = UserDefaults(suiteName: args[index + 1])!
@@ -226,6 +230,9 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
         if setup.kind == .macScreen { return "Reconnect the selected display. Setbeam keeps trying that same display. This source has no sound; Setbeam windows are excluded." }
         if setup.kind == .capture { return "Connect the selected device to this Mac. If it is connected, check the HDMI or SDI cable and turn on the source. Setbeam keeps trying this same input." }
         if setup.kind == .network {
+            if setup.networkProfile == .pyroH {
+                return "Turn on the Pyro H and its computer or camera output. Rejoin the transmitter's Wi-Fi and close HollyView or other direct viewers. Setbeam keeps retrying the selected stream. Use Advanced if its address has changed."
+            }
             return setup.sourceWiFi.isEmpty ? "Turn on the source and check that this Mac is on its network. Your picture will return here automatically." : "Turn on the source and join \(setup.sourceWiFi) in Wi-Fi Settings. Your picture will return here automatically."
         }
         if setup.kind == .incoming { return "In Accsoon SEE, open the CineView Master 4K picture and start Push Stream using Setbeam's setup details. Setbeam confirms the picture here when it arrives." }
@@ -313,6 +320,12 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
         var candidate = SourceSetup(kind: .accsoon, name: "CineView Master 4K", deviceName: device.name, sourceWiFi: device.wifiName)
         candidate.wirelessUID = device.id; connect(candidate)
     }
+    var canDiscoverPyroH: Bool { !(state.monitoring && setup?.kind == .network) }
+    func connectPyroH(_ device: PyroHSource) {
+        var candidate = device.setup
+        if device.network.interface == "lo0" { candidate.name = "Pyro H test stream" }
+        connect(candidate, address: device.address)
+    }
     func openAdvanced(section: AdvancedSection = .workspace) { advancedSection = section; loadPrivateSettings(); sheet = .advanced }
     func restore(_ saved: SourceSetup) {
         let address = saved.kind == .network || saved.kind == .incoming ? SecureSettings.read(saved.credentialAccount) : nil
@@ -329,8 +342,11 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
         do { chosen = try candidate.source(address: address).validated() }
         catch { self.error = error.localizedDescription; return }
         busy = true; error = nil; permissionDenied = false; screenPermissionDenied = false; pendingScreenPermission = nil; sheet = nil
+        let discovery = sourceBrowser.stop()
         rejoinAttempt?.permit.revoke()
         Task {
+            await discovery?.value
+            guard !shuttingDown else { busy = false; return }
             if candidate.kind == .macScreen && !MacScreenCapture.requestPermission() {
                 pendingScreenPermission = (candidate, remember)
                 screenPermissionDenied = true; permissionDenied = true; error = "Allow Setbeam in Screen Recording, then retry."

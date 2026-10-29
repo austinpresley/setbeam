@@ -10,6 +10,8 @@ cat build/logs/preview-bridge-integration.log
 node --test scripts/check-viewer-recovery.js > build/logs/viewer-recovery.log 2>&1 || { cat build/logs/viewer-recovery.log; exit 1; }
 swift test > build/logs/swift-tests.log 2>&1 || { tail -n 70 build/logs/swift-tests.log; exit 1; }
 if [[ -x Vendor/bin/ffmpeg && -x Vendor/bin/mediamtx ]]; then
+  swift run --skip-build SetbeamProbe --pyro-h-test --tools "${SETBEAM_TEST_TOOLS:-$ROOT/Vendor/bin}" --fixtures "${SETBEAM_TEST_FIXTURES:-$ROOT/Fixtures}" > build/logs/pyro-h-integration.log 2>&1 || { cat build/logs/pyro-h-integration.log; exit 1; }
+  cat build/logs/pyro-h-integration.log
   swift run --skip-build SetbeamProbe --tools "${SETBEAM_TEST_TOOLS:-$ROOT/Vendor/bin}" --fixtures "${SETBEAM_TEST_FIXTURES:-$ROOT/Fixtures}" > build/logs/media-integration.log 2>&1 || { cat build/logs/media-integration.log; exit 1; }
   cat build/logs/media-integration.log
   swift run --skip-build SetbeamProbe --recovery-test --tools "${SETBEAM_TEST_TOOLS:-$ROOT/Vendor/bin}" --fixtures "${SETBEAM_TEST_FIXTURES:-$ROOT/Fixtures}" > build/logs/source-recovery.log 2>&1 || { cat build/logs/source-recovery.log; exit 1; }

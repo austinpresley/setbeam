@@ -21,6 +21,10 @@ incoming RTMP stream, a compatible capture device, and direct CineView Master 4K
 RTMS4 reception. Support requires recorded physical connection evidence in
 `hardware-tests.md`; generic adapters do not imply model compatibility.
 
+PyroHDiscovery ports Holly Share's known `/live` RTSP connection into the native chooser. SystemConfiguration supplies only active Wi-Fi service IPv4 routers on the interface's actual private subnet. Each TCP probe binds that interface and local address and checks up to the three upstream ports, in order. A bounded DESCRIBE requires a complete, correctly framed H.264 SDP response; it never sends SETUP/PLAY. Polling runs off the main actor with deadlines, bounded input, owned file descriptors, and cancellation checks at most 50 ms apart. No shell tool, Wi-Fi association, Location grant, subnet scan, or streaming receiver is involved in discovery.
+
+SourceBrowser owns the chooser-lifetime scan task and discards late results or results from a changed network. All network-source monitoring suspends Pyro H probes because the hardware can have a single-client limit. Source selection drains any in-flight probe before MediaRuntime opens its upstream stream. A discovered PyroHSource creates a normal network SourceSetup with optional `networkProfile: pyroH` metadata. The proven-setup gate and Keychain retain the exact selected URL, restoring privately; metadata does not establish a physical device identity. No additional source adapter or audience process is introduced. The existing RTSP path supplies one received feed to native/floating monitoring and sharing, preserving recovery, Hold and Stop. The original launcher remains a reference. Physical Pyro H qualification is separate from simulation tests.
+
 Computer displays, including DigiTech applications such as Capture One, and
 camera feeds are peer source use cases. The transport and input describe how
 the feed reaches Setbeam, independently of what appears in it. This Mac's screen captures a selected display locally through ScreenCaptureKit.
