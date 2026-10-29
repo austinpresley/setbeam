@@ -24,6 +24,7 @@ struct HardwareArtwork: View {
 struct ConnectionView: View {
     @ObservedObject var model: SessionModel
     @ObservedObject private var browser: SourceBrowser
+    @StateObject private var displayPreviews = DisplaySourcePreviews()
     init(model: SessionModel) { self.model = model; browser = model.sourceBrowser }
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -39,13 +40,20 @@ struct ConnectionView: View {
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             ScrollView {
-                VStack(alignment: .leading, spacing: 19) {
-                    VStack(alignment: .leading, spacing: 9) {
+                VStack(alignment: .leading, spacing: 20) {
+                    VStack(alignment: .leading, spacing: 8) {
                         Text("Available now").font(.headline)
                         ForEach(model.screenDisplays) { display in
-                            sourceRow("This Mac's screen · \(display.name)", detail: "\(display.width) × \(display.height) · No sound", symbol: "display") {
+                            sourceRow("This Mac's screen · \(display.name)", detail: "\(display.width) × \(display.height) · No sound", symbol: "display", display: display) {
                                 model.connect(SourceSetup(kind: .macScreen, name: "This Mac's screen · \(display.name)", videoID: display.id, deviceName: display.name))
                             }
+                        }
+                        if !model.screenDisplays.isEmpty && !displayPreviews.permissionGranted {
+                            HStack {
+                                Text("Screen Recording access enables display previews.").font(.caption).foregroundStyle(.secondary)
+                                Spacer(minLength: 8)
+                                Button("Enable Previews…") { displayPreviews.enable() }.controlSize(.small)
+                            }.padding(.bottom, 4)
                         }
                         ForEach(model.captureDevices.filter { !$0.audio }) { device in
                             sourceRow(device.name, detail: "Detected on this Mac", symbol: device.builtIn ? "video" : "externaldrive.connected.to.line.below") {
@@ -108,17 +116,34 @@ struct ConnectionView: View {
             }.font(.callout)
         }.padding(26).frame(width: 540)
         .task { model.refreshCaptureDevices(); browser.start() }
-        .onDisappear { browser.stop(); model.stopWirelessScan() }
+        .task(id: model.screenDisplays.map(\.id) + [monitoredDisplayID ?? ""]) {
+            while !Task.isCancelled {
+                await displayPreviews.refresh(displays: model.screenDisplays, monitoredDisplayID: monitoredDisplayID)
+                do { try await Task.sleep(nanoseconds: 2_000_000_000) } catch { return }
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) { _ in model.refreshCaptureDevices() }
+        .onDisappear { displayPreviews.clear(); browser.stop(); model.stopWirelessScan() }
+    }
+    private var monitoredDisplayID: String? {
+        guard model.state.monitoring, model.setup?.kind == .macScreen, let id = model.setup?.videoID else { return nil }
+        return model.screenDisplays.first { $0.id.caseInsensitiveCompare(id) == .orderedSame }?.id ?? id
     }
     private func symbol(for kind: InputKind) -> String { kind == .macScreen ? "display" : kind == .sample ? "play.rectangle" : kind == .capture ? "video" : kind == .accsoon ? "accsoon.master" : "antenna.radiowaves.left.and.right" }
-    private func sourceRow(_ name: String, detail: String, symbol: String, action: @escaping () -> Void) -> some View {
+    private func sourceRow(_ name: String, detail: String, symbol: String, display: MacDisplay? = nil, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            HStack(spacing: 13) {
-                HardwareArtwork(symbol: symbol)
-                VStack(alignment: .leading, spacing: 4) { Text(name).font(.callout.weight(.medium)).foregroundStyle(.primary); Text(detail).font(.caption).foregroundStyle(.secondary) }
+            HStack(spacing: 12) {
+                if let display {
+                    DisplaySourceThumbnail(previews: displayPreviews, player: model.localPlayer, display: display,
+                        monitored: display.id == monitoredDisplayID, pictureReady: model.localReady)
+                } else { HardwareArtwork(symbol: symbol) }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(name).font(.callout.weight(.medium)).foregroundStyle(.primary).lineLimit(2)
+                    Text(detail).font(.caption).foregroundStyle(.secondary)
+                }.help(name)
                 Spacer(minLength: 8); Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
             }.padding(12).contentShape(Rectangle())
-        }.buttonStyle(.plain).background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 10)).accessibilityLabel("Connect \(name). \(detail)")
+        }.buttonStyle(.plain).background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 12)).accessibilityLabel("Connect \(name). \(detail)")
     }
 }
 
