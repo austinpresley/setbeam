@@ -2,6 +2,14 @@
 
 Setbeam receives a computer display or camera feed on your Mac, then shares it with nearby browser viewers. The Mac's main window and floating preview use the same received feed.
 
+## Install the prerelease
+
+[Download Setbeam 0.2.0 build 20](https://github.com/austinpresley/setbeam/releases/tag/v0.2.0-build20) for an Apple Silicon Mac running macOS 14 or later. Expand the ZIP and move **Setbeam.app** into Applications. FFmpeg, MediaMTX, the native preview helper, fixtures, and dependency notices are bundled. You do not need Homebrew to run it.
+
+This developer prerelease is ad-hoc signed and not notarized. If macOS blocks opening it, try to open it once, then use **System Settings → Privacy & Security → Open Anyway** if that option is available. Review macOS's confirmation before opening. Do not disable Gatekeeper globally. A managed Mac may require administrator approval.
+
+The development build was tested on macOS 27. Older supported macOS versions still need physical verification. See the [release notes](releases/0.2.0-build20.md) for validation and current limits.
+
 ## Build from source
 
 Use an Apple Silicon Mac with macOS 14 or later. Install Xcode with Swift 6, Python 3.12 or newer, Node.js, `make`, `pkg-config`, and `curl`.
@@ -17,7 +25,7 @@ open build/Setbeam.app
 
 Third-party build products stay under the ignored `Vendor/` directory. The app bundles its runtime and needs no Homebrew installation to run. Pinned versions and source hashes are in [runtime-lock.json](../runtime-lock.json); licensing and bundled source details are in [third-party notices](../THIRD_PARTY_NOTICES.md).
 
-The default build is ad-hoc signed and is not notarized. No public release is available. The development build was tested on macOS 27; older supported macOS versions still need physical verification.
+The default source build is also ad-hoc signed and not notarized.
 
 ## Connect a source
 
@@ -86,4 +94,4 @@ See [project status](status.md) for remaining work, [the execution plan](plan.md
 
 ## README screenshots
 
-The README's [dark](../Assets/screenshots/main-dark.jpg) and [light](../Assets/screenshots/main-light.jpg) images are unmodified native Build 8 captures of the full-width layout retained in Build 9. They show fictional sample media, not a physical source. Capture evidence is recorded in [layout verification](verification-layout-2026-10-20.md); the portrait's generation notes are in [Fixtures/sample-image-notes.txt](../Fixtures/sample-image-notes.txt).
+The README's [dark](../Assets/screenshots/main-dark.png) and [light](../Assets/screenshots/main-light.png) main windows, [browser viewer](../Assets/screenshots/viewer.jpg), and [Picture settings](../Assets/screenshots/picture-settings.jpg) were captured from build 20. They show labeled fictional sample media, not a physical source. The main windows are unmodified native PNG captures. The browser image is cropped to the full-screen player and the settings image to its sheet, then exported as JPEG. No controls or media were composited. Capture and release evidence is recorded in [build 20 publication verification](verification-release-build20-2026-10-29.md). The portrait's generation notes remain in [Fixtures/sample-image-notes.txt](../Fixtures/sample-image-notes.txt).

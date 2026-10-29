@@ -2,6 +2,12 @@
 
 Updated: 2026-10-29. Version 0.2.0, build 20. Detailed 4K screen sharing keeps the native picture advancing, native windows display frames on the GPU, encodes stay at or below 30 fps, and 4K viewers at 1 fps receive a picture. Viewer details retain optional names and observational playback health. See [screen-sharing stability verification](verification-keyframe-bursts-2026-10-27.md) and [viewer health verification](verification-viewer-health-2026-10-27.md).
 
+## GitHub build 20 prerelease, 2026-10-29
+
+Published the latest app code, `a635f3e`, as `v0.2.0-build20` on the development fork. The release ZIP includes the self-contained app, build notes, app hashes and a 106-file source/test/resource/script manifest. The executable matches the earlier Build 20 SHA256 exactly. The README now links the download and documents current inputs and limits, with fresh Build 20 sample-session captures of the dark/light Mac window, browser viewer and Picture settings. The repository description and topics reflect the current product. Detailed changes dated October 21–29 are in [release notes](releases/0.2.0-build20.md).
+
+Evidence from this publication run and remaining limits are in [release verification](verification-release-build20-2026-10-29.md). This is a developer prerelease for Apple Silicon and macOS 14 or later, ad-hoc signed and not notarized. All validation ran locally; GitHub Actions remains disabled. Hardware qualifications are unchanged.
+
 ## Build 20 native Pyro H port, 2026-10-29
 
 Restores Holly Share's Pyro H connection flow in the native chooser. Bounded discovery checks only the current Wi-Fi router, binds that interface/address, and describes the known `/live` endpoint on ports 5554/554/8554. It requires a complete H.264 SDP, opens no streaming connection, cancels when the chooser closes, and drains before source selection. Discovery pauses during network monitoring. The normal RTSP adapter receives the source once; main/floating monitoring, sharing, Hold/Stop and recovery retain the existing pipeline. Proven profiles save their exact endpoint in Keychain and restore privately. A compatible stream does not establish a model or unique hardware identity.
@@ -166,6 +172,6 @@ The publication format check initially failed with `Invalid PNG: Assets/screensh
 - Hollyland models, physical USB/HDMI capture, other Master 4K firmware, Intel builds, and older macOS versions remain unverified. The build targets Apple Silicon macOS 14 or later and was tested on macOS 27.
 - Build 12's monitoring passthrough needs a physical Master 4K recheck. That covers preview start time with the transmitter's own keyframe interval, CPU use of software HEVC decoding, and fine-text legibility compared with the earlier re-encode. Capture-device cadence, phone keep-awake, and viewer capacity at each quality setting also need physical tests. Use the session log to attribute any unavailable samples in the deferred two-hour run.
 - 4K screen sharing was verified on a virtual display only; a physical 4K monitor, phones, and Master 4K sources need retesting. Physical phones and iPads at 4K, including Safari, need viewer verification. See [screen-sharing stability verification](verification-keyframe-bursts-2026-10-27.md).
-- Developer ID signing/notarization and a public release remain separate work.
+- Developer ID signing/notarization and a stable public release remain separate work.
 
 See [hardware-tests.md](hardware-tests.md), [experience-plan.md](experience-plan.md), [experience verification](verification-experience-2026-10-20.md), [recovery verification](verification-recovery-2026-10-20.md), and [architecture.md](architecture.md).
