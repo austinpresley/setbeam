@@ -83,7 +83,12 @@
       next.onmessage = event => {
         if (next !== socket) return;
         let message; try { message = JSON.parse(event.data); } catch { return; }
-        if (message.t === 'welcome') { joined = true; denied = ''; retryDelay = 1000; serverRevision = message.r; startPing(); refresh(); }
+        if (message.t === 'welcome') {
+          joined = true; denied = ''; retryDelay = 1000;
+          // A delayed welcome never moves this page back to an earlier picture.
+          if (Number.isInteger(message.r) && message.r > serverRevision) serverRevision = message.r;
+          startPing(); refresh();
+        }
         else if (message.t === 'pointers' && Array.isArray(message.items)) receive(message);
         else if (message.t === 'denied') { denied = String(message.reason || 'access'); wanted = message.reason === 'full' ? wanted : false; }
       };

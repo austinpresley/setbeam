@@ -254,3 +254,16 @@ test('a pointer refreshed during its fade stays visible (A5, B3)', () => {
   assert.equal(p.marks().length, 1);
   assert.equal(p.marks()[0].classList.contains('fading'), false, 'The earlier removal was cancelled');
 });
+
+test('a delayed welcome cannot move the page back to an earlier picture (A2, B1 round 2)', () => {
+  const p = page();
+  p.controller.update({enabled: true, live: true, revision: 7});
+  p.get('pointer-form').dispatch('submit');
+  const socket = p.sockets.at(-1); socket.open();
+  p.controller.update({enabled: true, live: true, revision: 8});
+  socket.message({t: 'welcome', n: 2, r: 7});
+  socket.message({t: 'pointers', r: 7, items: [{n: 3, label: 'Ana', color: 'green', x: 0.5, y: 0.5, ttl: 3000}]});
+  assert.equal(p.marks().length, 0, 'Old positions do not render on the replacement picture');
+  p.get('picture').dispatch('pointermove', {clientX: 900, clientY: 500, pointerType: 'mouse'});
+  assert.equal(p.moves(socket).at(-1).r, 8, 'Outgoing moves use the current picture');
+});
