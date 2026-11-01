@@ -112,7 +112,8 @@ struct MainView: View {
                 PlayerView(player: model.localPlayer, placeholder: model.recoveryTitle,
                     physicalStep: !model.busy && !model.connectingToPicture && !model.state.sourceAvailable && model.setup?.kind != .sample,
                     connectionStage: model.connectionStage, inputKind: model.setup?.kind ?? .sample, stageTitle: model.connectionStageTitle,
-                    lastPicture: model.lastFrameAt == nil ? nil : model.frameAgeLabel)
+                    lastPicture: model.lastFrameAt == nil ? nil : model.frameAgeLabel,
+                    pointers: model.showsPointers ? model.pointerPresence : nil)
             } else {
                 Color(nsColor: .underPageBackgroundColor)
                 VStack(spacing: 13) {
@@ -172,6 +173,12 @@ struct MainView: View {
                     }.buttonStyle(.plain).help("\(model.verifiedViewers) viewers playing")
                         .accessibilityLabel("\(model.verifiedViewers) viewers playing. Show sharing status")
                 }
+            }
+            if model.state.sharing && !model.pendingViewers.isEmpty {
+                let count = model.pendingViewers.count
+                Button { showSheet(.viewers) } label: {
+                    Label("\(count) asking to join", systemImage: "person.badge.clock").font(.caption).foregroundStyle(Color.accentColor)
+                }.buttonStyle(.plain).help("Review viewers asking to join")
             }
             if model.state.holding && model.localReady {
                 Text("Your monitor continues").font(.caption).foregroundStyle(.secondary).lineLimit(1)

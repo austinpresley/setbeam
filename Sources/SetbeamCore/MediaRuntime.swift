@@ -41,6 +41,11 @@ public actor MediaRuntime {
     private let incomingRelay = IncomingStreamRelay()
     private var publisherPassword = MediaRuntime.secret(), previewPassword = MediaRuntime.secret(), adminPassword = MediaRuntime.secret()
     private var guestPassword = MediaRuntime.secret()
+    /// Under viewer approval the shared guest reader is absent; each admitted browser session
+    /// reads with its own credential, which can be revoked without disturbing the others.
+    private var approvalRequired = false
+    private var viewerReaders: Set<ViewerReader> = []
+    private var pendingRevocations: Set<String> = []
     private var viewerAddress = "127.0.0.1"
     private var inputAddress = "127.0.0.1"
     private var sessionState = SessionState()
@@ -178,8 +183,13 @@ public actor MediaRuntime {
             ["user": "publisher", "pass": publisherPassword, "ips": ["127.0.0.1", "::1"], "permissions": permissions],
             ["user": "preview", "pass": previewPassword, "ips": ["127.0.0.1", "::1"], "permissions": [["action": "read", "path": "local"]]],
             ["user": "admin", "pass": adminPassword, "ips": ["127.0.0.1", "::1"], "permissions": [["action": "api"]]],
-            ["user": "guest", "pass": guestPassword, "ips": guestNetworks, "permissions": [["action": "read", "path": "live"]]]
         ]
+        if !approvalRequired {
+            result.append(["user": "guest", "pass": guestPassword, "ips": guestNetworks, "permissions": [["action": "read", "path": "live"]]])
+        }
+        for reader in viewerReaders.sorted(by: { $0.user < $1.user }) {
+            result.append(["user": reader.user, "pass": reader.password, "ips": guestNetworks, "permissions": [["action": "read", "path": "live"]]])
+        }
         if case .incoming(_, let key) = source {
             result.append(["user": "sender", "pass": key, "ips": ["127.0.0.1", "::1"], "permissions": [["action": "publish", "path": "source"]]])
         }
@@ -355,7 +365,7 @@ public actor MediaRuntime {
         defer { releaseOperation() }
         guard mediaServer?.isRunning == true else { throw SetbeamError.unavailable("Connect a source before sharing.") }
         guard !sharing else { return snapshot() }
-        guestPassword = MediaRuntime.secret()
+        guestPassword = MediaRuntime.secret(); viewerReaders = []
         _ = try await api("/v3/config/global/patch", method: "PATCH", object: ["authInternalUsers": users()])
         try sessionState.startSharing(); sessionState.updateAudience(available: false); audienceFailures = 0
         log.record("sharing.start", ["quality": audienceQuality.rawValue, "fps": audienceFrameRate.rawValue])
@@ -538,9 +548,46 @@ public actor MediaRuntime {
         observedAudienceAudio = false
         publishSnapshot()
         audiencePublisher?.stop(); audiencePublisher = nil
-        guestPassword = MediaRuntime.secret()
+        guestPassword = MediaRuntime.secret(); viewerReaders = []; pendingRevocations = []
         _ = try? await api("/v3/config/global/patch", method: "PATCH", object: ["authInternalUsers": users()])
         publishSnapshot()
+    }
+
+    /// Applies viewer approval and the admitted sessions' readers, then disconnects any reader
+    /// whose access ended. Credentials apply before the disconnect, so a revoked page cannot
+    /// reconnect in between. Changing approval during sharing moves viewers to the new credentials
+    /// through a publisher revision. Other readers, local monitoring, and Hold are unaffected.
+    public func setViewerAccess(approval: Bool, readers: Set<ViewerReader>) async throws {
+        await acquireOperation()
+        defer { releaseOperation() }
+        let revoked = Set(viewerReaders.subtracting(readers).map(\.user)).union(approval && !approvalRequired ? ["guest"] : [])
+        let enablingApproval = approval && !approvalRequired
+        guard approval != approvalRequired || readers != viewerReaders || !pendingRevocations.isEmpty else { return }
+        let previous = (approvalRequired, viewerReaders)
+        approvalRequired = approval; viewerReaders = readers
+        log.record("viewers.access", ["approval": approval, "readers": readers.count, "revoked": revoked.count])
+        // A restarted server starts from these users and has no earlier sessions to disconnect.
+        guard mediaServer?.isRunning == true else { pendingRevocations = []; return }
+        do { _ = try await api("/v3/config/global/patch", method: "PATCH", object: ["authInternalUsers": users()]) }
+        catch { (approvalRequired, viewerReaders) = previous; throw error }
+        pendingRevocations.formUnion(revoked)
+        if !pendingRevocations.isEmpty { try await disconnectReaders(pendingRevocations); pendingRevocations = [] }
+        // Viewers playing with the shared credential reconnect with their own.
+        if enablingApproval && sharing { audienceRevision += 1; publishSnapshot() }
+    }
+    /// Ends existing media sessions read with these credentials.
+    private func disconnectReaders(_ users: Set<String>) async throws {
+        for (list, kick) in [("/v3/webrtcsessions/list", "/v3/webrtcsessions/kick/"), ("/v3/rtspsessions/list", "/v3/rtspsessions/kick/")] {
+            let sessions = try await api(list + "?itemsPerPage=1000")
+            for item in sessions["items"] as? [[String: Any]] ?? [] {
+                guard let user = item["user"] as? String, users.contains(user), let id = item["id"] as? String else { continue }
+                _ = try? await api(kick + id, method: "POST")
+            }
+            let remaining = try await api(list + "?itemsPerPage=1000")
+            if (remaining["items"] as? [[String: Any]] ?? []).contains(where: { ($0["user"] as? String).map(users.contains) == true }) {
+                throw SetbeamError.runtime("A removed viewer could not be disconnected.")
+            }
+        }
     }
 
     /// Reading state never starts, stops, retries, or probes media processes.

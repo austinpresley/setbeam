@@ -34,3 +34,11 @@ A selected display of the receiving Mac, captured with its cursor and without Se
 **Application window**:
 One window of another application on the receiving Mac, captured by itself with its cursor and without the desktop or other windows. It is identified by its window number and owning process, never by title. This input has no sound.
 _Avoid_: App sharing, for capturing every window of an application.
+
+**Viewer approval**:
+An optional session choice in which each browser session asks to join with a name and plays only after the operator admits it. Removing an admitted session ends its media access individually.
+_Avoid_: Account, login, or verified identity; names are labels chosen by viewers.
+
+**Shared pointer**:
+An admitted viewer's opt-in, named, colored pointer over the shared picture, seen by the operator and other participating viewers. It is presence only and grants no control.
+_Avoid_: Remote control, annotation, or cursor highlighting of the operator's own cursor.

@@ -25,8 +25,15 @@ final class ViewerHealthTests: XCTestCase {
         let port = try await host.start(address: "127.0.0.1")
         defer { host.stop() }
         let root = URL(string: "http://127.0.0.1:\(port)/s/viewer-health-test/")!
+        var passes: [String: String] = [:]
         func beat(_ id: String, name: String? = nil, mobile: Bool = true, health: String = "good") async throws {
-            var value: [String: Any] = ["id": id, "mobile": mobile, "playing": true, "revision": 1, "health": health]
+            if passes[id] == nil {
+                var join = URLRequest(url: root.appendingPathComponent("join"))
+                join.httpMethod = "POST"; join.httpBody = Data(#"{"mobile":true}"#.utf8)
+                let (data, _) = try await URLSession.shared.data(for: join)
+                passes[id] = (try JSONSerialization.jsonObject(with: data) as? [String: Any])?["pass"] as? String
+            }
+            var value: [String: Any] = ["pass": passes[id]!, "mobile": mobile, "playing": true, "revision": 1, "health": health]
             value["name"] = name
             var request = URLRequest(url: root.appendingPathComponent("heartbeat"))
             request.httpMethod = "POST"; request.httpBody = try JSONSerialization.data(withJSONObject: value)

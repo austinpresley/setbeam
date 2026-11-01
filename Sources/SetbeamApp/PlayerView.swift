@@ -11,12 +11,15 @@ struct PlayerView: View {
     var stageTitle: String?
     var lastPicture: String?
     var compactProgress = false
+    /// Viewer pointers over the picture itself, never over connection or recovery states.
+    var pointers: PointerPresenceModel?
     var body: some View {
         ZStack {
             Color(red: 0.12, green: 0.12, blue: 0.14)
             if let picture = player.picture {
                 PictureView(picture: picture)
                     .accessibilityLabel(connectionStage == nil ? "Live feed preview" : "Last received picture")
+                if let pointers, connectionStage == nil { PointerOverlay(presence: pointers, pictureSize: picture.size) }
             }
             if let connectionStage {
                 if player.picture != nil { Color.black.opacity(0.72) }

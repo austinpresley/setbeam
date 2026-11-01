@@ -443,10 +443,15 @@ struct ViewerStatusView: View {
             if !model.viewers.isEmpty {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 16) {
-                        ForEach(model.viewersForDetails) { ViewerActivityRow(viewer: $0) }
+                        ForEach(model.viewersForDetails) { viewer in
+                            ViewerActivityRow(viewer: viewer, canRemove: model.viewerApproval && viewer.admission == .admitted,
+                                admit: { model.admitViewer(viewer) }, decline: { model.declineViewer(viewer) }, remove: { model.removeViewer(viewer) })
+                        }
                     }.padding(.vertical, 2)
-                }.frame(maxHeight: 280)
-                Text("Each row is a browser session. Viewers can add a name in Connection help. Health describes their playback.")
+                }.frame(maxHeight: 320)
+                Text(model.viewerApproval
+                     ? "Each row is a browser session, numbered by Setbeam. Viewers name themselves when they ask to join. Removing one ends its picture and pointer."
+                     : "Each row is a browser session. Viewers can add a name in Connection help. Health describes their playback.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             if model.state.sharing && model.viewers.isEmpty { Text("Ask a viewer to scan the code. Playback is confirmed when their browser receives fresh video.").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }

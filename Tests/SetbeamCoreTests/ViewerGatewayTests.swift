@@ -196,9 +196,10 @@ final class ViewerGatewayTests: XCTestCase {
         let port = try await host.start(address: "127.0.0.1")
         defer { host.stop() }
         let origin = "http://127.0.0.1:\(port)"
-        func request(_ path: String, method: String = "GET", body: Data? = nil) async throws -> (Data, Int) {
+        func request(_ path: String, method: String = "GET", body: Data? = nil, pass: String? = nil) async throws -> (Data, Int) {
             var value = URLRequest(url: URL(string: origin + path)!)
             value.httpMethod = method; value.httpBody = body
+            if let pass { value.setValue(pass, forHTTPHeaderField: "X-Setbeam-Pass") }
             let (data, response) = try await URLSession.shared.data(for: value)
             return (data, (response as! HTTPURLResponse).statusCode)
         }
@@ -209,15 +210,18 @@ final class ViewerGatewayTests: XCTestCase {
         let prefix = "/s/\(token)/"
         let (html, status) = try await request(prefix)
         XCTAssertEqual(status, 200); XCTAssertEqual(String(decoding: html, as: UTF8.self), "sample viewer")
-        let (config, _) = try await request(prefix + "config.json")
+        let (_, withoutPass) = try await request(prefix + "config.json")
+        XCTAssertEqual(withoutPass, 403, "Playback details need a gateway-issued pass")
+        let (joined, _) = try await request(prefix + "join", method: "POST", body: Data(#"{"mobile":true}"#.utf8))
+        let pass = try XCTUnwrap((JSONSerialization.jsonObject(with: joined) as? [String: Any])?["pass"] as? String)
+        let (config, _) = try await request(prefix + "config.json", pass: pass)
         let values = try XCTUnwrap(JSONSerialization.jsonObject(with: config) as? [String: Any])
         XCTAssertEqual(values["user"] as? String, "guest")
         XCTAssertEqual(values["pass"] as? String, "read-only-test-value")
         XCTAssertEqual(values.count, 5)
         let (_, rejected) = try await request(prefix + "state.json", method: "POST")
         XCTAssertEqual(rejected, 405)
-        XCTAssertTrue(host.viewers.isEmpty)
-        let body = Data(#"{"id":"browser-test-01","mobile":true,"playing":true,"revision":0}"#.utf8)
+        let body = Data(#"{"pass":"\#(pass)","mobile":true,"playing":true,"revision":0}"#.utf8)
         _ = try await request(prefix + "heartbeat", method: "POST", body: body)
         XCTAssertEqual(host.viewers.count, 1); XCTAssertEqual(host.viewers.first?.playing, true)
         XCTAssertEqual(host.viewers.first?.onThisMac, true, "A local mobile-emulated browser must not count as another device")

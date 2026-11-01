@@ -2,6 +2,14 @@
 
 Updated: 2026-10-29. Version 0.2.0, build 20. Detailed 4K screen sharing keeps the native picture advancing, native windows display frames on the GPU, encodes stay at or below 30 fps, and 4K viewers at 1 fps receive a picture. Viewer details retain optional names and observational playback health. See [screen-sharing stability verification](verification-keyframe-bursts-2026-10-27.md) and [viewer health verification](verification-viewer-health-2026-10-27.md).
 
+## S-008 shared pointers with viewer admission, build 22, 2026-11-01
+
+Admitted viewers can opt in to point at the shared picture with a name and one of six colors. The operator's main and floating monitors and other pointing viewers see the same named pointers, positioned on the picture rather than the page, including letterboxing, browser full screen, and floating zoom and pan. Pointers travel on a bounded, same-origin presence channel on the existing gateway, independent of capture and viewer frame rates. They fade 4 s after the last meaningful movement and clear on Hold, Stop, publisher revisions, removal, and disconnects. They never enter encoded media.
+
+The necessary S-002, S-003, and S-005 foundations are included. Each tab gets a gateway-issued pass. Optional viewer approval asks for a name and waits for Admit or Decline. Admitted sessions read media with their own MediaMTX user, and removal revokes that user and ends its active sessions without interrupting other viewers. Ordinary link sharing is unchanged when approval is off. S-002, S-003, and S-005 remain partial; see the verification note. No password, hostname, presenter highlight, or drawing was added.
+
+Status: implemented and natively/browser verified; Sol review pending. Evidence, limits, and the observed intermittent preview-bridge timestamp failure are in [shared pointers verification](verification-shared-pointers-2026-11-01.md).
+
 ## S-001 single application window, build 21, 2026-11-01
 
 Choose a source now lists other applications' windows beside displays, with application, title, icon, and bounded live previews. Choosing one, such as Capture One, captures only that window through the existing in-app ScreenCaptureKit, encoder, and relay path. One capture feeds main and floating monitoring and sharing; Hold, Stop, readiness, recovery, the 3840 by 2160 bound, the 30 fps ceiling, and the saved capture and viewer frame rates are unchanged. Identity is the window number, owner process, and owner start time, never the title. Minimizing, hiding, or closing the window pauses the picture; a quit owner shows that the window closed. Setbeam never substitutes another window or the whole display. Relaunch restores a window privately only while that same window of the same process still exists; otherwise the operator chooses again. The chooser never requests Screen Recording access.

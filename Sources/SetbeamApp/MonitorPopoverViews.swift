@@ -53,12 +53,20 @@ struct MonitorSharingPopover: View {
                     .accessibilityElement(children: .combine)
                 LabeledContent("Opened the link", value: "\(model.openedViewers)")
                     .accessibilityElement(children: .combine)
-                Button("Viewer details…") { show(.viewers) }.buttonStyle(.link).font(.caption)
+                if !model.pendingViewers.isEmpty {
+                    LabeledContent("Asking to join", value: "\(model.pendingViewers.count)")
+                        .accessibilityElement(children: .combine)
+                }
+                Button(model.pendingViewers.isEmpty ? "Viewer details…" : "Review requests…") { show(.viewers) }.buttonStyle(.link).font(.caption)
             } else {
                 Text("Private monitoring").font(.headline)
                 Text("Sharing is off. Your picture stays on this Mac.").font(.callout).foregroundStyle(.secondary)
             }
-        }.font(.callout).padding(18).frame(width: 280)
+            Divider()
+            ViewerOptions(model: model)
+        }.font(.callout).padding(18).frame(width: 300)
+            // Rows such as pending requests appear while the popover is open; grow it rather than shrink the picture.
+            .fixedSize(horizontal: false, vertical: true)
     }
 }
 
@@ -81,5 +89,28 @@ struct SessionNameView: View {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         model.title = trimmed.isEmpty ? "My feed" : trimmed
         model.sheet = nil
+    }
+}
+
+/// Session options for who can watch and whether admitted viewers can point.
+struct ViewerOptions: View {
+    @ObservedObject var model: SessionModel
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Toggle(isOn: Binding(get: { model.viewerApproval }, set: { model.setViewerApproval($0) })) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Ask before viewers join")
+                    Text("Viewers enter a name and wait for you to admit them.").font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Toggle(isOn: Binding(get: { model.sharedPointers }, set: { model.setSharedPointers($0) })) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Shared pointers")
+                    Text("Viewers can point at the picture. You and other pointing viewers see their name.").font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }.toggleStyle(.switch).controlSize(.small)
     }
 }

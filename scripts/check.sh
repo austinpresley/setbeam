@@ -8,6 +8,7 @@ scripts/build-preview-bridge.sh
 python3 scripts/check-preview-bridge.py --tools "${SETBEAM_TEST_TOOLS:-$ROOT/Vendor/bin}" > build/logs/preview-bridge-integration.log 2>&1 || { cat build/logs/preview-bridge-integration.log; exit 1; }
 cat build/logs/preview-bridge-integration.log
 node --test scripts/check-viewer-recovery.js > build/logs/viewer-recovery.log 2>&1 || { cat build/logs/viewer-recovery.log; exit 1; }
+node --test scripts/check-viewer-pointers.js > build/logs/viewer-pointers.log 2>&1 || { cat build/logs/viewer-pointers.log; exit 1; }
 swift test > build/logs/swift-tests.log 2>&1 || { tail -n 70 build/logs/swift-tests.log; exit 1; }
 if [[ -x Vendor/bin/ffmpeg && -x Vendor/bin/mediamtx ]]; then
   swift run --skip-build SetbeamProbe --pyro-h-test --tools "${SETBEAM_TEST_TOOLS:-$ROOT/Vendor/bin}" --fixtures "${SETBEAM_TEST_FIXTURES:-$ROOT/Fixtures}" > build/logs/pyro-h-integration.log 2>&1 || { cat build/logs/pyro-h-integration.log; exit 1; }
@@ -16,6 +17,8 @@ if [[ -x Vendor/bin/ffmpeg && -x Vendor/bin/mediamtx ]]; then
   cat build/logs/media-integration.log
   swift run --skip-build SetbeamProbe --recovery-test --tools "${SETBEAM_TEST_TOOLS:-$ROOT/Vendor/bin}" --fixtures "${SETBEAM_TEST_FIXTURES:-$ROOT/Fixtures}" > build/logs/source-recovery.log 2>&1 || { cat build/logs/source-recovery.log; exit 1; }
   cat build/logs/source-recovery.log
+  swift run --skip-build SetbeamProbe --access-test --tools "${SETBEAM_TEST_TOOLS:-$ROOT/Vendor/bin}" --fixtures "${SETBEAM_TEST_FIXTURES:-$ROOT/Fixtures}" > build/logs/viewer-access.log 2>&1 || { cat build/logs/viewer-access.log; exit 1; }
+  cat build/logs/viewer-access.log
   swift run --skip-build SetbeamProbe --safety-test --tools "${SETBEAM_TEST_TOOLS:-$ROOT/Vendor/bin}" --fixtures "${SETBEAM_TEST_FIXTURES:-$ROOT/Fixtures}" > build/logs/source-switching.log 2>&1 || { cat build/logs/source-switching.log; exit 1; }
   cat build/logs/source-switching.log
   swift run --skip-build SetbeamProbe --format-test --tools "${SETBEAM_TEST_TOOLS:-$ROOT/Vendor/bin}" --fixtures "${SETBEAM_TEST_FIXTURES:-$ROOT/Fixtures}" > build/logs/media-formats.log 2>&1 || { cat build/logs/media-formats.log; exit 1; }

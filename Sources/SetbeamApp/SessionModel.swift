@@ -67,6 +67,14 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
     @Published private(set) var audienceFrameRate: VideoFrameRate
     @Published private(set) var screenFrameRate: VideoFrameRate
     @Published private(set) var transmitterRejoin: Bool
+    /// Viewers ask to join and play only after the operator admits them.
+    @Published private(set) var viewerApproval: Bool
+    /// Admitted viewers may opt in to point at the picture with a name and color.
+    @Published private(set) var sharedPointers: Bool
+    /// Native pointer overlay state. Observed only by the overlays, not by whole windows.
+    let pointerPresence = PointerPresenceModel()
+    private var accessSync: Task<Void, Never>?
+    private var accessSyncAgain = false
     @Published var transmitterWiFiPassword = ""
     @Published var rejoinProblem: String?
     private(set) var savedNetworkURL = ""
@@ -129,6 +137,8 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
         audienceFrameRate = VideoFrameRate(rawValue: defaults.integer(forKey: "audienceFrameRate")) ?? .source
         screenFrameRate = VideoFrameRate(rawValue: defaults.integer(forKey: "screenFrameRate")) ?? .source
         transmitterRejoin = integration ? false : defaults.bool(forKey: "transmitterWiFiRejoin")
+        viewerApproval = integration ? false : defaults.bool(forKey: "viewerApproval")
+        sharedPointers = integration ? false : defaults.bool(forKey: "sharedPointers")
     }
 
     var sourceLabel: String {
@@ -186,16 +196,79 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
         return previousSource.setup.name
     }
     var verifiedViewers: Int { viewers.filter(\.playing).count }
+    var pendingViewers: [ViewerActivity] { viewers.filter { $0.admission == .pending } }
+    var admittedViewers: [ViewerActivity] { viewers.filter { $0.admission == .admitted } }
+    var pointingViewers: Int { viewers.filter(\.pointing).count }
     var strugglingViewers: [ViewerActivity] {
         guard state.sharing, !state.holding else { return [] }
         return viewers.filter { $0.health == .struggling }
     }
     var viewersForDetails: [ViewerActivity] {
-        let struggling = Set(strugglingViewers.map(\.id))
-        return strugglingViewers + viewers.filter { !struggling.contains($0.id) }
+        let first = Set((pendingViewers + strugglingViewers).map(\.id))
+        return pendingViewers + strugglingViewers + viewers.filter { !first.contains($0.id) }
     }
-    var openedViewers: Int { viewers.count }
+    var openedViewers: Int { admittedViewers.count }
     var otherDeviceViewers: Int { viewers.filter { $0.playing && !$0.onThisMac }.count }
+    private var appliedReaders: Set<ViewerReader> = []
+    /// Pointers describe the live shared picture, so they appear only while it is being shared.
+    var showsPointers: Bool { sharedPointers && state.sharing && !state.holding }
+
+    func setViewerApproval(_ enabled: Bool) {
+        guard enabled != viewerApproval else { return }
+        viewerApproval = enabled
+        if !integration { defaults.set(enabled, forKey: "viewerApproval") }
+        SessionLog.shared.record("viewers.approval", ["enabled": enabled])
+        gateway.setAccess(approval: enabled, pointers: sharedPointers)
+        viewers = gateway.viewers
+        syncViewerAccess()
+    }
+    func setSharedPointers(_ enabled: Bool) {
+        guard enabled != sharedPointers else { return }
+        sharedPointers = enabled
+        if !integration { defaults.set(enabled, forKey: "sharedPointers") }
+        SessionLog.shared.record("viewers.pointers", ["enabled": enabled])
+        gateway.setAccess(approval: viewerApproval, pointers: enabled)
+        if !enabled { pointerPresence.clear() }
+        viewers = gateway.viewers
+    }
+    func admitViewer(_ viewer: ViewerActivity) {
+        guard gateway.approve(number: viewer.number) else { return }
+        SessionLog.shared.record("viewer.admit", ["number": viewer.number])
+        viewers = gateway.viewers; syncViewerAccess()
+    }
+    func declineViewer(_ viewer: ViewerActivity) {
+        guard gateway.decline(number: viewer.number) else { return }
+        SessionLog.shared.record("viewer.decline", ["number": viewer.number])
+        viewers = gateway.viewers
+    }
+    /// Ends this session's playback and presence immediately; other viewers continue.
+    func removeViewer(_ viewer: ViewerActivity) {
+        guard gateway.remove(number: viewer.number) else { return }
+        SessionLog.shared.record("viewer.remove", ["number": viewer.number])
+        viewers = gateway.viewers; syncViewerAccess()
+    }
+    /// Applies the gateway's admitted readers to the media server, one change at a time. A page
+    /// receives its own credential only after the server has accepted it.
+    private func syncViewerAccess() {
+        guard accessSync == nil else { accessSyncAgain = true; return }
+        accessSync = Task { [weak self] in
+            while let self, !self.shuttingDown {
+                self.accessSyncAgain = false
+                let approval = self.viewerApproval, readers = self.gateway.desiredReaders
+                do {
+                    try await self.runtime.setViewerAccess(approval: approval, readers: readers)
+                    self.appliedReaders = readers
+                    self.gateway.confirm(readers: readers)
+                    if self.state.monitoring { self.apply(await self.runtime.snapshot()); self.publishGatewayState() }
+                } catch {
+                    self.lastRuntimeProblem = Redaction.text(error.localizedDescription)
+                    self.error = "A viewer access change did not finish. Setbeam will retry."
+                }
+                guard self.accessSyncAgain else { break }
+            }
+            self?.accessSync = nil
+        }
+    }
     var setupCheck: SetupCheck {
         SetupCheck(picture: localReady, viewingAddress: state.sharing && gateway.isRunning && canInviteOtherDevices,
             otherDevicePlaying: otherDeviceViewers > 0, expectsAudio: expectsAudio,
@@ -283,6 +356,12 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
         localPlayer.onPlaybackState = nativePlaybackState
         audiencePlayer.onPlaybackState = { [weak self] playing, _ in self?.audiencePreviewPlaying = playing }
         localPlayer.onSoundUnavailable = { [weak self] message in self?.localMuted = true; self?.error = message }
+        gateway.setAccess(approval: viewerApproval, pointers: sharedPointers)
+        // Keep gateway order on the main queue; Hold, Stop, and revisions arrive as an empty list.
+        gateway.onPointers = { [weak presence = pointerPresence] pointers in
+            DispatchQueue.main.async { presence?.show(pointers) }
+        }
+        syncViewerAccess()
         runtimeUpdates = Task { [weak self, runtime] in
             for await snapshot in await runtime.updates() {
                 guard !Task.isCancelled, let self, !self.shuttingDown else { return }
@@ -315,6 +394,7 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
                 }
                 guard self.state.monitoring, !self.busy else { self.writeExperienceState(); continue }
                 self.viewers = self.gateway.viewers
+                if self.gateway.desiredReaders != self.appliedReaders { self.syncViewerAccess() }
                 self.recordViewerChanges()
                 self.confirmSetupIfReady()
                 self.writeExperienceState()
@@ -546,6 +626,7 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
             await refreshNetworks()
             guard !shuttingDown else { busy = false; return }
             apply(try await runtime.startSharing())
+            appliedReaders = []
             guard !shuttingDown else { busy = false; return }
             outgoingTransition.observeReady(outgoingReady)
             publishGatewayState()
@@ -595,6 +676,7 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
         outgoingTransition.reset()
         audiencePlayer.stop(); audiencePreviewPlaying = false; audienceHasAudio = false; testSoundConfirmed = false
         await runtime.stopSharing()
+        appliedReaders = []; pointerPresence.clear()
         apply(await runtime.snapshot()); publishGatewayState()
     }
     private func publishGatewayState() {
@@ -783,7 +865,9 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
             "status": statusLabel, "audience": state.audience.rawValue, "connectionStage": connectionStage?.rawValue ?? "",
             "viewerFPS": audienceFrameRate.rawValue, "screenFPS": screenFrameRate.rawValue,
             "audiencePreviewPlaying": audiencePreviewPlaying, "sourceHasAudio": sourceHasAudio, "audienceHasAudio": audienceHasAudio,
-            "otherDeviceViewers": otherDeviceViewers, "setupCheckPassed": setupCheck.passed, "previousSource": previousSourceName ?? ""])
+            "otherDeviceViewers": otherDeviceViewers, "setupCheckPassed": setupCheck.passed, "previousSource": previousSourceName ?? "",
+            "viewerApproval": viewerApproval, "sharedPointers": sharedPointers, "viewersPending": pendingViewers.count,
+            "viewersPointing": pointingViewers, "nativePointers": pointerPresence.items.count])
     }
     private func writeFile(option: String, value: [String: Any]) {
         let args = CommandLine.arguments

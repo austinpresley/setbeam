@@ -6,6 +6,9 @@ const test = require('node:test');
 const controller = fs.readFileSync('Sources/SetbeamApp/Resources/viewer.js', 'utf8');
 
 function browser(options = {}) {
+  let joinValue = options.join, heartbeatValue;
+  const joinResponse = () => joinValue;
+  const configHeaders = [];
   let now = 1_000, interval, requests = 0, hung = false, deferState = false, releaseState;
   const timers = new Map(), readers = [], listeners = {}, urls = [], sources = [], locks = [], heartbeats = [];
   const storage = new Map(Object.entries(options.storage || {}));
@@ -56,7 +59,8 @@ function browser(options = {}) {
       }
       close() { this.closed = true; }
     },
-    fetch(url, options = {}) {
+    fetch(url, request = {}) {
+      const options = {...request, join: joinResponse()};
       requests++; urls.push(url);
       if (url === 'heartbeat') heartbeats.push(JSON.parse(options.body));
       if (deferState && url === 'state.json') {
@@ -67,6 +71,12 @@ function browser(options = {}) {
       if (hung) return new Promise((resolve, reject) => {
         options.signal?.addEventListener('abort', () => reject(new Error('aborted')), {once: true});
       });
+      if (url === 'config.json') configHeaders.push(request.headers || {});
+      if (url === 'heartbeat' && heartbeatValue) return Promise.resolve({ok: true, status: 200, json: async () => heartbeatValue});
+      if (url === 'join') {
+        const join = options.join || {pass: 'a'.repeat(48), number: 1, admission: 'admitted', ready: true, color: 'blue'};
+        return Promise.resolve({ok: !join.status, status: join.status || 200, json: async () => join});
+      }
       return Promise.resolve({ok: true, status: 200, json: async () => url === 'config.json'
         ? {whepURL: 'http://localhost/live/whep', user: 'guest', pass: 'synthetic'} : state});
     }
@@ -86,9 +96,12 @@ function browser(options = {}) {
     locks.push(lock); return Promise.resolve(lock);
   }};
   if (options.keepAwakeVideo) context.SetbeamKeepAwakeVideo = 'data:video/mp4;base64,AAAA';
+  const pointerUpdates = [];
+  if (options.pointers) context.SetbeamPointers = {attach(viewer) { pointerUpdates.viewer = viewer; return {color: () => 'blue', update(value) { pointerUpdates.push(value); }}; }};
   vm.runInNewContext(controller, context);
-  const settle = async () => { for (let n = 0; n < 30; n++) await Promise.resolve(); };
+  const settle = async () => { for (let n = 0; n < 120; n++) await Promise.resolve(); };
   return {
+    pointerUpdates, set join(value) { joinValue = value; }, set heartbeatResponse(value) { heartbeatValue = value; }, configHeaders,
     readers, state, elements, listeners, settle, sources, locks, context, stream, audio, audioListeners, heartbeats, storage,
     set stats(value) { stats = value; }, set statsError(value) { statsError = value; },
     async releaseStats(value) { resolveStats(value); await settle(); },
@@ -417,4 +430,79 @@ test('late statistics from a replaced peer cannot change the new viewer health',
   await b.push({...b.state, revision: 2}); await b.track();
   await b.tick(3000);
   assert.equal(b.heartbeats.at(-1).health, 'checking');
+});
+
+const pass = 'b'.repeat(48);
+test('approval asks for a name before requesting access and fetches nothing playable', async () => {
+  const b = browser({join: {status: 400}}); await b.settle();
+  assert.equal(b.elements.get('join-form').hidden, false);
+  assert.equal(b.elements.get('state').textContent, 'Ask to join');
+  assert.equal(b.count('config.json'), 0); assert.equal(b.readers.length, 0);
+  b.elements.get('join-name').value = '   ';
+  b.listeners['join-form:submit']({preventDefault() {}}); await b.settle();
+  assert.equal(b.count('join'), 1, 'An empty name is not sent');
+  b.join = {pass, number: 4, admission: 'pending', ready: false, color: 'blue', name: 'Sam'};
+  b.elements.get('join-name').value = ' Sam ';
+  b.listeners['join-form:submit']({preventDefault() {}}); await b.settle();
+  assert.equal(b.elements.get('state').textContent, 'Waiting to join');
+  assert.equal(b.elements.get('join-form').hidden, true);
+  assert.equal(b.storage.get('setbeam-pass:'), pass, 'The tab keeps its pass across reloads');
+  await b.tick(); await b.tick();
+  assert.equal(b.count('config.json'), 0, 'A waiting page never asks for playback details');
+  assert.equal(b.readers.length, 0);
+  b.join = {pass, number: 4, admission: 'admitted', ready: true, color: 'blue', name: 'Sam'};
+  await b.tick();
+  assert.equal(b.readers.length, 1, 'Admission starts playback');
+  assert.equal(b.configHeaders.at(-1)['X-Setbeam-Pass'], pass);
+});
+
+test('removal reported by the gateway ends playback and the page stops asking', async () => {
+  const b = browser({join: {pass, number: 2, admission: 'admitted', ready: true, color: 'blue'}}); await b.settle(); await b.track();
+  assert.equal(b.elements.get('state').textContent, 'Live feed');
+  b.heartbeatResponse = {ok: true, admission: 'removed'};
+  await b.tick(); await b.tick();
+  assert.equal(b.readers.at(-1).closed, true);
+  assert.equal(b.elements.get('state').textContent, 'Removed');
+  const requests = b.requests;
+  await b.tick(); await b.tick(); await b.tick();
+  assert.equal(b.count('config.json'), 1, 'No new playback request after removal');
+  assert.ok(b.requests - requests <= 3, 'A removed page does not poll the gateway');
+});
+
+test('a reloaded removed or declined tab stays refused', async () => {
+  for (const admission of ['removed', 'declined']) {
+    const b = browser({storage: {'setbeam-pass:': pass}, join: {pass, number: 2, admission, ready: false, color: 'blue'}}); await b.settle();
+    assert.equal(b.count('config.json'), 0);
+    assert.equal(b.elements.get('state').textContent, admission === 'removed' ? 'Removed' : 'Not admitted');
+  }
+});
+
+test('an unknown pass, such as after a new link, joins again instead of reusing old details', async () => {
+  const b = browser({join: {pass, number: 2, admission: 'admitted', ready: true, color: 'blue'}}); await b.settle(); await b.track();
+  b.heartbeatResponse = {ok: false, admission: 'unknown'};
+  await b.tick(); await b.tick();
+  assert.equal(b.readers.at(-1).closed, true);
+  b.heartbeatResponse = {ok: true, admission: 'admitted'};
+  const joins = b.count('join');
+  await b.tick();
+  assert.ok(b.count('join') > joins);
+});
+
+test('pointing is offered only while admitted, enabled, and the session continues', async () => {
+  const b = browser({eventSource: true, pointers: true, join: {pass, number: 2, admission: 'admitted', ready: true, color: 'blue'}});
+  await b.settle();
+  await b.push({...b.state, pointers: true}); await b.track();
+  assert.deepEqual({...b.pointerUpdates.at(-1)}, {enabled: true, live: true, revision: 1});
+  assert.equal(b.pointerUpdates.viewer.nameLocked(), false);
+  await b.push({...b.state, approval: true, pointers: true});
+  assert.equal(b.pointerUpdates.viewer.nameLocked(), true, 'Under approval the admitted name is fixed');
+  await b.push({...b.state, state: 'holding', pointers: true});
+  assert.equal(b.pointerUpdates.at(-1).live, false, 'Hold stops pointing');
+  await b.push({...b.state, state: 'stopped', pointers: true});
+  assert.equal(b.pointerUpdates.at(-1).enabled, false, 'Stop ends pointing');
+  const c = browser({eventSource: true, pointers: true, join: {pass, number: 3, admission: 'admitted', ready: true, color: 'blue'}});
+  await c.settle(); await c.push({...c.state, pointers: true}); await c.track();
+  c.heartbeatResponse = {ok: true, admission: 'removed'};
+  await c.tick(); await c.tick();
+  assert.equal(c.pointerUpdates.at(-1).enabled, false, 'Removal ends pointing');
 });

@@ -134,15 +134,19 @@ import SwiftUI
     private var windowDrag: (pointer: CGPoint, origin: CGPoint)?
     private var windowResize: PreviewWindowResize?
     private let recovery: NSView
+    /// Covers exactly the zoomed picture rectangle, so pointers follow zoom and pan.
+    private let pointers: NSView
 
     init(model: SessionModel) {
         recovery = PassthroughHostingView(rootView: FloatingRecovery(model: model))
+        pointers = PassthroughHostingView(rootView: FloatingPointers(model: model))
         super.init(frame: .zero)
         wantsLayer = true; layer?.cornerRadius = 10; layer?.masksToBounds = true
         setAccessibilityElement(true); setAccessibilityRole(.image)
         setAccessibilityLabel("Floating feed preview")
         setAccessibilityHelp("Pinch or scroll to zoom. Drag a zoomed picture to pan. Double-click or press 0 to restore the full picture. At full picture, drag to move the window.")
         addSubview(pictureView)
+        addSubview(pointers)
         recovery.frame = bounds; recovery.autoresizingMask = [.width, .height]; addSubview(recovery)
         frames = model.localPlayer.$picture.sink { [weak self] picture in
             guard let self else { return }
@@ -168,6 +172,7 @@ import SwiftUI
     private func layoutPicture() {
         CATransaction.begin(); CATransaction.setDisableActions(true)
         pictureView.frame = picture.map { viewport.imageRect(source: $0.size, bounds: bounds) } ?? .zero
+        pointers.frame = pictureView.frame
         CATransaction.commit()
     }
     override func setFrameSize(_ newSize: NSSize) {
@@ -277,6 +282,13 @@ private struct FloatingRecovery: View {
                 } else { Text(model.recoveryTitle).font(.caption).foregroundStyle(.white).multilineTextAlignment(.center).padding(12) }
             }
         }
+    }
+}
+
+private struct FloatingPointers: View {
+    @ObservedObject var model: SessionModel
+    var body: some View {
+        if model.showsPointers && model.localReady { PointerOverlay(presence: model.pointerPresence) }
     }
 }
 

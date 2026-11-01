@@ -25,6 +25,11 @@ public struct ViewerActivity: Sendable, Identifiable {
     public let number: Int
     public let name: String?
     public let health: ViewerHealth
+    public var admission: ViewerAdmission = .admitted
+    public var color: PointerColor = .blue
+    public var joinedAt: Date = .distantPast
+    /// Shares a named pointer with other participants.
+    public var pointing = false
 
     public var displayName: String { name ?? "\(label) \(number)" }
 }
@@ -52,15 +57,29 @@ public enum ViewerHealth: String, Sendable {
 
 /// A small, authenticated static viewer host. It exposes no media-control proxy or file browsing.
 public final class ViewerGateway: @unchecked Sendable {
-    private let queue = DispatchQueue(label: "app.setbeam.viewer", qos: .userInitiated)
-    private let lock = NSLock()
+    let queue = DispatchQueue(label: "app.setbeam.viewer", qos: .userInitiated)
+    let lock = NSLock()
     private let assets: [String: Data]
     private var listener: NWListener?
     /// A stopped listener releases its socket asynchronously; a same-port start waits for it.
     private var stoppedListener: NWListener?
-    private var session: ViewerSession?
-    private var activity: [String: ViewerActivity] = [:]
-    private var nextViewerNumber = 1
+    var session: ViewerSession?
+    var ledger = ViewerAccessLedger()
+    var presence = PointerPresence(revision: 0)
+    var pointersEnabled = false
+    /// Open presence channels, at most one per participant once identified.
+    var presenceClients: [ObjectIdentifier: PresenceClient] = [:]
+    var presenceFlushScheduled = false
+    var presenceMaintenanceScheduled = false
+    var presenceExpiry: DispatchWorkItem?
+    var notifiedPointers: [SharedPointer] = []
+    let maxPresenceClients: Int
+    /// Receives the participants' current pointers for native monitoring, on the gateway queue.
+    public var onPointers: (@Sendable ([SharedPointer]) -> Void)? {
+        get { lock.withLock { pointerObserver } }
+        set { lock.withLock { pointerObserver = newValue } }
+    }
+    var pointerObserver: (@Sendable ([SharedPointer]) -> Void)?
     private var running = false
     private var generation = UUID()
     private var listenerAttempt = UUID()
@@ -82,8 +101,9 @@ public final class ViewerGateway: @unchecked Sendable {
     }
 
     init(assets: [String: Data], retryDelay: TimeInterval, startupTimeout: TimeInterval = 5,
-         requestTimeout: TimeInterval = 6, keepaliveInterval: TimeInterval = 10, maxStreams: Int = 64,
+         requestTimeout: TimeInterval = 6, keepaliveInterval: TimeInterval = 10, maxStreams: Int = 64, maxPresenceClients: Int = 24,
          listenerFactory: @escaping (NWParameters, NWEndpoint.Port) throws -> NWListener) {
+        self.maxPresenceClients = maxPresenceClients
         self.assets = assets
         self.retryDelay = retryDelay
         self.startupTimeout = startupTimeout
@@ -98,24 +118,66 @@ public final class ViewerGateway: @unchecked Sendable {
             self.session = session
             // A new token is a new viewing link. Readers of the old link must reconnect and get 404.
             if previous?.token != session.token {
-                activity.removeAll()
-                nextViewerNumber = 1
-                let closed = Array(streams.values); streams.removeAll()
+                ledger.reset()
+                presence.removeAll(revision: session.revision)
+                let closed = Array(streams.values) + presenceClients.values.map(\.connection)
+                streams.removeAll(); presenceClients.removeAll()
                 return (closed, false)
             }
-            return ([], previous.map { Self.stateObject($0) as NSDictionary != Self.stateObject(session) as NSDictionary } ?? true)
+            // Positions belong to one live picture. Hold, Stop, and every publisher revision clear them.
+            if previous?.revision != session.revision || previous?.state != session.state { presence.reset(revision: session.revision) }
+            return ([], previous.map { stateLocked($0) as NSDictionary != stateLocked(session) as NSDictionary } ?? true)
         }
         closed.forEach { $0.cancel() }
+        schedulePresenceFlush()
         if changed { broadcast(session) }
+    }
+
+    /// Session options for joining and shared pointers. They never grant publishing or administration.
+    public func setAccess(approval: Bool, pointers: Bool) {
+        let (closed, changed, current) = lock.withLock { () -> ([NWConnection], Bool, ViewerSession?) in
+            let changed = approval != ledger.approvalRequired || pointers != pointersEnabled
+            ledger.setApproval(approval); pointersEnabled = pointers
+            var closed: [NWConnection] = []
+            if !pointers {
+                closed = presenceClients.values.map(\.connection); presenceClients.removeAll()
+                presence.removeAll(revision: session?.revision ?? 0)
+            }
+            return (closed, changed, session)
+        }
+        closed.forEach { $0.cancel() }
+        schedulePresenceFlush()
+        if changed, let current { broadcast(current) }
+    }
+    public var approvalRequired: Bool { lock.withLock { ledger.approvalRequired } }
+
+    /// Readers the media server must accept for admitted sessions under approval.
+    public var desiredReaders: Set<ViewerReader> { lock.withLock { ledger.readers } }
+    /// Called after the media server has accepted these readers. Only then can admitted pages
+    /// obtain their own playback credential.
+    public func confirm(readers: Set<ViewerReader>) { lock.withLock { _ = ledger.confirm(readers: readers) } }
+
+    @discardableResult public func approve(number: Int) -> Bool { lock.withLock { ledger.approve(number: number) } }
+    @discardableResult public func decline(number: Int) -> Bool { lock.withLock { ledger.decline(number: number) } }
+    /// Ends this session's access to playback and presence at once. The caller revokes its reader.
+    @discardableResult public func remove(number: Int) -> Bool {
+        let closed = lock.withLock { () -> [NWConnection]? in
+            guard ledger.remove(number: number) else { return nil }
+            presence.leave(number)
+            let clients = presenceClients.filter { $0.value.number == number }
+            clients.keys.forEach { presenceClients.removeValue(forKey: $0) }
+            return clients.values.map(\.connection)
+        }
+        closed?.forEach { $0.cancel() }
+        schedulePresenceFlush()
+        return closed != nil
     }
     public var viewers: [ViewerActivity] {
         lock.lock(); defer { lock.unlock() }
-        activity = activity.filter { Date().timeIntervalSince($0.value.lastSeen) < 12 }
-        return activity.values.map { item in
-            let age = Date().timeIntervalSince(item.lastSeen)
-            return ViewerActivity(id: item.id, label: item.label, playing: item.playing && item.revision == session?.revision && session?.state == .live && age < 8, onThisMac: item.onThisMac, revision: item.revision, lastSeen: item.lastSeen,
-                number: item.number, name: item.name, health: ViewerHealth.observed(item.health, playing: item.playing, revision: item.revision, session: session, age: age))
-        }.sorted { $0.number < $1.number }
+        let participants = presence.participants
+        return ledger.activity(session: session, now: Date()).map { item in
+            var item = item; item.pointing = participants.contains(item.number); return item
+        }
     }
     public var isRunning: Bool { lock.lock(); defer { lock.unlock() }; return running }
 
@@ -149,8 +211,10 @@ public final class ViewerGateway: @unchecked Sendable {
             let previous = (listener, retry, startup, Array(streams.values))
             generation = UUID(); listenerAttempt = UUID(); desiredListener = nil
             stoppedListener = listener; listener = nil; retry = nil; startup = nil
-            running = false; activity.removeAll(); nextViewerNumber = 1; streams.removeAll()
-            return previous
+            running = false; ledger.reset(); streams.removeAll()
+            presence.removeAll(revision: session?.revision ?? 0)
+            let channels = presenceClients.values.map(\.connection); presenceClients.removeAll()
+            return (previous.0, previous.1, previous.2, previous.3 + channels)
         }
         previous.3.forEach { $0.cancel() }
         previous.1?.cancel()
@@ -314,45 +378,79 @@ public final class ViewerGateway: @unchecked Sendable {
             if body.count < length && !complete && error == nil { self.receive(connection, buffer: combined); return }
             guard body.count >= length else { self.send(connection, code: 400, mime: "text/plain", body: Data()); return }
             let rawPath = String(request[1]).components(separatedBy: "?")[0]
-            self.respond(connection, method: String(request[0]), path: rawPath, body: Data(body.prefix(length)))
+            let extra = Data(body.dropFirst(length))
+            self.respond(connection, method: String(request[0]), path: rawPath, headers: headers, body: Data(body.prefix(length)), extra: extra)
         }
     }
-    private func respond(_ connection: NWConnection, method: String, path: String, body: Data) {
+    private func respond(_ connection: NWConnection, method: String, path: String, headers: [String: String], body: Data, extra: Data) {
         lock.lock(); let current = session; lock.unlock()
         guard let current else { unavailable(connection, method: method, path: path); return }
         let prefix = "/s/\(current.token)/"
         guard path.hasPrefix(prefix) else { unavailable(connection, method: method, path: path); return }
         let suffix = String(path.dropFirst(prefix.count))
-        if suffix == "heartbeat", method == "POST" {
-            if let data = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
-               let id = data["id"] as? String, (8...64).contains(id.count), id.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-") }) {
-                let label = (data["mobile"] as? Bool ?? false) ? "Phone / tablet browser" : "Desktop browser"
-                let host: String
-                if case .hostPort(let endpoint, _) = connection.endpoint { host = String(describing: endpoint) }
-                else { host = "" }
-                let local = host == "127.0.0.1" || host == "::1" || NetworkAddress.available().contains { $0.address == host }
-                lock.lock()
-                if session?.token == current.token, activity.count < 64 || activity[id] != nil {
-                    let number = activity[id]?.number ?? nextViewerNumber
-                    if activity[id] == nil { nextViewerNumber += 1 }
-                    activity[id] = ViewerActivity(id: id, label: label, playing: data["playing"] as? Bool ?? false, onThisMac: local, revision: data["revision"] as? Int ?? -1, lastSeen: Date(),
-                        number: number, name: ViewerHealth.viewerName(data["name"] as? String), health: (data["health"] as? String).flatMap(ViewerHealth.init(rawValue:)) ?? .playing)
-                }
-                lock.unlock()
+        if method == "POST", suffix == "join" || suffix == "heartbeat" {
+            guard let data = try? JSONSerialization.jsonObject(with: body) as? [String: Any] else {
+                send(connection, code: 400, mime: "text/plain", body: Data()); return
             }
-            sendJSON(connection, ["ok": true]); return
+            let local = isLocal(connection), mobile = data["mobile"] as? Bool ?? false
+            if suffix == "join" { join(connection, data, token: current.token, local: local, mobile: mobile); return }
+            // Only a gateway-issued pass identifies a session. Unknown passes must join again.
+            guard let pass = ViewerAccessLedger.validPass(data["pass"]) else { sendJSON(connection, ["ok": false, "admission": "unknown"]); return }
+            let name: String?? = data.keys.contains("name") ? .some(ViewerHealth.viewerName(data["name"] as? String)) : .none
+            let record = lock.withLock { () -> ViewerAccessLedger.Record? in
+                guard session?.token == current.token else { return nil }
+                return ledger.heartbeat(pass, playing: data["playing"] as? Bool ?? false,
+                    health: (data["health"] as? String).flatMap(ViewerHealth.init(rawValue:)) ?? .playing,
+                    revision: data["revision"] as? Int ?? -1, name: name, mobile: mobile, local: local, now: Date())
+            }
+            sendJSON(connection, ["ok": record != nil, "admission": record?.admission.rawValue ?? "unknown"]); return
         }
+        if suffix == "presence", method == "GET" { openPresence(connection, headers: headers, token: current.token, extra: extra); return }
         guard method == "GET" else { send(connection, code: 405, mime: "text/plain", body: Data()); return }
         if suffix == "config.json" {
-            sendJSON(connection, ["title": current.title, "sample": current.sample,
-                "whepURL": current.playback.whepURL, "user": current.playback.user, "pass": current.playback.password]); return
+            // Playback credentials go only to an admitted session whose own access is in effect.
+            let record = ViewerAccessLedger.validPass(headers["x-setbeam-pass"]).flatMap { pass in
+                lock.withLock { session?.token == current.token ? ledger.record(pass) : nil }
+            }
+            guard let record, record.admission == .admitted else {
+                send(connection, code: 403, mime: "application/json", body: Data(#"{"admission":"\#(record?.admission.rawValue ?? "unknown")"}"#.utf8)); return
+            }
+            guard record.mediaReady else { send(connection, code: 503, mime: "text/plain", body: Data()); return }
+            sendJSON(connection, ["title": current.title, "sample": current.sample, "whepURL": current.playback.whepURL,
+                "user": record.reader?.user ?? current.playback.user, "pass": record.reader?.password ?? current.playback.password]); return
         }
-        if suffix == "state.json" { sendJSON(connection, Self.stateObject(current)); return }
+        if suffix == "state.json" { sendJSON(connection, lock.withLock { stateLocked(current) }); return }
         if suffix == "events" { openStream(connection, session: current); return }
         let file = suffix.isEmpty ? "viewer.html" : suffix
-        guard let data = assets[file], ["viewer.html", "viewer.js", "viewer.css", "reader.js", "keepawake.js"].contains(file) else { send(connection, code: 404, mime: "text/plain", body: Data()); return }
+        guard let data = assets[file], Self.publicAssets.contains(file) else { send(connection, code: 404, mime: "text/plain", body: Data()); return }
         let mime = file.hasSuffix(".html") ? "text/html; charset=utf-8" : file.hasSuffix(".css") ? "text/css; charset=utf-8" : "text/javascript; charset=utf-8"
         send(connection, code: 200, mime: mime, body: data)
+    }
+    static let publicAssets: Set<String> = ["viewer.html", "viewer.js", "viewer.css", "reader.js", "keepawake.js", "pointers.js"]
+
+    private func isLocal(_ connection: NWConnection) -> Bool {
+        let host: String
+        if case .hostPort(let endpoint, _) = connection.endpoint { host = String(describing: endpoint) } else { host = "" }
+        return host == "127.0.0.1" || host == "::1" || NetworkAddress.available().contains { $0.address == host }
+    }
+
+    /// Issues or resumes a browser session. The response carries only that session's own status.
+    private func join(_ connection: NWConnection, _ data: [String: Any], token: String, local: Bool, mobile: Bool) {
+        let outcome = lock.withLock { () -> ViewerAccessLedger.JoinOutcome? in
+            guard session?.token == token else { return nil }
+            return ledger.join(pass: ViewerAccessLedger.validPass(data["pass"]), name: ViewerHealth.viewerName(data["name"] as? String),
+                               color: PointerColor.validated(data["color"]), mobile: mobile, local: local, now: Date())
+        }
+        switch outcome {
+        case .joined(let record)?:
+            var value: [String: Any] = ["pass": record.pass, "number": record.number, "admission": record.admission.rawValue,
+                                        "ready": record.mediaReady, "color": record.color.rawValue]
+            value["name"] = record.name
+            sendJSON(connection, value)
+        case .nameRequired?: send(connection, code: 400, mime: "application/json", body: Data(#"{"error":"name"}"#.utf8))
+        case .full?: send(connection, code: 503, mime: "application/json", body: Data(#"{"error":"full"}"#.utf8))
+        case nil: unavailable(connection, method: "POST", path: "")
+        }
     }
     private func unavailable(_ connection: NWConnection, method: String, path: String) {
         if method == "GET", path.hasPrefix("/s/"), path.hasSuffix("/") || path.hasSuffix("/viewer.html"),
@@ -362,20 +460,22 @@ public final class ViewerGateway: @unchecked Sendable {
             send(connection, code: 404, mime: "text/plain", body: Data("Session unavailable".utf8))
         }
     }
-    private func sendJSON(_ connection: NWConnection, _ object: [String: Any]) {
+    func sendJSON(_ connection: NWConnection, _ object: [String: Any]) {
         send(connection, code: 200, mime: "application/json", body: (try? JSONSerialization.data(withJSONObject: object)) ?? Data("{}".utf8))
     }
-    private func send(_ connection: NWConnection, code: Int, mime: String, body: Data) {
-        let phrase = [200: "OK", 400: "Bad Request", 404: "Not Found", 405: "Method Not Allowed", 413: "Payload Too Large", 503: "Service Unavailable"][code] ?? "Error"
+    func send(_ connection: NWConnection, code: Int, mime: String, body: Data) {
+        let phrase = [200: "OK", 400: "Bad Request", 403: "Forbidden", 404: "Not Found", 405: "Method Not Allowed", 413: "Payload Too Large", 503: "Service Unavailable"][code] ?? "Error"
         let header = "HTTP/1.1 \(code) \(phrase)\r\nContent-Type: \(mime)\r\nContent-Length: \(body.count)\r\nCache-Control: no-store\r\nReferrer-Policy: no-referrer\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n"
         connection.send(content: Data(header.utf8) + body, completion: .contentProcessed { _ in connection.cancel() })
     }
-    private static func stateObject(_ session: ViewerSession) -> [String: Any] {
+    /// Public session state. It names no viewers; the caller holds the lock.
+    func stateLocked(_ session: ViewerSession) -> [String: Any] {
         ["state": session.state.rawValue, "title": session.title, "sample": session.sample,
-         "revision": session.revision, "wifiSSID": session.wifiSSID]
+         "revision": session.revision, "wifiSSID": session.wifiSSID,
+         "approval": ledger.approvalRequired, "pointers": pointersEnabled]
     }
-    private static func event(_ session: ViewerSession) -> Data {
-        let json = (try? JSONSerialization.data(withJSONObject: stateObject(session))) ?? Data("{}".utf8)
+    private func event(_ session: ViewerSession) -> Data {
+        let json = (try? JSONSerialization.data(withJSONObject: lock.withLock { stateLocked(session) })) ?? Data("{}".utf8)
         return Data("data: ".utf8) + json + Data("\n\n".utf8)
     }
 
@@ -392,7 +492,7 @@ public final class ViewerGateway: @unchecked Sendable {
             guard let connection else { return }
             switch state { case .failed, .cancelled: self?.closeStream(connection); default: break }
         }
-        push(Data(header.utf8) + Self.event(current), to: connection)
+        push(Data(header.utf8) + event(current), to: connection)
         watchForClose(connection)
         scheduleKeepalive()
     }
@@ -403,7 +503,7 @@ public final class ViewerGateway: @unchecked Sendable {
         }
     }
     private func isStreaming(_ connection: NWConnection) -> Bool {
-        lock.withLock { streams[ObjectIdentifier(connection)] != nil }
+        lock.withLock { streams[ObjectIdentifier(connection)] != nil || presenceClients[ObjectIdentifier(connection)] != nil }
     }
     private func closeStream(_ connection: NWConnection) {
         let removed = lock.withLock { streams.removeValue(forKey: ObjectIdentifier(connection)) != nil }
@@ -415,9 +515,9 @@ public final class ViewerGateway: @unchecked Sendable {
         })
     }
     private func broadcast(_ session: ViewerSession) {
-        let event = Self.event(session)
+        let message = event(session)
         let targets = lock.withLock { Array(streams.values) }
-        queue.async { [weak self] in targets.forEach { self?.push(event, to: $0) } }
+        queue.async { [weak self] in targets.forEach { self?.push(message, to: $0) } }
     }
     private func scheduleKeepalive() {
         let schedule = lock.withLock { () -> Bool in
@@ -438,6 +538,8 @@ public final class ViewerGateway: @unchecked Sendable {
     }
     deinit {
         streams.values.forEach { $0.cancel() }
+        presenceClients.values.forEach { $0.connection.cancel() }
+        presenceExpiry?.cancel()
         retry?.cancel()
         startup?.finish(.failure(SetbeamError.unavailable("Viewer server stopped before it was ready.")))
         listener?.cancel()

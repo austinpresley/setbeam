@@ -16,13 +16,23 @@
   // Pushed state replaces 1.5 s polling while the stream stays healthy. Polling remains the fallback.
   let events, eventsAt = 0, eventsHeard = false, eventsRetryAt = 0, applying = Promise.resolve(), pushes = 0;
   let heartbeatAt = 0, reportedPlaying;
-  let viewerName = '';
+  let viewerName = '', pointersOn = false;
   try { viewerName = sessionStorage.getItem('setbeam-viewer-name') || ''; } catch { /* Naming also works without storage. */ }
   const nameInput = document.getElementById('viewer-name');
   nameInput.value = viewerName;
   let healthGeneration = 0, statsPrevious, statsPending = false, healthQuality = 'checking', healthAt = 0, badSamples = 0, goodSamples = 0;
   let keepAwake = false, wakeLock, wakeLockPending = false;
   const id = globalThis.crypto?.randomUUID?.() || Math.random().toString(36).slice(2) + Date.now().toString(36);
+  // Setbeam issues each tab a secret pass. Only that pass identifies this session; under approval
+  // it is admitted, declined, or removed by the operator, and a reload keeps that decision.
+  const passKey = 'setbeam-pass:' + (globalThis.location?.pathname || '');
+  let pass, access = 'joining', approval = false, mediaReady = false, joinRunning = false;
+  try { pass = sessionStorage.getItem(passKey) || undefined; } catch { /* A tab without storage joins again after reload. */ }
+  const refused = () => access === 'declined' || access === 'removed';
+  const pointers = globalThis.SetbeamPointers?.attach({
+    pass: () => pass, name: () => viewerName, nameLocked: () => approval,
+    setName: name => saveName(name), live: () => mode === 'live' && access === 'admitted' && !unavailable
+  });
   const playing = () => mode === 'live' && receivedTrack && !video.paused && video.readyState >= 2 && Date.now() - lastFrameAt < 6000;
   const stalled = () => !document.hidden && !playBlocked && Date.now() - (lastFrameAt || readerStartedAt) > 10000;
   // A stream must deliver its first state quickly and a keepalive about every 10 s after that.
@@ -54,17 +64,26 @@
     retry.hidden = !(playBlocked && mode === 'live') && !unavailable;
     action(retry, unavailable ? 'Reconnect' : 'Play feed');
     document.getElementById('retry-icon').setAttribute('href', unavailable ? '#i-loader' : '#i-play');
+    document.getElementById('join-form').hidden = access !== 'name' || unavailable;
     if (unavailable) { text(label, 'Session unavailable'); show('This viewing link is unavailable', 'Ask the operator for the current code.', 'link-off'); }
+    else if (access === 'name') { text(label, 'Ask to join'); show('Ask to join', 'The operator admits each viewer. Enter the name they will see.', 'user'); }
+    else if (access === 'pending') { text(label, 'Waiting to join'); show('Waiting for the operator', 'Keep this page open. Your picture starts when the operator admits you.', 'user'); }
+    else if (access === 'declined') { text(label, 'Not admitted'); show('The operator declined this request', 'Ask the operator if you should be watching.', 'link-off'); }
+    else if (access === 'removed') { text(label, 'Removed'); show('The operator removed you from this session', 'This page no longer receives the picture.', 'link-off'); }
+    else if (access === 'full') { text(label, 'Session busy'); show('This session is busy', 'Too many people are waiting. Try again shortly.', 'loader'); }
     else if (mode === 'holding') { text(label, 'On hold'); show('On hold', 'Your picture returns when sharing resumes.', 'pause'); }
     else if (mode === 'stopped') { text(label, 'Sharing ended'); show('Sharing ended', 'Ask the operator for a new code.', 'end'); }
     else if (playBlocked && mode === 'live') { text(label, 'Ready to play'); show('Your picture is ready', 'Tap to watch.', 'play'); }
     else if (live) { text(label, 'Live feed'); slate.hidden = true; }
     else { text(label, everPlayed ? 'Reconnecting' : 'Connecting'); show('Waiting for the picture', everPlayed ? 'Keep this page open. Stay on the viewing network.' : 'Waiting for the picture.', 'loader'); }
     video.muted = mode !== 'live' || unavailable || sound.getAttribute('aria-pressed') !== 'true';
-    const ended = mode === 'stopped' || unavailable;
+    const ended = mode === 'stopped' || unavailable || refused();
     if (ended && keepAwake) releaseAwake();
     awake.disabled = ended;
     if (streaming() && live !== reportedPlaying) heartbeat();
+    // Pointing ends with the session: removal, refusal, Stop, and an unavailable link all close it.
+    const pointable = pointersOn && access === 'admitted' && !unavailable && mode !== 'stopped';
+    pointers?.update({enabled: pointable, live: pointable && mode === 'live', revision});
   }
   function exitPip() {
     try {
@@ -110,6 +129,7 @@
   }
   function startReader() {
     closeReader(); playBlocked = false; readerStartedAt = Date.now();
+    if (!config || access !== 'admitted') return;
     const generation = readerGeneration;
     reader = new MediaMTXWebRTCReader({url: config.whepURL, user: config.user, pass: config.pass,
       onTrack: event => {
@@ -227,7 +247,49 @@
   function heartbeat() {
     heartbeatAt = Date.now(); reportedPlaying = playing();
     sampleHealth();
-    return request('heartbeat', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({id, mobile: /iPhone|iPad|Android/.test(navigator.userAgent), name: viewerName, playing: reportedPlaying, health: viewerHealth(), revision})}).catch(() => {});
+    if (!pass || refused()) return Promise.resolve();
+    const sent = pass;
+    const body = {pass, mobile: /iPhone|iPad|Android/.test(navigator.userAgent), playing: reportedPlaying, health: viewerHealth(), revision};
+    if (!approval) body.name = viewerName;
+    return request('heartbeat', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)})
+      .then(response => { if (sent === pass && response.ok) admission(response.body?.admission); }).catch(() => {});
+  }
+  // Removal and refusal end playback at once. An unknown pass, such as after a restarted gateway, joins again.
+  function admission(value) {
+    if (value === 'removed' || value === 'declined') { access = value; config = undefined; closeReader(); dropEvents(); update(); }
+    else if (value === 'unknown') { forgetPass(); config = undefined; closeReader(); update(); }
+  }
+  function forgetPass() {
+    pass = undefined; access = 'joining'; mediaReady = false;
+    try { sessionStorage.removeItem(passKey); } catch {}
+  }
+  const mobile = () => /iPhone|iPad|Android/.test(navigator.userAgent);
+  async function join() {
+    if (joinRunning || refused()) return false;
+    joinRunning = true;
+    try {
+      if (!pass && access === 'name' && !viewerName) return false;
+      const response = await request('join', {method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({pass, name: viewerName || undefined, color: pointers?.color(), mobile: mobile()})});
+      if (response.status === 404) { unavailable = true; return false; }
+      if (response.status === 400) { forgetPass(); access = 'name'; return false; }
+      if (response.status === 503) { access = 'full'; return false; }
+      if (!response.ok || typeof response.body?.pass !== 'string') throw new Error('Connection unavailable');
+      pass = response.body.pass; access = response.body.admission; mediaReady = response.body.ready === true;
+      try { sessionStorage.setItem(passKey, pass); } catch {}
+      if (approval && typeof response.body.name === 'string') { viewerName = response.body.name; nameInput.value = viewerName; }
+      if (access !== 'admitted') { config = undefined; closeReader(); }
+      return access === 'admitted' && mediaReady;
+    } finally { joinRunning = false; }
+  }
+  async function loadConfig() {
+    const response = await request('config.json', {headers: {'X-Setbeam-Pass': pass || ''}});
+    if (response.status === 404) { unavailable = true; return false; }
+    // Refused, not yet admitted, or not yet in effect: join again to learn this session's state.
+    if (response.status === 403 || response.status === 503) { config = undefined; mediaReady = false; return false; }
+    if (!response.ok) throw new Error('Connection unavailable');
+    config = response.body; unavailable = false;
+    return true;
   }
   function resetHealth() {
     healthGeneration++;
@@ -271,25 +333,44 @@
       if (generation === healthGeneration) { healthQuality = 'playing'; healthAt = Date.now(); statsPrevious = undefined; }
     }).finally(() => { if (generation === healthGeneration) statsPending = false; });
   }
-  document.getElementById('viewer-name-form').addEventListener('submit', event => {
-    event.preventDefault();
-    viewerName = [...nameInput.value.replace(/[\u0000-\u0008\u000e-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u206f]/g, '').trim().replace(/\s+/g, ' ')].slice(0, 40).join('');
+  function cleanName(value) {
+    return [...value.replace(/[\u0000-\u0008\u000e-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u206f]/g, '').trim().replace(/\s+/g, ' ')].slice(0, 40).join('');
+  }
+  function saveName(value) {
+    if (approval && pass) return viewerName;
+    viewerName = cleanName(value);
     nameInput.value = viewerName;
     try { sessionStorage.setItem('setbeam-viewer-name', viewerName); } catch { /* Keep the name for this page. */ }
     text(document.getElementById('viewer-name-status'), viewerName ? 'Name saved for this tab. Shown to the operator.' : 'Using your browser label.');
+    return viewerName;
+  }
+  document.getElementById('viewer-name-form').addEventListener('submit', event => {
+    event.preventDefault();
+    saveName(nameInput.value);
     heartbeat();
+  });
+  const joinName = document.getElementById('join-name');
+  joinName.value = viewerName;
+  document.getElementById('join-form').addEventListener('submit', event => {
+    event.preventDefault();
+    const name = cleanName(joinName.value);
+    joinName.value = name;
+    if (!name) { text(document.getElementById('join-status'), 'Enter a name the operator will recognize.'); return; }
+    viewerName = name; nameInput.value = name;
+    try { sessionStorage.setItem('setbeam-viewer-name', name); } catch {}
+    access = 'joining'; update(); poll();
   });
   async function applyState(state) {
     const previous = mode; mode = state.state;
-    if (mode === 'live' && revision >= 0 && revision !== state.revision) {
-      const refreshed = await request('config.json');
-      if (!refreshed.ok) throw new Error('Connection unavailable');
-      config = refreshed.body;
+    approval = state.approval === true; pointersOn = state.pointers === true;
+    if (mode === 'live' && access === 'admitted' && revision >= 0 && revision !== state.revision) {
+      // A publisher revision can move this session to its own credential.
+      if (!(await loadConfig())) throw new Error('Connection unavailable');
     }
     text(document.getElementById('title'), state.title); document.title = state.title + ' · Setbeam';
     document.getElementById('sample').hidden = !state.sample;
     text(document.getElementById('network-hint'), state.wifiSSID ? 'Stay on ' + state.wifiSSID + '.' : 'Stay on the same network as the operator.');
-    if (mode === 'live' && (previous !== 'live' || revision !== state.revision || !reader || stalled())) startReader();
+    if (mode === 'live' && config && (previous !== 'live' || revision !== state.revision || !reader || stalled())) startReader();
     else if (mode !== 'live') closeReader();
     revision = state.revision;
     update();
@@ -311,13 +392,17 @@
   }
   function dropEvents() { events?.close(); events = undefined; eventsRetryAt = Date.now() + 15000; }
   async function poll() {
-    if (pollRunning) return; pollRunning = true;
+    if (pollRunning || refused()) return; pollRunning = true;
     try {
       if (!config) {
-        const response = await request('config.json');
-        if (response.status === 404) { unavailable = true; update(); return; }
-        if (!response.ok) throw new Error('Connection unavailable');
-        config = response.body; unavailable = false;
+        // Join first; only an admitted session whose own access is in effect gets playback details.
+        if (!(await join()) || !(await loadConfig())) {
+          if (!unavailable && !refused() && access !== 'name') {
+            const response = await request('state.json');
+            if (response.ok) { approval = response.body.approval === true; pointersOn = response.body.pointers === true; mode = response.body.state; }
+          }
+          update(); return;
+        }
       }
       const pushesBefore = pushes;
       const response = await request('state.json');
@@ -340,6 +425,7 @@
     if (events && !streaming()) dropEvents();
     if (!events) { poll(); return; }
     // While state is pushed, the periodic tick keeps the stale-peer watchdog and heartbeat running.
+    if (!config && !refused()) { poll(); return; }
     if (mode === 'live' && config && (!reader || stalled())) startReader();
     // Every other tick, about 3 s. A strict 3000 ms threshold slips to 4.5 s with ordinary timer jitter.
     if (Date.now() - heartbeatAt >= 2500) heartbeat();
