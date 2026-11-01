@@ -114,7 +114,7 @@
     function flush() {
       sendTimer = undefined;
       const next = pending; pending = undefined;
-      if (!next) return;
+      if (!next || !sharing || !live) return;
       if (!next.tap && lastSent && lastSent.x === next.x && lastSent.y === next.y) return;
       lastSent = next;
       send({t: 'move', x: next.x, y: next.y, r: serverRevision, tap: next.tap || undefined});
@@ -155,6 +155,8 @@
       return element;
     }
     function receive(message) {
+      // A snapshot delayed past Hold or a newer picture describes positions that no longer apply.
+      if (!live || !Number.isInteger(message.r) || message.r < serverRevision) return;
       if (message.r !== serverRevision) { serverRevision = message.r; lastSent = undefined; }
       const now = Date.now(), seen = new Set();
       for (const item of message.items.slice(0, 32)) {
@@ -167,7 +169,7 @@
           marks.set(item.n, entry);
         }
         entry.expires = now + item.ttl;
-        entry.element.classList.remove('fading');
+        entry.fading = false; entry.element.classList.remove('fading');
         place(entry.element, item.x, item.y);
       }
       for (const [n, entry] of marks) if (!seen.has(n)) fade(n, entry);
@@ -176,7 +178,8 @@
     function fade(n, entry) {
       if (entry.fading) return;
       entry.fading = true; entry.element.classList.add('fading');
-      setTimeout(() => { if (marks.get(n) === entry) { entry.element.remove(); marks.delete(n); } }, FADE);
+      // Movement during the fade revives the pointer and cancels this removal.
+      setTimeout(() => { if (marks.get(n) === entry && entry.fading) { entry.element.remove(); marks.delete(n); } }, FADE);
     }
     // Expire locally too, so a lost connection or a silent sender never leaves a pointer behind.
     function sweep() {
@@ -225,7 +228,10 @@
       if (!name) { denied = 'name'; refresh(); nameInput.focus(); return; }
       wanted = true; denied = ''; retryAt = 0; retryDelay = 1000; open(); refresh();
     });
-    share.addEventListener('change', () => { sharing = share.checked; if (!sharing) queue(null); refresh(); });
+    share.addEventListener('change', () => {
+      if (!share.checked) { pending = undefined; clearTimeout(sendTimer); sendTimer = undefined; hide(); }
+      sharing = share.checked; refresh();
+    });
     showOthers.addEventListener('change', refresh);
 
     return {
@@ -237,6 +243,7 @@
           lastInputs = inputs;
           const revisionChanged = lastRevision !== undefined && next.revision !== lastRevision;
           lastRevision = next.revision;
+          if (Number.isInteger(next.revision) && next.revision > serverRevision) serverRevision = next.revision;
           enabled = next.enabled; live = next.live;
           // Hold, Stop, removal, and a replaced picture end this page's positions at once.
           if (!enabled) { wanted = false; denied = ''; close(); }

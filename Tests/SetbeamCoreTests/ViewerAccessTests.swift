@@ -73,6 +73,10 @@ final class ViewerAccessLedgerTests: XCTestCase {
         var ledger = ViewerAccessLedger()
         let a = try XCTUnwrap(joined(ledger.join(pass: nil, name: nil, color: nil, mobile: false, local: false, now: now)))
         ledger.setApproval(true)
+        // A session admitted unnamed before approval can set its first label once (A4).
+        ledger.setName(a.pass, "Ana")
+        ledger.setName(a.pass, "Director")
+        XCTAssertEqual(ledger.record(a.pass)?.name, "Ana")
         let record = try XCTUnwrap(ledger.record(a.pass))
         XCTAssertEqual(record.admission, .admitted); XCTAssertNotNil(record.reader); XCTAssertFalse(record.mediaReady)
         XCTAssertTrue(ledger.remove(number: a.number), "Now individually removable")

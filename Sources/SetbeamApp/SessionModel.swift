@@ -210,6 +210,9 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
     var openedViewers: Int { admittedViewers.count }
     var otherDeviceViewers: Int { viewers.filter { $0.playing && !$0.onThisMac }.count }
     private var appliedReaders: Set<ViewerReader> = []
+    /// The approval choice MediaMTX has accepted. A failed change retries, so the shared credential
+    /// never stays usable while the gateway is asking viewers to wait.
+    private var appliedApproval = false
     /// Pointers describe the live shared picture, so they appear only while it is being shared.
     var showsPointers: Bool { sharedPointers && state.sharing && !state.holding }
 
@@ -257,7 +260,7 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
                 let approval = self.viewerApproval, readers = self.gateway.desiredReaders
                 do {
                     try await self.runtime.setViewerAccess(approval: approval, readers: readers)
-                    self.appliedReaders = readers
+                    self.appliedReaders = readers; self.appliedApproval = approval
                     self.gateway.confirm(readers: readers)
                     if self.state.monitoring { self.apply(await self.runtime.snapshot()); self.publishGatewayState() }
                 } catch {
@@ -394,7 +397,7 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
                 }
                 guard self.state.monitoring, !self.busy else { self.writeExperienceState(); continue }
                 self.viewers = self.gateway.viewers
-                if self.gateway.desiredReaders != self.appliedReaders { self.syncViewerAccess() }
+                if self.gateway.desiredReaders != self.appliedReaders || self.viewerApproval != self.appliedApproval { self.syncViewerAccess() }
                 self.recordViewerChanges()
                 self.confirmSetupIfReady()
                 self.writeExperienceState()

@@ -495,7 +495,10 @@ test('pointing is offered only while admitted, enabled, and the session continue
   assert.deepEqual({...b.pointerUpdates.at(-1)}, {enabled: true, live: true, revision: 1});
   assert.equal(b.pointerUpdates.viewer.nameLocked(), false);
   await b.push({...b.state, approval: true, pointers: true});
-  assert.equal(b.pointerUpdates.viewer.nameLocked(), true, 'Under approval the admitted name is fixed');
+  assert.equal(b.pointerUpdates.viewer.nameLocked(), false, 'A session admitted unnamed before approval may name itself once');
+  assert.equal(b.pointerUpdates.viewer.setName(' Ana '), 'Ana');
+  assert.equal(b.pointerUpdates.viewer.nameLocked(), true, 'Under approval the name is then fixed');
+  assert.equal(b.pointerUpdates.viewer.setName('Director'), 'Ana');
   await b.push({...b.state, state: 'holding', pointers: true});
   assert.equal(b.pointerUpdates.at(-1).live, false, 'Hold stops pointing');
   await b.push({...b.state, state: 'stopped', pointers: true});

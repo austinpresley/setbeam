@@ -82,6 +82,20 @@ final class PointerPresenceTests: XCTestCase {
         XCTAssertEqual(value.pointers(now: start).map(\.label), ["Sam", "Ana"])
     }
 
+    /// A tap in place re-arms the fade with the same remaining time a few seconds later. The
+    /// native overlay must still be told, or it expires the pointer early (B4).
+    func testNativeNotificationSeesATapInPlace() {
+        var value = presence()
+        _ = value.move(1, x: 0.5, y: 0.5, revision: 3, explicit: true, now: start)
+        let first = value.pointers(now: start)
+        XCTAssertTrue(ViewerGateway.samePointers(value.pointers(now: start.addingTimeInterval(1)), at: start.addingTimeInterval(1), first, at: start),
+                      "Time passing alone is not a change")
+        let later = start.addingTimeInterval(3)
+        _ = value.move(1, x: 0.5, y: 0.5, revision: 3, explicit: true, now: later)
+        XCTAssertEqual(value.pointers(now: later).first?.remaining, first.first?.remaining)
+        XCTAssertFalse(ViewerGateway.samePointers(value.pointers(now: later), at: later, first, at: start))
+    }
+
     func testParticipantLimit() {
         var value = PointerPresence(revision: 0)
         for number in 1...PointerPresence.maxParticipants { XCTAssertTrue(value.join(number, name: "P", color: .blue, now: start)) }

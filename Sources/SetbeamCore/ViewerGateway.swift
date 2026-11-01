@@ -73,6 +73,7 @@ public final class ViewerGateway: @unchecked Sendable {
     var presenceMaintenanceScheduled = false
     var presenceExpiry: DispatchWorkItem?
     var notifiedPointers: [SharedPointer] = []
+    var notifiedAt = Date.distantPast
     let maxPresenceClients: Int
     /// Receives the participants' current pointers for native monitoring, on the gateway queue.
     public var onPointers: (@Sendable ([SharedPointer]) -> Void)? {

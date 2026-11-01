@@ -213,3 +213,44 @@ test('a locked admitted name cannot be edited for pointing', () => {
   assert.equal(p.get('pointer-name').disabled, true);
   assert.equal(p.get('pointer-name').value, 'Approved Sam');
 });
+
+test('late snapshots from an earlier picture or during Hold are ignored (A2, B1)', () => {
+  const p = page();
+  p.controller.update({enabled: true, live: true, revision: 7});
+  const socket = p.start();
+  p.controller.update({enabled: true, live: true, revision: 8});
+  socket.message({t: 'pointers', r: 7, items: [{n: 3, label: 'Ana', color: 'green', x: 0.5, y: 0.5, ttl: 3000}]});
+  assert.equal(p.marks().length, 0, 'A delayed revision-7 snapshot does not restore old positions');
+  p.get('picture').dispatch('pointermove', {clientX: 900, clientY: 500, pointerType: 'mouse'});
+  assert.equal(p.moves(socket).at(-1).r, 8, 'Outgoing moves keep the newest revision');
+  p.controller.update({enabled: true, live: false, revision: 8});
+  socket.message({t: 'pointers', r: 8, items: [{n: 3, label: 'Ana', color: 'green', x: 0.5, y: 0.5, ttl: 3000}]});
+  assert.equal(p.marks().length, 0, 'Nothing renders during Hold');
+});
+
+test('turning off sharing drops a queued move and hides at once (A3, B2)', () => {
+  const p = page();
+  p.controller.update({enabled: true, live: true, revision: 7});
+  const socket = p.start();
+  const picture = p.get('picture');
+  picture.dispatch('pointermove', {clientX: 900, clientY: 500, pointerType: 'mouse'});
+  picture.dispatch('pointermove', {clientX: 950, clientY: 500, pointerType: 'mouse'});
+  const moves = p.moves(socket).length;
+  p.get('pointer-share').checked = false; p.get('pointer-share').dispatch('change');
+  assert.equal(socket.sent.at(-1).t, 'hide');
+  p.advance(100);
+  assert.equal(p.moves(socket).length, moves, 'The queued position is never sent after opting out');
+});
+
+test('a pointer refreshed during its fade stays visible (A5, B3)', () => {
+  const p = page();
+  p.controller.update({enabled: true, live: true, revision: 7});
+  const socket = p.start();
+  socket.message({t: 'pointers', r: 7, items: [{n: 3, label: 'Ana', color: 'green', x: 0.5, y: 0.5, ttl: 500}]});
+  p.advance(600);
+  assert.equal(p.marks()[0].classList.contains('fading'), true);
+  socket.message({t: 'pointers', r: 7, items: [{n: 3, label: 'Ana', color: 'green', x: 0.6, y: 0.5, ttl: 4000}]});
+  p.advance(1000);
+  assert.equal(p.marks().length, 1);
+  assert.equal(p.marks()[0].classList.contains('fading'), false, 'The earlier removal was cancelled');
+});

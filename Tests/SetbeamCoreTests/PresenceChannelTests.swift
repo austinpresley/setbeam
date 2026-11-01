@@ -285,6 +285,19 @@ final class PresenceChannelTests: XCTestCase {
         XCTAssertFalse(host.viewers.contains { $0.number == numberB && $0.pointing })
     }
 
+    /// A viewer admitted without a name before approval was turned on can still point (A4).
+    func testUnnamedViewerAdmittedBeforeApprovalCanNameItselfToPoint() async throws {
+        let pass = try await join()
+        host.setAccess(approval: true, pointers: true)
+        host.confirm(readers: host.desiredReaders)
+        let socket = PresenceSocket(port: port, token: token)
+        defer { socket.close() }
+        try await socket.send(["t": "hello", "pass": pass, "name": "Ana"])
+        let welcome = await socket.first { $0["t"] as? String == "welcome" }
+        XCTAssertEqual(welcome?["name"] as? String, "Ana")
+        XCTAssertEqual(host.viewers.first?.name, "Ana")
+    }
+
     func testANewViewingLinkClosesEveryChannel() async throws {
         let (a, _) = try await participant("Ana")
         defer { a.close() }

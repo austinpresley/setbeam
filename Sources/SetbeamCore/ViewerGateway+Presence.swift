@@ -127,7 +127,8 @@ extension ViewerGateway {
             guard type == "hello", let pass = ViewerAccessLedger.validPass(message["pass"]), pointersEnabled,
                   let record = ledger.record(pass), record.admission == .admitted else { return deny("access") }
             // Under approval the name is the one the operator admitted.
-            let name = ledger.approvalRequired ? record.name : ViewerHealth.viewerName(message["name"] as? String) ?? record.name
+            let offered = ViewerHealth.viewerName(message["name"] as? String)
+            let name = ledger.approvalRequired ? record.name ?? offered : offered ?? record.name
             guard let name else { return deny("name") }
             let color = PointerColor.validated(message["color"]) ?? record.color
             guard presence.join(record.number, name: name, color: color, now: now) else { return deny("full") }
@@ -199,8 +200,8 @@ extension ViewerGateway {
                 }
                 sends.append((client, WebSocketFrame.encode(text: Self.json(["t": "pointers", "r": presence.revision, "items": items]))))
             }
-            let changed = !Self.samePointers(pointers, notifiedPointers)
-            if changed { notifiedPointers = pointers }
+            let changed = !Self.samePointers(pointers, at: now, notifiedPointers, at: notifiedAt)
+            if changed { notifiedPointers = pointers; notifiedAt = now }
             return (sends, changed ? pointerObserver : nil, pointers, presence.nextExpiry(now: now))
         }
         for (client, data) in sends {
@@ -256,9 +257,9 @@ extension ViewerGateway {
     static func json(_ object: [String: Any]) -> String {
         String(decoding: (try? JSONSerialization.data(withJSONObject: object)) ?? Data("{}".utf8), as: UTF8.self)
     }
-    static func samePointers(_ a: [SharedPointer], _ b: [SharedPointer]) -> Bool {
-        // Remaining time only falls between notifications unless meaningful movement re-arms it.
+    /// Equal when nothing visible changed and no pointer's fade time moved, such as a tap in place.
+    static func samePointers(_ a: [SharedPointer], at aTime: Date, _ b: [SharedPointer], at bTime: Date) -> Bool {
         a.count == b.count && zip(a, b).allSatisfy { $0.number == $1.number && $0.x == $1.x && $0.y == $1.y && $0.label == $1.label &&
-            $0.color == $1.color && $0.remaining <= $1.remaining }
+            $0.color == $1.color && abs(aTime.addingTimeInterval($0.remaining).timeIntervalSince(bTime.addingTimeInterval($1.remaining))) < 0.001 }
     }
 }

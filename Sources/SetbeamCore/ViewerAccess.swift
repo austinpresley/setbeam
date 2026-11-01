@@ -107,7 +107,10 @@ struct ViewerAccessLedger {
         return record
     }
     mutating func setColor(_ pass: String, _ color: PointerColor) { records[pass]?.color = color }
-    mutating func setName(_ pass: String, _ name: String) { if !approvalRequired { records[pass]?.name = name } }
+    /// Under approval an admitted name is fixed; a session admitted unnamed before approval may set its first label.
+    mutating func setName(_ pass: String, _ name: String) {
+        if !approvalRequired || records[pass]?.name == nil { records[pass]?.name = name }
+    }
 
     @discardableResult mutating func approve(number: Int) -> Bool {
         guard let pass = record(number: number)?.pass, records[pass]?.admission == .pending else { return false }

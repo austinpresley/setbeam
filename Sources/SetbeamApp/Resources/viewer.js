@@ -30,7 +30,7 @@
   try { pass = sessionStorage.getItem(passKey) || undefined; } catch { /* A tab without storage joins again after reload. */ }
   const refused = () => access === 'declined' || access === 'removed';
   const pointers = globalThis.SetbeamPointers?.attach({
-    pass: () => pass, name: () => viewerName, nameLocked: () => approval,
+    pass: () => pass, name: () => viewerName, nameLocked: () => approval && !!viewerName,
     setName: name => saveName(name), live: () => mode === 'live' && access === 'admitted' && !unavailable
   });
   const playing = () => mode === 'live' && receivedTrack && !video.paused && video.readyState >= 2 && Date.now() - lastFrameAt < 6000;
@@ -337,7 +337,7 @@
     return [...value.replace(/[\u0000-\u0008\u000e-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u206f]/g, '').trim().replace(/\s+/g, ' ')].slice(0, 40).join('');
   }
   function saveName(value) {
-    if (approval && pass) return viewerName;
+    if (approval && pass && viewerName) return viewerName;
     viewerName = cleanName(value);
     nameInput.value = viewerName;
     try { sessionStorage.setItem('setbeam-viewer-name', viewerName); } catch { /* Keep the name for this page. */ }
