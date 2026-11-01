@@ -8,7 +8,7 @@ Admitted viewers can opt in to point at the shared picture with a name and one o
 
 The necessary S-002, S-003, and S-005 foundations are included. Each tab gets a gateway-issued pass. Optional viewer approval asks for a name and waits for Admit or Decline. Admitted sessions read media with their own MediaMTX user, and removal revokes that user and ends its active sessions without interrupting other viewers. Ordinary link sharing is unchanged when approval is off. S-002, S-003, and S-005 remain partial; see the verification note. No password, hostname, presenter highlight, or drawing was added.
 
-Status: implemented and natively/browser verified; Sol review pending. Evidence, limits, and the observed intermittent preview-bridge timestamp failure are in [shared pointers verification](verification-shared-pointers-2026-11-01.md).
+The final `scripts/check.sh` passes: 178 Swift tests, 31 viewer and 12 pointer browser checks, and all media probes, including a new real-media access probe. Two GPT-6.1 Sol reviewers approved in round 3 after fixes for late snapshots, opt-out timing, fade revival, native expiry, approval retry, and first-name naming. The ad-hoc signed build 22 is installed locally and delivered. Evidence, the review ledger, hashes, limits, and an observed intermittent preview-bridge timestamp failure in unchanged code are in [shared pointers verification](verification-shared-pointers-2026-11-01.md).
 
 ## S-001 single application window, build 21, 2026-11-01
 

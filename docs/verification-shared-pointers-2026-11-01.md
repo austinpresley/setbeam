@@ -15,7 +15,7 @@ Austin requested backlog S-008: an admitted viewer opts into pointing at the sha
 
 ## Automated checks
 
-- The final `scripts/check.sh` passes: preview bridge, 31 viewer-controller checks, 8 pointer-controller checks, all Swift tests, and the Pyro H, media, new viewer-access, recovery, source-switching, format, frame-rate, and large-keyframe probes. Counts and the final run are recorded in the status entry.
+- The final `scripts/check.sh` on reviewed commit `c5e5ea6` passed in one run: preview bridge, 31 viewer-controller checks, 12 pointer-controller checks, 178 Swift tests (129 core, 49 app), and the Pyro H, media, new viewer-access, recovery, source-switching, format, frame-rate, and large-keyframe probes.
 - **New Swift tests** cover:
   - Admission rules: no-approval behavior, the name requirement, pending, admit and confirm, decline, and removal. Reloads stay refused, and forged or forgotten passes become new requests. Approval can be switched both ways.
   - Bounds: 16 pending requests and 128 passes, with only stale sessions evicted.
@@ -29,7 +29,8 @@ Austin requested backlog S-008: an admitted viewer opts into pointing at the sha
 - **Pointer-controller checks** run the shipped `pointers.js` with a fake channel. They cover contain-rectangle and full-screen mapping, the host option and name gate, the hello contents, coalescing with no resend of an unchanged position, hiding over the letterbox and on leave, taps, sharing off, labels rendered as text, invalid items ignored, local expiry without messages, clearing on a dropped channel, Hold, revision, and pointers off, reconnect backoff, a refusal stopping retries, and a locked admitted name.
 - **New `SetbeamProbe --access-test`** (in `check.sh`) uses real bundled MediaMTX and FFmpeg. Without approval, the link's credential reads the audience output. With approval, it is refused over RTSP and WHEP (401), while two admitted readers can read and approval advances the publisher revision. Removing one reader ends its active FFmpeg session within 5 s and refuses reconnection, while the other reader and local monitoring continue. Hold keeps admitted access. Stop Sharing leaves no viewer credential usable.
 - Before review the earlier MediaMTX spike confirmed the method: version 1.21.2 reports `user` per WebRTC session, deleting a user does not end its session, and kicking does. After the kick the browser's retries failed authorization, and the other reader kept playing.
-- **Intermittent existing failure:** one full run stopped at `check-preview-bridge.py` line 98 on the live decode's first timestamps (`pts: 0`, then `-2722` with duration 11). Three standalone runs gave pass, fail (`pts -922`), pass. The preview bridge, its check, and its build script are unchanged from `225fd5e`. The next complete run passed.
+- **Earlier full runs:** one hit the known format-cadence assertion (largest interval 50.067 ms at 30 fps, as recorded for builds 17, 20, and 21); the isolated format, frame-rate, and keyframe probes then passed. One access-probe run timed out because the probe's own 3 s WHEP request was shorter than MediaMTX's delay after a failed login. The probe now allows 10 s and then passed three times in a row.
+- **Intermittent existing failure:** one full run stopped at `check-preview-bridge.py` line 98 on the live decode's first timestamps (`pts: 0`, then `-2722` with duration 11). In later standalone runs it failed 4 of 8 times with the worktree's helper and 3 of 8 with the parent's untouched helper. The preview bridge, its check, and its build script are unchanged from `225fd5e`, so this is an existing, environment-dependent failure.
 
 ## Native and browser verification
 
@@ -51,6 +52,32 @@ An isolated, ad-hoc signed build 22 QA copy ran under ignored `build/s008` with 
   - The popover's "Asking to join" row had low contrast.
   - The popover squeezed the outgoing thumbnail when rows appeared while it was open. It now grows instead.
   - Admit, Decline, and Remove buttons lacked spoken labels. They now read, for example, "Admit Ana (client), session 1", confirmed through the AX API.
+
+## Review
+
+Two independent GPT-6.1 Sol reviewers (Codex `gpt-6.1-sol`, reasoning effort high, service tier default) reviewed `git diff 225fd5e` in three rounds. A emphasized auth, presence, lifecycle, and privacy; B emphasized mapping, rendering, UX, and native/browser integration. Round 1: both CHANGES. Round 2: both CHANGES on one remaining path. Round 3: both APPROVE.
+
+| ID | Severity | Finding | Outcome |
+| --- | --- | --- | --- |
+| A1 | blocker | Enabling approval with no admitted readers did not retry after a failed MediaMTX update, leaving the shared credential usable. | Fixed: the app tracks the applied approval and retries until MediaMTX accepts it. |
+| A2, B1 | blocker | A late snapshot after Hold or a newer revision restored old pointers. In round 2, a delayed `welcome` could still lower the revision. | Fixed in both places, with two regression checks. |
+| A3, B2 | blocker / should | Turning off Share my pointer could still send a queued move. | Fixed: the queued move is cleared and hide sent first; flushes check sharing. Regression check. |
+| A4 | should | A session admitted without a name before approval could not point. | Fixed: it may set its first label once, which then stays fixed. Ledger, channel, and viewer tests. |
+| A5, B3 | should | A pointer revived during its fade still disappeared. | Fixed: revival cancels the pending removal. Regression check. |
+| B4 | should | The native overlay missed a tap in place because it compared remaining time. | Fixed: it compares absolute expiry. Regression test. |
+
+No finding was declined. Diff against `225fd5e`: 35 files, +2,831/−97 before review; 35 files, +2,939/−97 after (code commit `c5e5ea6`).
+
+## Package
+
+- `dist/s008/Setbeam-0.2.0-build22-macOS-arm64.zip`, SHA256 `038b4d185dd7f90536496e23853b1286956255d6e3c480a5558a16c9cc09574b`, built from `c5e5ea6`. Ad-hoc signed and not notarized; Apple Silicon, macOS 14 or later.
+- Executable SHA256 `654e3084501eacc90611457fb7a75dc791d0b1b3e0551ba3f73d2b3b1c0e4460`.
+- The archive includes `BUILD-NOTES.md`, `APP-SHA256.txt` (37 app files), and `SOURCE-MANIFEST.txt` (131 build inputs).
+- Strict recursive signatures pass. All six executables are arm64 and link only system libraries. All seven viewer resources, including `pointers.js`, match the sources, and fixtures and notices are bundled.
+- ZIP integrity passes. The extracted app passes strict signatures and all 37 file hashes.
+- **Packaged smoke test.** The extracted app ran with approval and pointers on. A browser tab asked to join and was admitted from the native sheet. Its purple "Ana" pointer appeared on the matching detail in the main monitor. Quit with sharing active showed the confirmation; Quit and End Sharing left no processes.
+- **Installed** in `~/Applications/Setbeam.app`, replacing the idle build 21 (its archive stays in the parent `dist`). All 37 installed files match.
+- **Delivered** to Austin Deliveries / Setbeam / Build 22 shared pointers (archive, checksum, and seven QA screenshots): https://drive.google.com/drive/folders/1ZnqURu2POxoIE7ocPWVcer5UeK9mfMOL
 
 ## Limits and checks not run
 
