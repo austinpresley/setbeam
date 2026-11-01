@@ -1,6 +1,10 @@
 import Foundation
 
-public enum InputKind: String, Codable, Sendable { case sample, macScreen, capture, network, incoming, accsoon }
+public enum InputKind: String, Codable, Sendable {
+    case sample, macScreen, macWindow, capture, network, incoming, accsoon
+    /// Captured in-app through ScreenCaptureKit, needing Screen Recording access.
+    public var isMacCapture: Bool { self == .macScreen || self == .macWindow }
+}
 public enum NetworkSourceProfile: String, Codable, Sendable { case pyroH }
 
 /// A remembered connection, independent of the session's audience and credentials.
@@ -17,6 +21,8 @@ public struct SourceSetup: Codable, Equatable, Identifiable, Sendable {
     public var inputPort: UInt16 = 19350
     public var wirelessUID: UInt32?
     public var networkProfile: NetworkSourceProfile?
+    /// Valid only while the same owner process runs; relaunch restores it only on an exact match.
+    public var window: MacWindowIdentity?
 
     public init(id: UUID = UUID(), kind: InputKind, name: String, videoID: String? = nil,
                 audioID: String? = nil, deviceName: String? = nil, networkAddress: String = "", sourceWiFi: String = "") {
@@ -28,6 +34,9 @@ public struct SourceSetup: Codable, Equatable, Identifiable, Sendable {
         switch kind {
         case .macScreen:
             return try VideoSource.macScreen(displayUUID: videoID ?? "").validated()
+        case .macWindow:
+            guard let window else { throw SetbeamError.unavailable("Choose an open application window.") }
+            return try VideoSource.macWindow(window).validated()
         case .sample: return .sample
         case .capture:
             guard let videoID, !videoID.isEmpty else { throw SetbeamError.unavailable("Choose the capture device you want to use.") }

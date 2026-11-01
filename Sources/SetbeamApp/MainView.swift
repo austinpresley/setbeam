@@ -216,6 +216,7 @@ struct MainView: View {
                     if model.permissionDenied { Button("Open Privacy Settings") { model.openPrivacySettings() } }
                     else if model.setup?.kind == .incoming { Button("Accsoon setup") { showSheet(.incoming) } }
                     else if model.setup?.kind == .network || model.setup?.kind == .accsoon { Button("Open Wi-Fi Settings") { model.openWiFiSettings() } }
+                    else if model.setup?.kind == .macWindow { Button("Choose a window") { model.openSources() } }
                     Button("Retry now") { model.retry() }.disabled(model.busy)
                     if let saved = model.provenSetup, saved.id != model.setup?.id { Button("Use last working setup") { model.restore(saved) } }
                 }.buttonStyle(.link).font(.caption)

@@ -194,6 +194,8 @@ public actor MediaRuntime {
         case .macScreen(let id):
             let display = try MacDisplay.resolve(id, in: MacDisplay.connected())
             args += Self.screenInputArguments(frameRate: screenFrameRate.captureRate(for: display.frameRate))
+        case .macWindow:
+            args += Self.screenInputArguments(frameRate: screenFrameRate.captureRate(for: MacWindow.nativeFrameRate))
         case .sample:
             args += ["-re", "-stream_loop", "-1", "-i", paths.fixtures.appendingPathComponent("Demo.mp4").path]
         case .network, .incoming:
@@ -285,14 +287,20 @@ public actor MediaRuntime {
         }
         accsoonReceiver.stop()
         sourceArguments = try makeSourceArguments()
-        if case .macScreen(let id) = source, let directory {
+        if source.isMacCapture, let directory {
+            // A closed or hidden window fails here, before any helper starts, so retries stay cheap.
+            if case .macWindow(let identity) = source { try MacWindowLocator.require(identity) }
             let pipe = Pipe()
             let capture = MacScreenCapture()
             do {
                 sourcePublisher = try ManagedChild(name: "Screen input", executable: paths.tools.appendingPathComponent("ffmpeg"), arguments: sourceArguments, directory: directory, standardInput: pipe.fileHandleForReading)
                 try pipe.fileHandleForReading.close()
                 screenCapture = capture
-                try await capture.start(displayUUID: id, output: pipe.fileHandleForWriting, frameRate: screenFrameRate)
+                switch source {
+                case .macWindow(let identity): try await capture.start(window: identity, output: pipe.fileHandleForWriting, frameRate: screenFrameRate)
+                case .macScreen(let id): try await capture.start(displayUUID: id, output: pipe.fileHandleForWriting, frameRate: screenFrameRate)
+                default: break
+                }
             } catch {
                 capture.stop(); screenCapture = nil; sourcePublisher?.stop(); sourcePublisher = nil
                 throw error
@@ -507,9 +515,7 @@ public actor MediaRuntime {
         guard audienceChanged || screenChanged else { return }
         audienceQuality = quality; audienceFrameRate = rate; self.screenFrameRate = screenRate
         log.record("video.settings", ["quality": quality.rawValue, "viewerFPS": rate.rawValue, "screenFPS": screenRate.rawValue])
-        let restartScreen: Bool
-        if case .macScreen = source { restartScreen = screenChanged && directory != nil }
-        else { restartScreen = false }
+        let restartScreen = source.isMacCapture && screenChanged && directory != nil
         let restartAudience = sharing && !holding && (audienceChanged || restartScreen)
         if restartAudience {
             audiencePublisher?.stop(); audiencePublisher = nil

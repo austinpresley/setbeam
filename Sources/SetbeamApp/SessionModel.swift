@@ -43,6 +43,12 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
     @Published var wifiSSID: String
     @Published var wifiPassword = ""
     @Published var screenDisplays: [MacDisplay] = []
+    /// Observed for a selected window only. Never used to choose a different window.
+    @Published private(set) var windowPresence: MacWindowPresence?
+    @Published private(set) var windowTitle: String?
+    private var windowReturn = WindowReturnRetry()
+    /// Isolated QA sessions can list only their generated fixture windows, keeping private desktop content out of captures.
+    let windowListBundle: String?
     @Published var captureDevices: [CaptureHardware] = []
     @Published var wirelessDevices: [AccsoonDevice] = []
     @Published var wirelessDiscoveryProblem: String?
@@ -102,6 +108,7 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
            let port = UInt16(args[index + 1]), port > 0 {
             sourceBrowser = SourceBrowser(pyroHNetworks: { [.init(interface: "lo0", address: "127.0.0.1", router: "127.0.0.1")] }, pyroHPorts: [port])
         } else { sourceBrowser = SourceBrowser() }
+        windowListBundle = args.contains("--preferences-suite") ? args.firstIndex(of: "--window-fixture-bundle").flatMap { $0 + 1 < args.count ? args[$0 + 1] : nil } : nil
         if let preferences { defaults = preferences }
         else if let index = args.firstIndex(of: "--preferences-suite"), index + 1 < args.count {
             defaults = UserDefaults(suiteName: args[index + 1])!
@@ -124,7 +131,11 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
         transmitterRejoin = integration ? false : defaults.bool(forKey: "transmitterWiFiRejoin")
     }
 
-    var sourceLabel: String { setup?.name ?? "Choose a source" }
+    var sourceLabel: String {
+        // The same window can change its title; follow it rather than showing a stale document name.
+        if setup?.kind == .macWindow, let app = setup?.deviceName, let windowTitle { return MacWindow.sourceName(application: app, title: windowTitle) }
+        return setup?.name ?? "Choose a source"
+    }
     var hardwareLabel: String { setup?.deviceName ?? (setup?.kind == .sample ? "Sample video and test tone" : setup?.kind == .network ? "Network video" : "No input selected") }
     var viewerNetworkLabel: String { networks.first(where: { $0.address == viewerAddress })?.name ?? "This Mac only" }
     var canInviteOtherDevices: Bool { viewerAddress != "127.0.0.1" }
@@ -158,6 +169,9 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
         if connectionStage == .connectingTransmitter,
            let device = wirelessDevices.first(where: { $0.id == setup?.wirelessUID }), !device.videoAvailable {
             return "Waiting for source video"
+        }
+        if setup?.kind == .macWindow, let windowPresence, windowPresence != .visible {
+            return windowPresence == .closed ? "The selected window closed" : "Waiting for the selected window"
         }
         return connectionStage.title
     }
@@ -220,6 +234,9 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
             if let device = wirelessDevices.first(where: { $0.id == setup.wirelessUID }), !device.videoAvailable { return "Connect a picture to your transmitter" }
             return "Reconnecting to \(setup.name)"
         }
+        if setup.kind == .macWindow, !state.sourceAvailable, let windowPresence, windowPresence != .visible {
+            return windowPresence == .closed ? "The selected window closed" : "Waiting for the selected window"
+        }
         if state.sourceAvailable && !nativePreviewPlaying { return "Restoring your preview" }
         return setup.kind == .network || setup.kind == .incoming ? "Waiting for \(setup.name)" : "Waiting for a picture"
     }
@@ -227,6 +244,10 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
         if permissionDenied { return "Enable Setbeam in Privacy & Security, then retry. Access is only needed for the input you chose." }
         if connectingToPicture { return "Your monitor is opening. Your picture stays private until you start sharing." }
         guard let setup else { return "Connect a receiver, camera, or computer output. You can also try a clearly labeled sample." }
+        if setup.kind == .macWindow {
+            if windowPresence == .closed { return "Setbeam never switches to another window or the whole display. Choose the window again in Choose a source." }
+            return "Show \(setup.deviceName ?? "the application")'s window on this Mac. A minimized, hidden, or closed window pauses the picture; Setbeam resumes only that same window. This source has no sound."
+        }
         if setup.kind == .macScreen { return "Reconnect the selected display. Setbeam keeps trying that same display. This source has no sound; Setbeam windows are excluded." }
         if setup.kind == .capture { return "Connect the selected device to this Mac. If it is connected, check the HDMI or SDI cable and turn on the source. Setbeam keeps trying this same input." }
         if setup.kind == .network {
@@ -285,6 +306,7 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
                 guard let self, !Task.isCancelled, !self.shuttingDown else { return }
                 tick += 1
+                self.observeSelectedWindow()
                 self.updateDisplayWake()
                 self.rejoinTransmitterIfNeeded()
                 if tick % 3 == 0 && !self.busy {
@@ -307,6 +329,25 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
         outgoingTransition.observeReady(outgoingReady)
         if let frame = snapshot.lastFrameAt { lastFrameAt = frame }
     }
+    /// Follows the selected window's presence and title. A briefly hidden window resumes on its running
+    /// capture; if the picture has not returned three seconds after the window did, retry without waiting
+    /// for the runtime's backoff. The retry still requires that exact window.
+    private func observeSelectedWindow() {
+        guard setup?.kind == .macWindow, let identity = setup?.window else { windowPresence = nil; windowTitle = nil; windowReturn = WindowReturnRetry(); return }
+        let status = MacWindowLocator.status(of: identity)
+        let retry = windowReturn.observe(status.presence, previous: windowPresence, lastFrameAt: lastFrameAt)
+        windowPresence = status.presence
+        if let title = status.title { windowTitle = title }
+        if retry, state.monitoring, !busy, !permissionDenied {
+            SessionLog.shared.record("window.returned")
+            Task { await runtime.retrySource() }
+        }
+    }
+    func connectWindow(_ window: MacWindow) {
+        var candidate = SourceSetup(kind: .macWindow, name: window.sourceName, deviceName: window.applicationName)
+        candidate.window = window.identity
+        connect(candidate)
+    }
     func openSources() { refreshCaptureDevices(); sheet = .connection; Task { await refreshWireless() } }
     func refreshWireless() async {
         do { wirelessDevices = try await runtime.discoverWireless(); wirelessDiscoveryProblem = nil }
@@ -328,6 +369,12 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
     }
     func openAdvanced(section: AdvancedSection = .workspace) { advancedSection = section; loadPrivateSettings(); sheet = .advanced }
     func restore(_ saved: SourceSetup) {
+        // A window identity lasts only as long as its owner process. Restore that exact window or ask.
+        if saved.kind == .macWindow, (saved.window.map { MacWindowLocator.status(of: $0).presence } ?? .closed) == .closed {
+            error = "The saved window is no longer open. Choose a window again in Choose a source."
+            if !state.monitoring { setup = saved; windowPresence = .closed }
+            return
+        }
         let address = saved.kind == .network || saved.kind == .incoming ? SecureSettings.read(saved.credentialAccount) : nil
         if (saved.kind == .network || saved.kind == .incoming) && address == nil {
             error = "The saved address is unavailable. Reconnect this source in Advanced."
@@ -347,7 +394,7 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
         Task {
             await discovery?.value
             guard !shuttingDown else { busy = false; return }
-            if candidate.kind == .macScreen && !MacScreenCapture.requestPermission() {
+            if candidate.kind.isMacCapture && !MacScreenCapture.requestPermission() {
                 pendingScreenPermission = (candidate, remember)
                 screenPermissionDenied = true; permissionDenied = true; error = "Allow Setbeam in Screen Recording, then retry."
                 busy = false; setup = state.monitoring ? setup : candidate; return
@@ -377,6 +424,7 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
             readiness = SetupReadiness(); setupConfirmed = false; lastFrameAt = nil; connectedAt = Date()
             rememberFailed = false
             setup = candidate; activeNetworkURL = address; rememberSetup = remember
+            windowPresence = nil; windowTitle = nil
             source = chosen
             do {
                 let inputAddress = candidate.kind == .incoming ? networks.first(where: \.wireless)?.address ?? "127.0.0.1" : nil
@@ -672,7 +720,7 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
         refreshCaptureDevices()
     }
     func openWiFiSettings() { NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.wifi-settings-extension")!) }
-    func openPrivacySettings() { NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_\(screenPermissionDenied || setup?.kind == .macScreen ? "ScreenCapture" : "Camera")")!) }
+    func openPrivacySettings() { NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_\(screenPermissionDenied || setup?.kind.isMacCapture == true ? "ScreenCapture" : "Camera")")!) }
     func saveFrame() {
         guard localReady else { return }
         let panel = NSSavePanel(); panel.nameFieldStringValue = "\(title.isEmpty ? "Setbeam" : title)-frame.jpg"; panel.allowedContentTypes = [.jpeg]
@@ -742,5 +790,21 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
         guard let index = args.firstIndex(of: option), index + 1 < args.count, let data = try? JSONSerialization.data(withJSONObject: value) else { return }
         let destination = URL(fileURLWithPath: args[index+1]); try? data.write(to: destination, options: .atomic)
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination.path)
+    }
+}
+
+/// A window that returns from hidden normally resumes on its running capture. Cached availability
+/// can stay true for seconds after the last frame, so only a frame received after the return
+/// cancels the one-shot retry.
+struct WindowReturnRetry {
+    private var returnedAt: Date?
+    mutating func observe(_ presence: MacWindowPresence, previous: MacWindowPresence?, lastFrameAt: Date?, now: Date = Date()) -> Bool {
+        if presence != .visible { returnedAt = nil; return false }
+        if previous == .hidden { returnedAt = now }
+        guard let returned = returnedAt else { return false }
+        if let lastFrameAt, lastFrameAt > returned { returnedAt = nil; return false }
+        guard now.timeIntervalSince(returned) >= 3 else { return false }
+        returnedAt = nil
+        return true
     }
 }

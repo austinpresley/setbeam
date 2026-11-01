@@ -25,7 +25,14 @@ struct ConnectionView: View {
     @ObservedObject var model: SessionModel
     @ObservedObject private var browser: SourceBrowser
     @StateObject private var displayPreviews = DisplaySourcePreviews()
-    init(model: SessionModel) { self.model = model; browser = model.sourceBrowser }
+    @StateObject private var windowPreviews: WindowSourcePreviews
+    init(model: SessionModel) {
+        self.model = model; browser = model.sourceBrowser
+        let bundle = model.windowListBundle
+        _windowPreviews = StateObject(wrappedValue: bundle == nil ? WindowSourcePreviews() : WindowSourcePreviews(list: {
+            try await MacWindow.shareable().filter { $0.window.bundleIdentifier == bundle }.map { ($0.window, $0.handle) }
+        }))
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             HStack {
@@ -50,7 +57,7 @@ struct ConnectionView: View {
                         }
                         if !model.screenDisplays.isEmpty && !displayPreviews.permissionGranted {
                             HStack {
-                                Text("Screen Recording access enables display previews.").font(.caption).foregroundStyle(.secondary)
+                                Text("Screen Recording access enables display previews and lists application windows.").font(.caption).foregroundStyle(.secondary)
                                 Spacer(minLength: 8)
                                 Button("Enable Previews…") { displayPreviews.enable() }.controlSize(.small)
                             }.padding(.bottom, 4)
@@ -70,6 +77,7 @@ struct ConnectionView: View {
                             }.font(.caption)
                         }
                     }
+                    windowSection
                     if let saved = model.provenSetup {
                         VStack(alignment: .leading, spacing: 9) {
                             Text("Last working setup").font(.headline)
@@ -139,14 +147,66 @@ struct ConnectionView: View {
                 do { try await Task.sleep(nanoseconds: 2_000_000_000) } catch { return }
             }
         }
+        .task(id: monitoredWindow) {
+            while !Task.isCancelled {
+                await windowPreviews.refresh(permitted: displayPreviews.permissionGranted, monitored: monitoredWindow)
+                do { try await Task.sleep(nanoseconds: 2_000_000_000) } catch { return }
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) { _ in model.refreshCaptureDevices() }
-        .onDisappear { displayPreviews.clear(); browser.stop(); model.stopWirelessScan() }
+        .onDisappear { displayPreviews.clear(); windowPreviews.clear(); browser.stop(); model.stopWirelessScan() }
+    }
+    private var monitoredWindow: MacWindowIdentity? {
+        guard model.state.monitoring, model.setup?.kind == .macWindow else { return nil }
+        return model.setup?.window
+    }
+    @ViewBuilder private var windowSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Application windows").font(.headline)
+            if !displayPreviews.permissionGranted {
+                Text("Share one window, such as Capture One, instead of a whole display. Windows appear here after you enable Screen Recording access above.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            } else if !windowPreviews.loaded {
+                Label("Looking for windows…", systemImage: "macwindow").font(.caption).foregroundStyle(.secondary)
+            } else if windowPreviews.listFailed {
+                Text("Setbeam could not list windows. Check Screen Recording access in Privacy & Security.").font(.caption).foregroundStyle(.secondary)
+            } else if windowPreviews.windows.isEmpty {
+                Text("No application windows are open. Open the window you want to share; it appears here.").font(.caption).foregroundStyle(.secondary)
+            } else {
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8, alignment: .top), count: 3), spacing: 8) {
+                    ForEach(windowPreviews.windows) { window in windowCard(window) }
+                }
+                Text("Only the chosen window is shared, without sound. If it closes, Setbeam waits instead of showing another window.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+    private func windowCard(_ window: MacWindow) -> some View {
+        let current = window.identity == monitoredWindow
+        let size = "\(window.width) × \(window.height)"
+        return Button {
+            if current { model.sheet = nil } else { model.connectWindow(window) }
+        } label: {
+            VStack(alignment: .leading, spacing: 4) {
+                WindowSourceThumbnail(previews: windowPreviews, player: model.localPlayer, window: window, monitored: current, pictureReady: model.localReady)
+                Text(window.label).font(.callout.weight(.medium)).foregroundStyle(window.title.isEmpty ? .secondary : .primary)
+                    .lineLimit(2, reservesSpace: true).multilineTextAlignment(.leading)
+                Text(current ? "Current source" : window.applicationName).font(.caption).foregroundStyle(current ? Color.accentColor : .secondary).lineLimit(1)
+            }.padding(8).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+        }.buttonStyle(.plain)
+            .background(current ? AnyShapeStyle(Color.accentColor.opacity(0.1)) : AnyShapeStyle(.quaternary.opacity(0.35)), in: RoundedRectangle(cornerRadius: 12))
+            .overlay { if current { RoundedRectangle(cornerRadius: 12).strokeBorder(Color.accentColor, lineWidth: 2) } }
+            .help("\(window.applicationName) — \(window.label)\n\(size) · No sound")
+            .accessibilityLabel(current ? "Current source: \(window.label), \(window.applicationName)" : "Connect window \(window.label) from \(window.applicationName). \(size). No sound")
+            .accessibilityAddTraits(current ? .isSelected : [])
+            .onAppear { windowPreviews.appeared(window.identity) }
+            .onDisappear { windowPreviews.disappeared(window.identity) }
     }
     private var monitoredDisplayID: String? {
         guard model.state.monitoring, model.setup?.kind == .macScreen, let id = model.setup?.videoID else { return nil }
         return model.screenDisplays.first { $0.id.caseInsensitiveCompare(id) == .orderedSame }?.id ?? id
     }
-    private func symbol(for kind: InputKind) -> String { kind == .macScreen ? "display" : kind == .sample ? "play.rectangle" : kind == .capture ? "video" : kind == .accsoon ? "accsoon.master" : "antenna.radiowaves.left.and.right" }
+    private func symbol(for kind: InputKind) -> String { kind == .macScreen ? "display" : kind == .macWindow ? "macwindow" : kind == .sample ? "play.rectangle" : kind == .capture ? "video" : kind == .accsoon ? "accsoon.master" : "antenna.radiowaves.left.and.right" }
     private func sourceRow(_ name: String, detail: String, symbol: String, display: MacDisplay? = nil, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 12) {

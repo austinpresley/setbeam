@@ -28,18 +28,18 @@ struct PictureSettingsView: View {
                     Text("Lower frame rates favor detail over motion. Image dimensions stay the same. Changes reconnect viewers; your local monitor continues.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
-                if model.setup?.kind == .macScreen {
-                    Section("This Mac's screen") {
+                if model.setup?.kind.isMacCapture == true {
+                    Section(model.setup?.kind == .macWindow ? "Application window" : "This Mac's screen") {
                         Picker("Capture frame rate", selection: $screenRate) {
                             ForEach(VideoFrameRate.allCases, id: \.self) { rate in
-                                Text(rate == .source ? "Match display" : rate.title).tag(rate)
+                                Text(rate == .source ? (model.setup?.kind == .macWindow ? "Match source, up to 30 fps" : "Match display") : rate.title).tag(rate)
                             }
                         }
                         Text("Sets the rate captured for both local monitoring and sharing. Viewer frame rate can be lower.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
-            }.formStyle(.grouped).frame(height: model.setup?.kind == .macScreen ? 340 : 210)
+            }.formStyle(.grouped).frame(height: model.setup?.kind.isMacCapture == true ? 340 : 210)
             HStack {
                 Button("Cancel") { model.sheet = nil }.keyboardShortcut(.cancelAction)
                 Spacer()

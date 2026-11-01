@@ -6,6 +6,7 @@ import SetbeamCore
     static func main() async {
         do {
             let values = CommandLine.arguments
+            if values.contains("--window-fixture") { await WindowFixture.run(values) }
             let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
             func option(_ name: String, fallback: URL) -> URL {
                 guard let index = values.firstIndex(of: name), index + 1 < values.count else { return fallback }
@@ -34,6 +35,9 @@ import SetbeamCore
             }
             if values.contains("--keyframe-test") {
                 try await testKeyframeBursts(tools: tools, fixtures: fixtures, output: output); return
+            }
+            if values.contains("--window-test") {
+                try await testWindowSource(tools: tools, fixtures: fixtures, output: output); return
             }
             if values.contains("--accsoon-test") {
                 try await testAccsoon(tools: tools, fixtures: fixtures, output: output); return

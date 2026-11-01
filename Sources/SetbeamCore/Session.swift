@@ -14,6 +14,7 @@ public enum SetbeamError: LocalizedError, Equatable {
 public enum VideoSource: Equatable, Sendable {
     case sample
     case macScreen(displayUUID: String)
+    case macWindow(MacWindowIdentity)
     case network(String)
     case capture(video: Int, audio: Int?)
     case captureDevice(videoID: String, audioID: String?)
@@ -23,12 +24,18 @@ public enum VideoSource: Equatable, Sendable {
     public var label: String {
         switch self {
         case .macScreen: return "This Mac's screen"
+        // Window titles stay out of logs and diagnostics.
+        case .macWindow: return "Application window"
         case .sample: return "Sample feed"
         case .network(let address): return Self.safeAddress(address)
         case .capture, .captureDevice: return "USB / capture device"
         case .incoming: return "Incoming stream"
         case .accsoon: return "Accsoon CineView Master 4K"
         }
+    }
+    /// This Mac's display or one of its windows, captured in-app through ScreenCaptureKit.
+    public var isMacCapture: Bool {
+        switch self { case .macScreen, .macWindow: return true; default: return false }
     }
     public var isCapture: Bool {
         switch self { case .capture, .captureDevice: return true; default: return false }
@@ -38,6 +45,9 @@ public enum VideoSource: Equatable, Sendable {
         switch self {
         case .macScreen(let id):
             guard UUID(uuidString: id) != nil else { throw SetbeamError.invalidSource("Choose a display on this Mac.") }
+            return self
+        case .macWindow(let identity):
+            guard identity.isComplete else { throw SetbeamError.invalidSource("Choose an open application window.") }
             return self
         case .sample: return self
         case .network(let address):

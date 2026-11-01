@@ -30,3 +30,7 @@ Temporarily replacing the audience's feed with a holding state and silence while
 
 **This Mac's screen**:
 A selected display of the receiving Mac, captured with its cursor and without Setbeam's own windows. This input has no sound.
+
+**Application window**:
+One window of another application on the receiving Mac, captured by itself with its cursor and without the desktop or other windows. It is identified by its window number and owning process, never by title. This input has no sound.
+_Avoid_: App sharing, for capturing every window of an application.

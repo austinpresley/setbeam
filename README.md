@@ -44,6 +44,7 @@ Setbeam receives each source once. The main window, floating preview, and shared
 ## Choose your source
 
 - **This Mac's screen.** Select a display by name, resolution, and updating thumbnail. Includes the cursor, excludes Setbeam windows, and has no sound. Requires Screen Recording permission.
+- **One application window.** Share a single window, such as Capture One, chosen by application, title, and updating preview. Other windows and the desktop stay out. Closing it pauses the feed; Setbeam never substitutes another window.
 - **Accsoon CineView Master 4K.** Direct Wi-Fi reception physically tested with one firmware 3.30 unit and a 1080p60 computer display. See the exact [test scope and open checks](docs/hardware-tests.md).
 - **Hollyland Pyro H.** Native discovery of the original launcher's RTSP route. Simulated discovery and H.264/AAC playback pass; physical Setbeam testing is pending.
 - **Network stream or capture input.** Full-address RTSP, authenticated incoming RTMP, and detected Mac capture inputs. A connection type does not establish hardware compatibility.

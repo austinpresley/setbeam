@@ -31,6 +31,8 @@ The default source build is also ad-hoc signed and not notarized.
 
 Open the source control at the top left and choose a detected source, your last working setup, or the labeled sample. RTSP addresses, incoming RTMP, and manual connection settings are in **Advanced** under the gear menu. For this computer's display, choose **This Mac's screen** and the display name/resolution. Allow Setbeam in Screen Recording when requested, then retry. Setbeam excludes its own windows and includes your cursor. This source has no sound. If the display disconnects, Setbeam waits for that same display.
 
+To share one application window instead, such as Capture One, choose it under **Application windows** in the same chooser. Windows are listed with their application, title, and an updating preview once Setbeam has Screen Recording access; opening the chooser never asks for it. Only that window is shared, without sound, wherever it moves and even when other windows cover it. Its size when chosen sets the picture size; after a resize the whole window is fitted inside that picture without cropping. Minimizing it, hiding its application, or closing it pauses the picture until that same window is shown again. If its application quits, choose the window again: Setbeam never switches to another window or the whole display. After relaunch, Setbeam restores the window privately only while its application is still running.
+
 For the physically tested Accsoon CineView Master 4K on firmware 3.30:
 
 1. Power the transmitter and give it a live HDMI or SDI picture from a computer or camera.
@@ -72,7 +74,7 @@ Each viewer receives a separate copy of the picture. With several phones on one 
 
 For Capture One or other still-image review, set the viewers' **Frame rate** to **1 fps** in Picture settings. Keep **Picture quality** at Best when image detail matters more than motion. FPS changes keep the same image dimensions and bitrate allowance, and external-source local monitoring keeps its original cadence. **Match source** restores the incoming rate, up to 30 fps.
 
-When using **This Mac's screen**, **Capture frame rate** in Picture settings independently controls the local capture rate. Choose **1 fps** there as well to reduce capture work, or leave **Match display** for the display's rate, up to 30 fps. Both FPS choices are remembered; relaunch still starts privately.
+When using **This Mac's screen** or an application window, **Capture frame rate** in Picture settings independently controls the local capture rate. Choose **1 fps** there as well to reduce capture work, or leave **Match display** for the display's rate, up to 30 fps. Both FPS choices are remembered; relaunch still starts privately.
 
 Viewer pages and signaling use local HTTP. Use a trusted local network and keep the viewing link private. It grants read-only viewing access. Setbeam has no internet relay or remote account service.
 
