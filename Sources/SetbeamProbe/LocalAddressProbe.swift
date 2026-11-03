@@ -81,7 +81,7 @@ extension SetbeamProbe {
             try await runtime.setViewerAccess(approval: true, readers: gateway.desiredReaders)
             snapshot = await runtime.snapshot(); gateway.update(session(snapshot))
             let nameless = try await http("\(base)/s/\(snapshot.guestToken)/join", json: ["mobile": false])
-            let request = try await http("\(base)/s/\(snapshot.guestToken)/join", json: ["mobile": false, "name": "Probe"])
+            let request = try await http("\(base)/s/\(snapshot.guestToken)/join", json: ["mobile": false, "name": "Probe", "ask": true])
             guard nameless.status == 400, let waiting = request.json["pass"] as? String, request.json["admission"] as? String == "pending",
                   let number = request.json["number"] as? Int,
                   try await http("\(base)/s/\(snapshot.guestToken)/config.json", pass: waiting).status == 403,

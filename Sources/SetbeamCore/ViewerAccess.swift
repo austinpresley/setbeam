@@ -68,8 +68,9 @@ struct ViewerAccessLedger {
     func record(number: Int) -> Record? { records.values.first { $0.number == number } }
 
     /// Resumes a known pass or creates one. A known declined or removed pass stays refused;
-    /// a new request under approval needs a name and the operator's decision.
-    mutating func join(pass: String?, name: String?, color: PointerColor?, mobile: Bool, local: Bool, now: Date) -> JoinOutcome {
+    /// a new request under approval needs a name, the viewer's explicit request, and the
+    /// operator's decision. A saved name sent without `asking` never starts a request.
+    mutating func join(pass: String?, name: String?, asking: Bool = false, color: PointerColor?, mobile: Bool, local: Bool, now: Date) -> JoinOutcome {
         prune(now: now)
         if let pass, var record = records[pass] {
             record.lastSeen = now; record.mobile = mobile; record.local = local
@@ -78,7 +79,7 @@ struct ViewerAccessLedger {
             records[pass] = record
             return .joined(record)
         }
-        if approvalRequired, name == nil { return .nameRequired }
+        if approvalRequired, name == nil || !asking { return .nameRequired }
         if approvalRequired, records.values.filter({ $0.admission == .pending }).count >= Self.maxPending { return .full }
         if records.count >= Self.maxRecords {
             // Make room only from sessions that have stopped contacting the gateway.
@@ -95,14 +96,15 @@ struct ViewerAccessLedger {
     }
 
     /// Records playback observations for a known pass. Names change only without approval,
-    /// so an admitted request cannot rename itself after the operator's decision.
+    /// so an admitted request cannot rename itself after the operator's decision. Under approval,
+    /// a session admitted unnamed before approval may set its first label, as with `setName`.
     mutating func heartbeat(_ pass: String, playing: Bool, health: ViewerHealth, revision: Int, name: String??, mobile: Bool, local: Bool, now: Date) -> Record? {
         guard var record = records[pass] else { return nil }
         record.lastSeen = now; record.mobile = mobile; record.local = local
         if record.admission == .admitted {
             record.playing = playing; record.health = health; record.revision = revision
         }
-        if !approvalRequired, let name { record.name = name }
+        if let name, !approvalRequired || (record.name == nil && name != nil) { record.name = name }
         records[pass] = record
         return record
     }

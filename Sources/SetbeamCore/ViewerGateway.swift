@@ -440,7 +440,7 @@ public final class ViewerGateway: @unchecked Sendable {
         let outcome = lock.withLock { () -> ViewerAccessLedger.JoinOutcome? in
             guard session?.token == token else { return nil }
             return ledger.join(pass: ViewerAccessLedger.validPass(data["pass"]), name: ViewerHealth.viewerName(data["name"] as? String),
-                               color: PointerColor.validated(data["color"]), mobile: mobile, local: local, now: Date())
+                               asking: data["ask"] as? Bool == true, color: PointerColor.validated(data["color"]), mobile: mobile, local: local, now: Date())
         }
         switch outcome {
         case .joined(let record)?:

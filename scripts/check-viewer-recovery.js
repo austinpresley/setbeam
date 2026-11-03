@@ -10,7 +10,10 @@ function browser(options = {}) {
   const joinResponse = () => joinValue;
   const configHeaders = [];
   let now = 1_000, interval, requests = 0, hung = false, deferState = false, releaseState;
-  const timers = new Map(), readers = [], listeners = {}, urls = [], sources = [], locks = [], heartbeats = [];
+  const timers = new Map(), readers = [], listeners = {}, urls = [], sources = [], locks = [], heartbeats = [], joins = [];
+  let joinFails = false, stateGone = false;
+  // Elements inside the join page, for focus checks.
+  const joinParts = new Set(['join-title', 'join-name', 'join-submit', 'join-retry', 'join-form', 'join-status']);
   const storage = new Map(Object.entries(options.storage || {}));
   let stats, statsError = false, resolveStats;
   const elements = new Map();
@@ -18,9 +21,10 @@ function browser(options = {}) {
     if (!elements.has(id)) elements.set(id, {
       hidden: false, textContent: '', paused: false, readyState: 4, currentTime: 0, muted: true, plays: 0,
       style: {setProperty(name, value) { this[name] = value; }}, parentElement: {attributes: {}, toggleAttribute(name, enabled) { if (enabled) this.attributes[name] = ''; else delete this.attributes[name]; }}, writes: 0,
-      attributes: {}, contains(target) { return target === this; }, addEventListener(name, fn) { listeners[id + ':' + name] = fn; },
+      attributes: {}, contains(target) { return target === this || (id === 'join' && joinParts.has(target?.id)); }, addEventListener(name, fn) { listeners[id + ':' + name] = fn; },
+      id, focuses: 0,
       getAttribute(name) { return this.attributes[name]; }, setAttribute(name, value) { this.attributes[name] = value; },
-      focus() { context.document.activeElement = this; },
+      focus() { context.document.activeElement = this; this.focuses++; },
       play() {
         this.plays++;
         // Browsers reject blocked autoplay with NotAllowedError, and a replaced source with AbortError.
@@ -41,7 +45,8 @@ function browser(options = {}) {
   const stream = {tracks: options.silent ? [] : [audio], getAudioTracks() { return this.tracks; }, addEventListener(name, fn) { listeners['stream:' + name] = fn; }};
   const state = {state: 'live', title: 'Recovery test', revision: 1};
   const context = {
-    document: {getElementById: element, pictureInPictureEnabled: !!options.pip, hidden: false, addEventListener(name, fn) { listeners[name] = fn; }},
+    document: {getElementById: element, pictureInPictureEnabled: !!options.pip, hidden: false, addEventListener(name, fn) { listeners[name] = fn; }, body: {id: 'body'}},
+    matchMedia: query => ({matches: query === '(pointer: fine)' && !!options.finePointer}),
     navigator: {userAgent: 'test'}, crypto: {randomUUID: () => 'viewer-test'},
     sessionStorage: {getItem(key) { return storage.get(key); }, setItem(key, value) { storage.set(key, value); }},
     Date: class extends Date { static now() { return now; } },
@@ -71,10 +76,14 @@ function browser(options = {}) {
       if (hung) return new Promise((resolve, reject) => {
         options.signal?.addEventListener('abort', () => reject(new Error('aborted')), {once: true});
       });
+      // Stop and a changed code both retire the link, so its state is gone too.
+      if (url === 'state.json' && stateGone) return Promise.resolve({ok: false, status: 404, json: async () => ({})});
       if (url === 'config.json') configHeaders.push(request.headers || {});
       if (url === 'heartbeat' && heartbeatValue) return Promise.resolve({ok: true, status: 200, json: async () => heartbeatValue});
       if (url === 'join') {
-        const join = options.join || {pass: 'a'.repeat(48), number: 1, admission: 'admitted', ready: true, color: 'blue'};
+        const body = JSON.parse(request.body); joins.push(body);
+        if (joinFails) return Promise.reject(new TypeError('Failed to fetch'));
+        const join = (typeof options.join === 'function' ? options.join(body) : options.join) || {pass: 'a'.repeat(48), number: 1, admission: 'admitted', ready: true, color: 'blue'};
         return Promise.resolve({ok: !join.status, status: join.status || 200, json: async () => join});
       }
       return Promise.resolve({ok: true, status: 200, json: async () => url === 'config.json'
@@ -102,7 +111,9 @@ function browser(options = {}) {
   const settle = async () => { for (let n = 0; n < 120; n++) await Promise.resolve(); };
   return {
     pointerUpdates, set join(value) { joinValue = value; }, set heartbeatResponse(value) { heartbeatValue = value; }, configHeaders,
-    readers, state, elements, listeners, settle, sources, locks, context, stream, audio, audioListeners, heartbeats, storage,
+    readers, state, elements, listeners, settle, sources, locks, context, stream, audio, audioListeners, heartbeats, storage, joins, urls,
+    set joinFails(value) { joinFails = value; }, set stateGone(value) { stateGone = value; }, el: element,
+    async submit(name) { element('join-name').value = name; listeners['join-form:submit']({preventDefault() {}}); await settle(); },
     set stats(value) { stats = value; }, set statsError(value) { statsError = value; },
     async releaseStats(value) { resolveStats(value); await settle(); },
     get requests() { return requests; }, set hung(value) { hung = value; },
@@ -508,4 +519,179 @@ test('pointing is offered only while admitted, enabled, and the session continue
   c.heartbeatResponse = {ok: true, admission: 'removed'};
   await c.tick(); await c.tick();
   assert.equal(c.pointerUpdates.at(-1).enabled, false, 'Removal ends pointing');
+});
+
+// A small model of the gateway's admission rules for join-page tests.
+function gateway(options = {}) {
+  const model = {approval: options.approval ?? true, admission: 'pending', requests: 0, lapsed: false, full: false, gone: false};
+  model.join = body => {
+    if (model.gone) return {status: 404};
+    if (body.pass === pass && !model.lapsed) return {pass, number: 4, admission: model.approval || model.admission !== 'pending' ? model.admission : 'admitted',
+      ready: model.admission === 'admitted' || !model.approval, color: 'blue', name: body.name ?? 'Sam'};
+    if (model.approval && !(body.ask && body.name)) return {status: 400};
+    if (model.full) return {status: 503};
+    model.requests++; model.lapsed = false;
+    return {pass, number: 4, admission: model.approval ? 'pending' : 'admitted', ready: !model.approval, color: 'blue', name: body.name};
+  };
+  return model;
+}
+const joinVisible = b => b.el('join').hidden === false && b.el('player').className.includes('join-open');
+
+test('a saved name prefills Ask to join, and only the viewer sends a request', async () => {
+  const g = gateway();
+  const b = browser({join: g.join, storage: {'setbeam-viewer-name': 'Sam'}}); b.state.approval = true; await b.settle();
+  assert.equal(b.joins[0].ask, undefined, 'The first join only learns this tab\'s state');
+  assert.equal(g.requests, 0, 'A saved name never asks on its own');
+  assert.ok(joinVisible(b), 'The join page replaces the picture and controls');
+  assert.equal(b.el('join-form').hidden, false); assert.equal(b.el('join-name').value, 'Sam');
+  assert.equal(b.el('state').textContent, 'Ask to join'); assert.equal(b.el('join-title').textContent, 'Ask to join');
+  await b.tick(); await b.tick(); await b.tick();
+  assert.equal(g.requests, 0, 'Polling while the form is open sends no request');
+  assert.equal(b.el('title').textContent, 'Recovery test', 'The join page shows the session title');
+  await b.submit(' Sam  Lee ');
+  assert.equal(g.requests, 1);
+  assert.deepEqual({name: b.joins.at(-1).name, ask: b.joins.at(-1).ask}, {name: 'Sam Lee', ask: true});
+  assert.equal(b.el('state').textContent, 'Waiting to join'); assert.equal(b.el('join-form').hidden, true);
+  assert.equal(b.el('join-detail').textContent, 'Asking as Sam Lee (session 4)');
+  await b.tick(); await b.tick();
+  assert.equal(g.requests, 1, 'Waiting resumes the same request');
+  assert.ok(b.joins.slice(b.joins.findIndex(body => body.ask) + 1).every(body => body.pass === pass && !body.ask));
+  assert.equal(b.count('config.json'), 0); assert.equal(b.readers.length, 0, 'Joining never fetches playable details');
+  assert.ok(b.urls.every(url => !/Sam/.test(url)), 'Names are never placed in request URLs');
+  g.admission = 'admitted'; await b.tick();
+  assert.equal(joinVisible(b), false, 'Admission returns the picture-first page');
+  assert.equal(b.readers.length, 1); assert.equal(b.configHeaders.at(-1)['X-Setbeam-Pass'], pass);
+});
+
+test('reloading a pending, declined, or removed tab keeps its state without a new request', async () => {
+  for (const admission of ['pending', 'declined', 'removed']) {
+    const g = gateway(); g.admission = admission;
+    const b = browser({join: g.join, storage: {'setbeam-pass:': pass, 'setbeam-viewer-name': 'Sam'}}); b.state.approval = true; await b.settle();
+    await b.tick();
+    assert.equal(g.requests, 0, admission);
+    assert.ok(b.joins.every(body => body.pass === pass && !body.ask), admission);
+    assert.equal(b.el('join-form').hidden, true, admission);
+    assert.match(b.el('join-detail').textContent, /Sam \(session 4\)$/, admission);
+    assert.equal(b.el('join-retry').hidden, true, 'Refusals offer no way to ask again: ' + admission);
+    assert.equal(b.count('config.json'), 0, admission);
+  }
+});
+
+test('a failed request is reported in the form and sent again only when the viewer asks', async () => {
+  const g = gateway();
+  const b = browser({join: g.join}); b.state.approval = true; await b.settle();
+  b.joinFails = true; await b.submit('Ana');
+  assert.match(b.el('join-status').textContent, /did not reach the operator/);
+  assert.equal(b.el('join-submit').disabled, false); assert.equal(b.el('join-name').readOnly, false);
+  const asks = b.joins.filter(body => body.ask).length;
+  b.joinFails = false; await b.tick(); await b.tick();
+  assert.equal(b.joins.filter(body => body.ask).length, asks, 'No automatic resend after a failure');
+  assert.equal(b.el('state').textContent, 'Ask to join');
+  await b.submit('Ana');
+  assert.equal(g.requests, 1); assert.equal(b.el('state').textContent, 'Waiting to join');
+  assert.equal(b.el('join-status').textContent, '');
+});
+
+test('a lost connection while waiting shows reconnecting, and a lapsed request asks again with the name kept', async () => {
+  const g = gateway();
+  const b = browser({join: g.join}); b.state.approval = true; await b.settle(); await b.submit('Ana');
+  b.joinFails = true; await b.tick();
+  assert.equal(b.el('state').textContent, 'Waiting to join');
+  assert.match(b.el('join-status').textContent, /Connection lost/);
+  b.joinFails = false; g.lapsed = true; await b.tick();
+  assert.equal(b.el('state').textContent, 'Ask to join');
+  assert.match(b.el('join-status').textContent, /needs to ask again/);
+  assert.equal(b.el('join-name').value, 'Ana');
+  await b.tick(); await b.tick();
+  assert.equal(g.requests, 1, 'The page does not replace a lapsed request by itself');
+});
+
+test('turning approval off while the form is open plays at once without a name', async () => {
+  const g = gateway();
+  const b = browser({join: g.join}); b.state.approval = true; await b.settle();
+  assert.equal(b.el('state').textContent, 'Ask to join');
+  g.approval = false; b.state.approval = false; await b.tick(); await b.tick();
+  assert.equal(joinVisible(b), false);
+  assert.equal(b.readers.length, 1, 'Ordinary link sharing needs no name');
+  assert.ok(b.joins.every(body => !body.ask));
+});
+
+test('ordinary link sharing keeps optional names and never shows the join page', async () => {
+  const g = gateway({approval: false});
+  const b = browser({join: g.join, storage: {'setbeam-viewer-name': 'Sam'}}); await b.settle(); await b.track();
+  assert.equal(joinVisible(b), false); assert.equal(b.el('state').textContent, 'Live feed');
+  assert.equal(b.joins[0].name, 'Sam'); assert.equal(b.joins[0].ask, undefined);
+  b.el('viewer-name').value = 'Sam (iPad)'; b.listeners['viewer-name-form:submit']({preventDefault() {}}); await b.settle();
+  assert.equal(b.heartbeats.at(-1).name, 'Sam (iPad)', 'Connection help still edits the name');
+  assert.notEqual(b.el('viewer-name').readOnly, true);
+});
+
+test('focus follows step changes on a keyboard device and stays put during polls', async () => {
+  const g = gateway();
+  const b = browser({join: g.join, finePointer: true}); b.state.approval = true; await b.settle();
+  assert.equal(b.context.document.activeElement, b.el('join-name'), 'The name field is ready for typing');
+  await b.tick(); await b.tick();
+  assert.equal(b.el('join-name').focuses, 1, 'Polls never move focus again');
+  b.el('join-submit').focus(); await b.submit('Ana');
+  assert.equal(b.context.document.activeElement, b.el('join-title'), 'Waiting moves focus to the new heading');
+  await b.tick(); await b.tick(); assert.equal(b.el('join-title').focuses, 1);
+  g.admission = 'admitted'; await b.tick();
+  assert.equal(b.context.document.activeElement, b.el('title'), 'Admission moves focus to the session title');
+  const touch = browser({join: gateway().join}); touch.state.approval = true; await touch.settle();
+  assert.equal(touch.el('join-name').focuses, 0, 'A touch keyboard opens only when the viewer taps the field');
+});
+
+test('a busy session waits for Try again, and a changed link replaces the waiting page', async () => {
+  const g = gateway(); g.full = true;
+  const b = browser({join: g.join}); b.state.approval = true; await b.settle(); await b.submit('Ana');
+  assert.equal(b.el('state').textContent, 'Session busy'); assert.equal(b.el('join-retry').hidden, false);
+  const sent = b.joins.length; await b.tick(); await b.tick();
+  assert.equal(b.joins.length, sent, 'Busy requests are not repeated automatically under approval');
+  g.full = false; b.listeners['join-retry:click'](); await b.settle();
+  assert.equal(b.joins.at(-1).ask, true); assert.equal(b.el('state').textContent, 'Waiting to join');
+  g.gone = true; await b.tick();
+  assert.equal(b.el('state').textContent, 'Session unavailable');
+  assert.equal(b.el('join-title').textContent, 'This viewing link is no longer active');
+  assert.equal(b.el('join-retry').hidden, false); assert.equal(b.count('config.json'), 0);
+});
+
+test('a link retired while the form is open shows unavailable, and Try again sends no request', async () => {
+  const g = gateway();
+  const b = browser({join: g.join, storage: {'setbeam-viewer-name': 'Sam'}}); b.state.approval = true; await b.settle();
+  assert.equal(b.el('state').textContent, 'Ask to join');
+  g.gone = true; b.stateGone = true; await b.tick(); await b.tick();
+  assert.equal(b.el('state').textContent, 'Session unavailable', 'Stop while the form is open retires the form');
+  assert.equal(b.el('join-form').hidden, true); assert.equal(b.el('join-retry').hidden, false);
+  b.listeners['join-retry:click'](); await b.settle(); await b.tick();
+  assert.equal(b.el('state').textContent, 'Session unavailable', 'Try again on a retired link stays unavailable');
+  assert.equal(b.el('join-form').hidden, true);
+  assert.equal(g.requests, 0); assert.ok(b.joins.every(body => !body.ask), 'Nothing asks on the viewer\'s behalf');
+  assert.equal(b.count('config.json'), 0);
+});
+
+test('Try again after an ask meets a retired link stays unavailable without a new request', async () => {
+  const g = gateway();
+  const b = browser({join: g.join}); b.state.approval = true; await b.settle();
+  assert.equal(b.el('state').textContent, 'Ask to join');
+  g.gone = true; b.stateGone = true; await b.submit('Ana');
+  assert.equal(b.el('state').textContent, 'Session unavailable');
+  const asks = b.joins.filter(body => body.ask).length;
+  b.listeners['join-retry:click'](); await b.settle(); await b.tick(); await b.tick();
+  assert.equal(b.el('state').textContent, 'Session unavailable', 'Try again does not return to a form that cannot work');
+  assert.equal(b.el('join-form').hidden, true); assert.equal(b.el('join-retry').hidden, false);
+  assert.equal(b.joins.filter(body => body.ask).length, asks, 'Try again sends no new request');
+  assert.equal(g.requests, 0); assert.equal(b.count('config.json'), 0);
+});
+
+test('under approval an admitted name is read-only in Connection help, and Hold keeps the picture page', async () => {
+  const g = gateway(); g.admission = 'admitted';
+  const b = browser({eventSource: true, join: g.join, storage: {'setbeam-pass:': pass, 'setbeam-viewer-name': 'Sam'}});
+  await b.settle(); await b.push({...b.state, approval: true}); await b.track();
+  assert.equal(b.el('viewer-name').readOnly, true); assert.equal(b.el('viewer-name-save').hidden, true);
+  assert.match(b.el('viewer-name-status').textContent, /fixed while the operator approves/);
+  await b.push({...b.state, approval: true, state: 'holding'});
+  assert.equal(joinVisible(b), false); assert.equal(b.el('state').textContent, 'On hold');
+  await b.push({...b.state, approval: true, state: 'live', revision: 2}); await b.track();
+  assert.equal(b.el('state').textContent, 'Live feed');
+  assert.equal(g.requests, 0, 'Recovering playback never sends a new request');
 });

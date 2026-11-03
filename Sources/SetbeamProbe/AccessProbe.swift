@@ -95,6 +95,8 @@ extension SetbeamProbe {
                 throw SetbeamError.runtime("Hold changed which viewers can read.")
             }
             try await runtime.setHold(false)
+            try await waitFor("resumed output") { $0.audienceAvailable && !$0.session.holding }
+            try await testJoinBoundary(runtime: runtime, snapshot: await runtime.snapshot(), keep: b, readable: readable, whepStatus: whepStatus)
             await runtime.stopSharing()
             guard try await !readable(b.user, b.password), await runtime.snapshot().sourceAvailable else {
                 throw SetbeamError.runtime("Stop Sharing left a viewer credential usable or interrupted monitoring.")
@@ -107,5 +109,68 @@ extension SetbeamProbe {
             await runtime.shutdown(); throw error
         }
 
+    }
+
+    /// Drives the browser's join and playback-details requests through a real gateway in front of
+    /// the real media server, as the app does: a saved name never asks, a request plays only after
+    /// Admit with its own reader, Decline stays refused, and Remove refuses that reader again.
+    static func testJoinBoundary(runtime: MediaRuntime, snapshot: RuntimeSnapshot, keep: ViewerReader,
+                                 readable: (String, String) async throws -> Bool, whepStatus: (String, String) async throws -> Int) async throws {
+        let gateway = ViewerGateway(assets: [:])
+        gateway.update(ViewerSession(token: "access-probe-link", title: "Access probe", sample: true, state: .live,
+                                     playback: snapshot.audience, revision: snapshot.audienceRevision))
+        gateway.setAccess(approval: true, pointers: false)
+        defer { gateway.stop() }
+        let origin = "http://127.0.0.1:\(try await gateway.start(address: "127.0.0.1"))/s/access-probe-link/"
+        func call(_ path: String, _ body: [String: Any]? = nil, pass: String? = nil) async throws -> (Int, [String: Any]) {
+            var request = URLRequest(url: URL(string: origin + path)!, timeoutInterval: 5)
+            if let body { request.httpMethod = "POST"; request.httpBody = try JSONSerialization.data(withJSONObject: body) }
+            if let pass { request.setValue(pass, forHTTPHeaderField: "X-Setbeam-Pass") }
+            let (data, response) = try await URLSession.shared.data(for: request)
+            return ((response as! HTTPURLResponse).statusCode, (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:])
+        }
+        func apply() async throws {
+            let readers = gateway.desiredReaders
+            try await runtime.setViewerAccess(approval: true, readers: readers.union([keep]))
+            gateway.confirm(readers: readers)
+        }
+        guard try await call("join", ["name": "Sam", "mobile": false]).0 == 400, gateway.viewers.isEmpty else {
+            throw SetbeamError.runtime("A saved name started an approval request without Ask to join.")
+        }
+        let (_, first) = try await call("join", ["name": "Sam", "ask": true, "mobile": false])
+        let (_, second) = try await call("join", ["name": "Sam", "ask": true, "mobile": true])
+        guard let passA = first["pass"] as? String, let passB = second["pass"] as? String, first["admission"] as? String == "pending",
+              let numberA = first["number"] as? Int, let numberB = second["number"] as? Int, numberA != numberB,
+              first["user"] == nil, first["whepURL"] == nil else {
+            throw SetbeamError.runtime("Two equal names did not become two numbered pending requests.")
+        }
+        guard try await call("config.json", pass: passA).0 == 403, try await call("join", ["pass": passA, "mobile": false]).1["number"] as? Int == numberA,
+              gateway.viewers.count == 2 else {
+            throw SetbeamError.runtime("A pending request obtained playback details or a resumed page asked again.")
+        }
+        print("PASS: through the gateway, a saved name does not ask, Ask to join creates numbered pending requests, and a waiting page gets no playback details")
+
+        gateway.approve(number: numberA); gateway.decline(number: numberB)
+        try await apply()
+        let (status, config) = try await call("config.json", pass: passA)
+        guard status == 200, let user = config["user"] as? String, let password = config["pass"] as? String, user != "guest" else {
+            throw SetbeamError.runtime("An admitted request received no playback details of its own (HTTP \(status)).")
+        }
+        let rtsp = try await readable(user, password), whep = try await whepStatus(user, password)
+        guard rtsp, whep != 401 else {
+            throw SetbeamError.runtime("An admitted request's own playback details did not read the audience output (RTSP \(rtsp), WHEP \(whep)).")
+        }
+        guard try await call("config.json", pass: passB).0 == 403, try await call("join", ["pass": passB, "mobile": true]).1["admission"] as? String == "declined" else {
+            throw SetbeamError.runtime("A declined request obtained playback details or was readmitted on reload.")
+        }
+        print("PASS: Admit gives that request its own reader for real RTSP and WHEP playback; Decline stays refused after reload")
+
+        gateway.remove(number: numberA)
+        try await apply()
+        guard try await call("config.json", pass: passA).0 == 403, try await !readable(user, password), try await whepStatus(user, password) == 401,
+              try await readable(keep.user, keep.password) else {
+            throw SetbeamError.runtime("Removing an admitted request left its reader usable or interrupted another viewer.")
+        }
+        print("PASS: Remove refuses that request's playback details and reader while another admitted reader continues")
     }
 }

@@ -27,6 +27,9 @@
   // it is admitted, declined, or removed by the operator, and a reload keeps that decision.
   const passKey = 'setbeam-pass:' + (globalThis.location?.pathname || '');
   let pass, access = 'joining', approval = false, mediaReady = false, joinRunning = false;
+  // Under approval a new request is sent only when the viewer presses Ask to join. A saved name
+  // prefills the form; restoring a pass resumes its request or decision without asking again.
+  let asking = false, pollAgain = false, joinNote = '', joinTrouble = false, joinNumber, joinDirty = false, shownJoin, lockShown = false;
   try { pass = sessionStorage.getItem(passKey) || undefined; } catch { /* A tab without storage joins again after reload. */ }
   const refused = () => access === 'declined' || access === 'removed';
   const pointers = globalThis.SetbeamPointers?.attach({
@@ -54,29 +57,87 @@
     return !!(document.pictureInPictureEnabled && video.requestPictureInPicture) ||
       !!video.webkitSupportsPresentationMode?.('picture-in-picture');
   }
+  // Badge label, card title, copy, symbol, and page state for each step of the join page.
+  const joinViews = {
+    name: ['Ask to join', 'Ask to join', 'The operator admits each viewer. Enter a name they will recognize.', 'user', 'ask'],
+    full: ['Session busy', 'This session is busy', 'Too many people are waiting to join. Try again shortly.', 'user', 'ask'],
+    pending: ['Waiting to join', 'Waiting for the operator', 'Keep this page open. The picture starts when the operator admits you.', 'loader', 'pending'],
+    declined: ['Not admitted', 'The operator declined this request', 'Ask the operator if you should be watching.', 'link-off', 'refused'],
+    removed: ['Removed', 'The operator removed you from this session', 'This page no longer receives the picture.', 'link-off', 'refused'],
+    unavailable: ['Session unavailable', 'This viewing link is no longer active', 'Sharing may have ended or the code changed. Ask the operator for the current code.', 'link-off', 'refused'],
+    ended: ['Sharing ended', 'Sharing ended', 'Ask the operator for a new code.', 'end', 'refused']
+  };
+  // Only a session that is not admitted sees the join page; admitted viewers keep the picture.
+  function joinView() {
+    if (!['name', 'full', 'pending', 'declined', 'removed'].includes(access)) return undefined;
+    if (refused()) return access;
+    if (unavailable) return 'unavailable';
+    return mode === 'stopped' ? 'ended' : access;
+  }
+  function joinMessage(view) {
+    if (view === 'name' && asking) return 'Sending your request…';
+    if (view === 'name' && joinNote === 'error') return navigator.onLine === false
+      ? 'This device is offline. Reconnect to the viewing network, then try again.'
+      : 'The request did not reach the operator. Check that you are on the viewing network, then try again.';
+    if (view === 'name' && joinNote === 'again') return 'This page needs to ask again. Check your name, then send a new request.';
+    if (view === 'name' && joinNote === 'empty') return 'Enter a name the operator will recognize.';
+    if (view === 'pending' && joinTrouble) return 'Connection lost. Keep this page open while it reconnects.';
+    if (view === 'full' && asking) return 'Trying again…';
+    return '';
+  }
+  function joinDetail(view) {
+    if (!joinNumber || !['pending', 'declined', 'removed'].includes(view)) return '';
+    const verb = view === 'pending' ? 'Asking' : view === 'declined' ? 'Asked' : 'Joined';
+    return viewerName ? verb + ' as ' + viewerName + ' (session ' + joinNumber + ')' : 'Session ' + joinNumber;
+  }
+  // Focus moves only when the step changes, never on a poll, and a touch keyboard opens only on request.
+  function renderJoin(view) {
+    const section = document.getElementById('join'), previous = shownJoin, focused = document.activeElement;
+    const hadFocus = !focused || focused === document.body || section.contains(focused);
+    shownJoin = view; section.hidden = !view;
+    if (!view) { if (previous && focused && section.contains(focused)) document.getElementById('title').focus(); return; }
+    const [, title, copy, symbol] = joinViews[view];
+    const heading = document.getElementById('join-title'), joinName = document.getElementById('join-name');
+    text(heading, title); text(document.getElementById('join-copy'), copy);
+    document.getElementById('join-icon').setAttribute('href', '#i-' + symbol);
+    const detail = joinDetail(view), joinRetry = document.getElementById('join-retry');
+    text(document.getElementById('join-detail'), detail); document.getElementById('join-detail').hidden = !detail;
+    document.getElementById('join-form').hidden = view !== 'name';
+    document.getElementById('join-submit').disabled = asking; joinName.readOnly = asking;
+    joinRetry.hidden = !(view === 'unavailable' || view === 'full' && approval); joinRetry.disabled = asking;
+    text(document.getElementById('join-status'), joinMessage(view));
+    if (view === previous) return;
+    if (view === 'name' && !joinDirty && focused !== joinName) joinName.value = viewerName;
+    if (hadFocus && (previous || globalThis.matchMedia?.('(pointer: fine)').matches)) (view === 'name' ? joinName : heading).focus();
+  }
   function update() {
-    const live = playing(), waiting = everPlayed ? 'reconnecting' : 'connecting';
-    const state = unavailable ? 'unavailable' : playBlocked && mode === 'live' ? 'blocked' : mode === 'live' && !live ? waiting : mode;
+    const live = playing(), waiting = everPlayed ? 'reconnecting' : 'connecting', view = joinView();
+    const state = view ? joinViews[view][4] : unavailable ? 'unavailable' : playBlocked && mode === 'live' ? 'blocked' : mode === 'live' && !live ? waiting : mode;
     label.className = 'state ' + state;
-    player.className = 'player ' + state;
+    player.className = 'player ' + state + (view ? ' join-open' : '');
     sound.hidden = !hasAudio; sound.disabled = !live;
     pip.hidden = !pipSupported(); pip.disabled = !live;
     retry.hidden = !(playBlocked && mode === 'live') && !unavailable;
     action(retry, unavailable ? 'Reconnect' : 'Play feed');
     document.getElementById('retry-icon').setAttribute('href', unavailable ? '#i-loader' : '#i-play');
-    document.getElementById('join-form').hidden = access !== 'name' || unavailable;
-    if (unavailable) { text(label, 'Session unavailable'); show('This viewing link is unavailable', 'Ask the operator for the current code.', 'link-off'); }
-    else if (access === 'name') { text(label, 'Ask to join'); show('Ask to join', 'The operator admits each viewer. Enter the name they will see.', 'user'); }
-    else if (access === 'pending') { text(label, 'Waiting to join'); show('Waiting for the operator', 'Keep this page open. Your picture starts when the operator admits you.', 'user'); }
-    else if (access === 'declined') { text(label, 'Not admitted'); show('The operator declined this request', 'Ask the operator if you should be watching.', 'link-off'); }
-    else if (access === 'removed') { text(label, 'Removed'); show('The operator removed you from this session', 'This page no longer receives the picture.', 'link-off'); }
-    else if (access === 'full') { text(label, 'Session busy'); show('This session is busy', 'Too many people are waiting. Try again shortly.', 'loader'); }
+    if (view || shownJoin) renderJoin(view);
+    // The join page replaces the picture slate until the session is admitted.
+    if (view) text(label, joinViews[view][0]);
+    else if (unavailable) { text(label, 'Session unavailable'); show('This viewing link is unavailable', 'Ask the operator for the current code.', 'link-off'); }
     else if (mode === 'holding') { text(label, 'On hold'); show('On hold', 'Your picture returns when sharing resumes.', 'pause'); }
     else if (mode === 'stopped') { text(label, 'Sharing ended'); show('Sharing ended', 'Ask the operator for a new code.', 'end'); }
     else if (playBlocked && mode === 'live') { text(label, 'Ready to play'); show('Your picture is ready', 'Tap to watch.', 'play'); }
     else if (live) { text(label, 'Live feed'); slate.hidden = true; }
     else { text(label, everPlayed ? 'Reconnecting' : 'Connecting'); show('Waiting for the picture', everPlayed ? 'Keep this page open. Stay on the viewing network.' : 'Waiting for the picture.', 'loader'); }
     video.muted = mode !== 'live' || unavailable || sound.getAttribute('aria-pressed') !== 'true';
+    // Under approval a name is fixed once the session has one; Connection help then shows it read-only.
+    const locked = approval && !!pass && !!viewerName;
+    if (locked !== lockShown) {
+      lockShown = locked; nameInput.readOnly = locked; document.getElementById('viewer-name-save').hidden = locked;
+      if (locked) nameInput.value = viewerName;
+      text(document.getElementById('viewer-name-status'), locked ? 'Shown to the operator. Names stay fixed while the operator approves viewers.'
+        : viewerName ? 'Name saved for this tab. Shown to the operator.' : 'Shown to the operator.');
+    }
     const ended = mode === 'stopped' || unavailable || refused();
     if (ended && keepAwake) releaseAwake();
     awake.disabled = ended;
@@ -250,32 +311,53 @@
     if (!pass || refused()) return Promise.resolve();
     const sent = pass;
     const body = {pass, mobile: /iPhone|iPad|Android/.test(navigator.userAgent), playing: reportedPlaying, health: viewerHealth(), revision};
-    if (!approval) body.name = viewerName;
+    // Under approval the gateway accepts only a first label for a session admitted unnamed.
+    if (!approval || viewerName) body.name = viewerName;
     return request('heartbeat', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)})
       .then(response => { if (sent === pass && response.ok) admission(response.body?.admission); }).catch(() => {});
   }
   // Removal and refusal end playback at once. An unknown pass, such as after a restarted gateway, joins again.
   function admission(value) {
     if (value === 'removed' || value === 'declined') { access = value; config = undefined; closeReader(); dropEvents(); update(); }
-    else if (value === 'unknown') { forgetPass(); config = undefined; closeReader(); update(); }
+    else if (value === 'unknown') { if (approval) joinNote = 'again'; forgetPass(); config = undefined; closeReader(); update(); }
   }
   function forgetPass() {
-    pass = undefined; access = 'joining'; mediaReady = false;
+    pass = undefined; access = 'joining'; mediaReady = false; joinNumber = undefined;
     try { sessionStorage.removeItem(passKey); } catch {}
   }
   const mobile = () => /iPhone|iPad|Android/.test(navigator.userAgent);
   async function join() {
     if (joinRunning || refused()) return false;
+    const asked = asking, hadPass = !!pass;
+    // Under approval a new request goes out only after the viewer presses Ask to join.
+    if (!pass && (access === 'name' || access === 'full') && approval && !asked) return false;
     joinRunning = true;
     try {
-      if (!pass && access === 'name' && !viewerName) return false;
-      const response = await request('join', {method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({pass, name: viewerName || undefined, color: pointers?.color(), mobile: mobile()})});
+      let response;
+      try {
+        response = await request('join', {method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({pass, name: (asked || !approval) && viewerName || undefined, ask: asked || undefined, color: pointers?.color(), mobile: mobile()})});
+      } catch (error) {
+        // A failed request is reported in the form; the viewer decides whether to send it again.
+        if (!asked) throw error;
+        asking = false; joinNote = 'error'; return false;
+      }
+      if (asked) asking = false;
+      joinTrouble = false;
       if (response.status === 404) { unavailable = true; return false; }
-      if (response.status === 400) { forgetPass(); access = 'name'; return false; }
+      if (response.status === 400) {
+        // The gateway needs a name and an explicit request: approval is on and this tab has no request.
+        forgetPass(); access = 'name'; approval = true;
+        if (asked) joinNote = 'empty'; else if (hadPass) joinNote = 'again';
+        return false;
+      }
       if (response.status === 503) { access = 'full'; return false; }
-      if (!response.ok || typeof response.body?.pass !== 'string') throw new Error('Connection unavailable');
+      if (!response.ok || typeof response.body?.pass !== 'string') {
+        if (asked) { joinNote = 'error'; return false; }
+        throw new Error('Connection unavailable');
+      }
       pass = response.body.pass; access = response.body.admission; mediaReady = response.body.ready === true;
+      joinNumber = Number.isInteger(response.body.number) ? response.body.number : undefined; joinNote = '';
       try { sessionStorage.setItem(passKey, pass); } catch {}
       if (approval && typeof response.body.name === 'string') { viewerName = response.body.name; nameInput.value = viewerName; }
       if (access !== 'admitted') { config = undefined; closeReader(); }
@@ -351,15 +433,34 @@
   });
   const joinName = document.getElementById('join-name');
   joinName.value = viewerName;
+  joinName.addEventListener('input', () => { joinDirty = true; });
+  function ask() {
+    asking = true; joinNote = ''; update();
+    if (pollRunning) pollAgain = true; else poll();
+  }
   document.getElementById('join-form').addEventListener('submit', event => {
     event.preventDefault();
+    if (asking) return;
     const name = cleanName(joinName.value);
     joinName.value = name;
-    if (!name) { text(document.getElementById('join-status'), 'Enter a name the operator will recognize.'); return; }
-    viewerName = name; nameInput.value = name;
+    if (!name) { joinNote = 'empty'; update(); joinName.focus(); return; }
+    viewerName = name; nameInput.value = name; joinDirty = false;
     try { sessionStorage.setItem('setbeam-viewer-name', name); } catch {}
-    access = 'joining'; update(); poll();
+    ask();
   });
+  document.getElementById('join-retry').addEventListener('click', () => {
+    if (asking) return;
+    joinTrouble = false;
+    if (unavailable) { unavailable = false; config = undefined; update(); poll(); }
+    else if (access === 'full') ask();
+  });
+  // Title, sample label, and network advice are public session details shown before and after joining.
+  function describe(state) {
+    text(document.getElementById('title'), state.title); document.title = state.title + ' · Setbeam';
+    document.getElementById('sample').hidden = !state.sample;
+    const network = state.wifiSSID ? 'Stay on ' + state.wifiSSID + '.' : 'Stay on the same network as the operator.';
+    text(document.getElementById('network-hint'), network); text(document.getElementById('join-network'), network);
+  }
   async function applyState(state) {
     const previous = mode; mode = state.state;
     approval = state.approval === true; pointersOn = state.pointers === true;
@@ -367,9 +468,7 @@
       // A publisher revision can move this session to its own credential.
       if (!(await loadConfig())) throw new Error('Connection unavailable');
     }
-    text(document.getElementById('title'), state.title); document.title = state.title + ' · Setbeam';
-    document.getElementById('sample').hidden = !state.sample;
-    text(document.getElementById('network-hint'), state.wifiSSID ? 'Stay on ' + state.wifiSSID + '.' : 'Stay on the same network as the operator.');
+    describe(state);
     if (mode === 'live' && config && (previous !== 'live' || revision !== state.revision || !reader || stalled())) startReader();
     else if (mode !== 'live') closeReader();
     revision = state.revision;
@@ -397,9 +496,13 @@
       if (!config) {
         // Join first; only an admitted session whose own access is in effect gets playback details.
         if (!(await join()) || !(await loadConfig())) {
-          if (!unavailable && !refused() && access !== 'name') {
+          // The join page also learns the title, whether approval is still on, and whether the link still works.
+          if (!unavailable && !refused()) {
             const response = await request('state.json');
-            if (response.ok) { approval = response.body.approval === true; pointersOn = response.body.pointers === true; mode = response.body.state; }
+            if (response.ok) {
+              approval = response.body.approval === true; pointersOn = response.body.pointers === true; mode = response.body.state;
+              describe(response.body);
+            } else if (response.status === 404) unavailable = true;
           }
           update(); return;
         }
@@ -412,8 +515,12 @@
       if (pushes === pushesBefore) await applyState(response.body);
       await heartbeat();
       if (!events && typeof EventSource === 'function' && Date.now() >= eventsRetryAt) openEvents();
-    } catch { if (mode !== 'holding' && mode !== 'stopped') mode = 'reconnecting'; update(); }
-    finally { pollRunning = false; }
+    } catch { if (mode !== 'holding' && mode !== 'stopped') mode = 'reconnecting'; joinTrouble = true; update(); }
+    finally {
+      pollRunning = false;
+      // Ask to join pressed during an earlier poll is sent at once rather than on the next tick.
+      if (pollAgain) { pollAgain = false; poll(); }
+    }
   }
   window.addEventListener('online', poll);
   window.addEventListener('pagehide', closeReader);

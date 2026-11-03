@@ -141,7 +141,7 @@ final class PresenceChannelTests: XCTestCase {
         // Under approval, participants need admission first.
         func admitted(_ name: String) async throws -> (PresenceSocket, Int) {
             var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/s/\(token)/join")!)
-            request.httpMethod = "POST"; request.httpBody = try JSONSerialization.data(withJSONObject: ["name": name])
+            request.httpMethod = "POST"; request.httpBody = try JSONSerialization.data(withJSONObject: ["name": name, "ask": true])
             let (data, _) = try await URLSession.shared.data(for: request)
             let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
             let pass = try XCTUnwrap(json["pass"] as? String), number = try XCTUnwrap(json["number"] as? Int)

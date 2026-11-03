@@ -26,7 +26,15 @@ final class ViewerAccessLedgerTests: XCTestCase {
     func testApprovalRequiresANameAndAnOperatorDecision() throws {
         var ledger = ViewerAccessLedger(); ledger.setApproval(true)
         guard case .nameRequired = ledger.join(pass: nil, name: nil, color: nil, mobile: false, local: false, now: now) else { return XCTFail() }
-        let request = try XCTUnwrap(joined(ledger.join(pass: nil, name: "Sam", color: .pink, mobile: false, local: false, now: now)))
+        // A name saved in the tab is sent without the viewer's request; it never asks on its own.
+        guard case .nameRequired = ledger.join(pass: nil, name: "Sam", color: nil, mobile: false, local: false, now: now) else {
+            return XCTFail("A saved name must not start a request without Ask to join")
+        }
+        XCTAssertTrue(ledger.activity(session: nil, now: now).isEmpty, "No request reaches the operator")
+        guard case .nameRequired = ledger.join(pass: nil, name: nil, asking: true, color: nil, mobile: false, local: false, now: now) else {
+            return XCTFail("Asking still needs a name")
+        }
+        let request = try XCTUnwrap(joined(ledger.join(pass: nil, name: "Sam", asking: true, color: .pink, mobile: false, local: false, now: now)))
         XCTAssertEqual(request.admission, .pending); XCTAssertFalse(request.mediaReady)
         XCTAssertTrue(ledger.readers.isEmpty, "A waiting request has no media credential")
         XCTAssertTrue(ledger.approve(number: request.number))
@@ -46,8 +54,8 @@ final class ViewerAccessLedgerTests: XCTestCase {
 
     func testRemovedAndDeclinedSessionsAreNeverSilentlyReadmitted() throws {
         var ledger = ViewerAccessLedger(); ledger.setApproval(true)
-        let a = try XCTUnwrap(joined(ledger.join(pass: nil, name: "A", color: nil, mobile: false, local: false, now: now)))
-        let b = try XCTUnwrap(joined(ledger.join(pass: nil, name: "B", color: nil, mobile: false, local: false, now: now)))
+        let a = try XCTUnwrap(joined(ledger.join(pass: nil, name: "A", asking: true, color: nil, mobile: false, local: false, now: now)))
+        let b = try XCTUnwrap(joined(ledger.join(pass: nil, name: "B", asking: true, color: nil, mobile: false, local: false, now: now)))
         ledger.approve(number: a.number); ledger.approve(number: b.number)
         let readerB = try XCTUnwrap(ledger.record(b.pass)?.reader)
         XCTAssertTrue(ledger.remove(number: a.number))
@@ -55,12 +63,12 @@ final class ViewerAccessLedgerTests: XCTestCase {
         let again = try XCTUnwrap(joined(ledger.join(pass: a.pass, name: "A", color: nil, mobile: false, local: false, now: now)))
         XCTAssertEqual(again.admission, .removed, "Reloading the same tab keeps the removal")
         XCTAssertFalse(ledger.approve(number: a.number))
-        let c = try XCTUnwrap(joined(ledger.join(pass: nil, name: "C", color: nil, mobile: false, local: false, now: now)))
+        let c = try XCTUnwrap(joined(ledger.join(pass: nil, name: "C", asking: true, color: nil, mobile: false, local: false, now: now)))
         XCTAssertTrue(ledger.decline(number: c.number))
         XCTAssertEqual(try XCTUnwrap(joined(ledger.join(pass: c.pass, name: "C", color: nil, mobile: false, local: false, now: now))).admission, .declined)
         // A forged or forgotten pass is a new request that the operator must decide.
         let forged = String(repeating: "ab", count: 24)
-        let fresh = try XCTUnwrap(joined(ledger.join(pass: forged, name: "A", color: nil, mobile: false, local: false, now: now)))
+        let fresh = try XCTUnwrap(joined(ledger.join(pass: forged, name: "A", asking: true, color: nil, mobile: false, local: false, now: now)))
         XCTAssertEqual(fresh.admission, .pending); XCTAssertNotEqual(fresh.pass, forged)
         // Turning approval off keeps refusals.
         ledger.setApproval(false)
@@ -82,14 +90,40 @@ final class ViewerAccessLedgerTests: XCTestCase {
         XCTAssertTrue(ledger.remove(number: a.number), "Now individually removable")
     }
 
+    func testRestoringAPassNeverSendsAFreshRequest() throws {
+        var ledger = ViewerAccessLedger(); ledger.setApproval(true)
+        let request = try XCTUnwrap(joined(ledger.join(pass: nil, name: "Sam", asking: true, color: nil, mobile: false, local: false, now: now)))
+        // A reload resumes the same request with its pass and no new ask.
+        let resumed = try XCTUnwrap(joined(ledger.join(pass: request.pass, name: "Sam", color: nil, mobile: false, local: false, now: now.addingTimeInterval(5))))
+        XCTAssertEqual(resumed.number, request.number); XCTAssertEqual(resumed.admission, .pending)
+        XCTAssertEqual(ledger.activity(session: nil, now: now.addingTimeInterval(5)).count, 1, "No duplicate request")
+        // A request that lapsed while its page was away is not silently replaced by a new one.
+        guard case .nameRequired = ledger.join(pass: request.pass, name: "Sam", color: nil, mobile: false, local: false,
+                                               now: now.addingTimeInterval(5 + ViewerAccessLedger.pendingFor + 1)) else {
+            return XCTFail("A lapsed request needs the viewer to ask again")
+        }
+    }
+
+    func testAnUnnamedSessionAdmittedBeforeApprovalMayNameItselfOnceThroughHeartbeats() throws {
+        var ledger = ViewerAccessLedger()
+        let a = try XCTUnwrap(joined(ledger.join(pass: nil, name: nil, color: nil, mobile: false, local: false, now: now)))
+        ledger.setApproval(true)
+        _ = ledger.heartbeat(a.pass, playing: true, health: .good, revision: 0, name: .some(nil), mobile: false, local: false, now: now)
+        XCTAssertNil(ledger.record(a.pass)?.name, "An empty label leaves the session unnamed")
+        _ = ledger.heartbeat(a.pass, playing: true, health: .good, revision: 0, name: .some("Ana"), mobile: false, local: false, now: now)
+        _ = ledger.heartbeat(a.pass, playing: true, health: .good, revision: 0, name: .some("Director"), mobile: false, local: false, now: now)
+        _ = ledger.heartbeat(a.pass, playing: true, health: .good, revision: 0, name: .some(nil), mobile: false, local: false, now: now)
+        XCTAssertEqual(ledger.record(a.pass)?.name, "Ana", "Under approval the first label is then fixed")
+    }
+
     func testRequestAndSessionCountsAreBounded() throws {
         var ledger = ViewerAccessLedger(); ledger.setApproval(true)
         for index in 0..<ViewerAccessLedger.maxPending {
-            XCTAssertNotNil(joined(ledger.join(pass: nil, name: "R\(index)", color: nil, mobile: false, local: false, now: now)))
+            XCTAssertNotNil(joined(ledger.join(pass: nil, name: "R\(index)", asking: true, color: nil, mobile: false, local: false, now: now)))
         }
-        guard case .full = ledger.join(pass: nil, name: "Extra", color: nil, mobile: false, local: false, now: now) else { return XCTFail() }
+        guard case .full = ledger.join(pass: nil, name: "Extra", asking: true, color: nil, mobile: false, local: false, now: now) else { return XCTFail() }
         // Unanswered requests lapse once their pages stop asking.
-        XCTAssertNotNil(joined(ledger.join(pass: nil, name: "Later", color: nil, mobile: false, local: false,
+        XCTAssertNotNil(joined(ledger.join(pass: nil, name: "Later", asking: true, color: nil, mobile: false, local: false,
                                            now: now.addingTimeInterval(ViewerAccessLedger.pendingFor + 1))))
 
         var open = ViewerAccessLedger()
@@ -101,8 +135,8 @@ final class ViewerAccessLedgerTests: XCTestCase {
 
     func testOperatorRowsUseServerNumbersNotPasses() throws {
         var ledger = ViewerAccessLedger(); ledger.setApproval(true)
-        let a = try XCTUnwrap(joined(ledger.join(pass: nil, name: "Sam", color: nil, mobile: false, local: true, now: now)))
-        _ = ledger.join(pass: nil, name: "Sam", color: nil, mobile: false, local: false, now: now)
+        let a = try XCTUnwrap(joined(ledger.join(pass: nil, name: "Sam", asking: true, color: nil, mobile: false, local: true, now: now)))
+        _ = ledger.join(pass: nil, name: "Sam", asking: true, color: nil, mobile: false, local: false, now: now)
         let rows = ledger.activity(session: nil, now: now)
         XCTAssertEqual(rows.map(\.id), ["viewer-1", "viewer-2"])
         XCTAssertFalse(rows.contains { $0.id.contains(a.pass) })
@@ -137,8 +171,10 @@ final class ViewerAdmissionGatewayTests: XCTestCase {
         let (data, response) = try await URLSession.shared.data(for: request)
         return ((response as! HTTPURLResponse).statusCode, (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:])
     }
-    private func join(_ name: String? = nil, pass: String? = nil) async throws -> (status: Int, json: [String: Any]) {
+    /// Pages send `ask` only when the viewer presses Ask to join; here that accompanies every name.
+    private func join(_ name: String? = nil, pass: String? = nil, ask: Bool? = nil) async throws -> (status: Int, json: [String: Any]) {
         var body: [String: Any] = ["mobile": false]; body["name"] = name; body["pass"] = pass
+        body["ask"] = ask ?? (name != nil)
         return try await call("join", body)
     }
 
@@ -202,6 +238,34 @@ final class ViewerAdmissionGatewayTests: XCTestCase {
         XCTAssertEqual(awaited8, "unknown",
                        "A client-chosen ID is not an identity")
         XCTAssertEqual(host.viewers.map(\.number), [2])
+    }
+
+    func testUnderApprovalOnlyAnExplicitAskSendsARequestAndNamesStayOutOfPublicState() async throws {
+        host.setAccess(approval: true, pointers: false)
+        let saved = try await join("Sam", ask: false)
+        XCTAssertEqual(saved.status, 400, "A name restored from the tab does not ask on its own")
+        XCTAssertEqual(saved.json["error"] as? String, "name")
+        XCTAssertTrue(host.viewers.isEmpty, "Nothing reaches the operator before Ask to join")
+        let asked = try await join("Sam", ask: true)
+        let pass = try XCTUnwrap(asked.json["pass"] as? String)
+        XCTAssertEqual(asked.json["admission"] as? String, "pending"); XCTAssertEqual(asked.json["number"] as? Int, 1)
+        XCTAssertNil(asked.json["user"]); XCTAssertNil(asked.json["whepURL"])
+        let resumed = try await join(pass: pass, ask: false)
+        XCTAssertEqual(resumed.json["number"] as? Int, 1, "A reload resumes the request")
+        XCTAssertEqual(host.viewers.count, 1)
+        let other = try await join("Sam", ask: true)
+        XCTAssertEqual(other.json["number"] as? Int, 2, "An equal name is a separate, numbered request")
+        let state = try await call("state.json")
+        XCTAssertEqual(state.json["approval"] as? Bool, true)
+        let stateText = String(decoding: try JSONSerialization.data(withJSONObject: state.json), as: UTF8.self)
+        XCTAssertFalse(stateText.contains("Sam"), "Public session state names no viewer")
+        let pending = try await call("config.json", pass: pass)
+        XCTAssertEqual(pending.status, 403); XCTAssertNil(pending.json["pass"])
+        host.setAccess(approval: false, pointers: false)
+        let opened = try await join(pass: pass, ask: false)
+        XCTAssertEqual(opened.json["admission"] as? String, "admitted", "Turning approval off admits a waiting page")
+        let unnamed = try await join(ask: false)
+        XCTAssertEqual(unnamed.json["admission"] as? String, "admitted", "Ordinary links need no name or ask")
     }
 
     func testANewViewingLinkForgetsEveryAdmission() async throws {
