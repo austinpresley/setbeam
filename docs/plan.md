@@ -190,3 +190,19 @@ On 2026-10-28 Austin approved review items 1 and 3–7, requested full send and 
 Austin requested a native port of the Pyro H support in the original Holly Share launcher, using current Setbeam standards. Restore bounded Wi-Fi-router discovery for the known `/live` endpoint, a one-click chooser connection and exact-endpoint private restoration. Reuse the existing RTSP adapter and supervised local/audience media path. Never open a streaming connection during discovery, probe while a network source is monitored, switch Wi-Fi, or infer model/physical identity from RTSP alone.
 
 Acceptance uses parser/subnet/cancellation tests, a simulated H.264/AAC endpoint with actual bundled-media decoding, one upstream reader, native main/floating and browser playback, silent Hold and replaced outgoing video, source-loss recovery preserving Hold and viewer identity, Stop preserving local monitoring, private saved restoration, normal Quit cleanup, the complete local check script, and package/resource/signature audits. Physical Pyro H compatibility requires a separate recorded hardware test. The original launcher and its MIT attribution remain preserved.
+
+## Build 23 customizable local viewing address
+
+Austin requested S-006 with an editable local address in Settings, implemented by
+Claude Opus 5.5 on high and reviewed with a GPT-6.1 Sol loop on high. The local
+address is offered only while sharing on the selected viewing interface, with
+collision numbering, effective-name status, and an IP fallback. The private
+per-session code, viewer admission, same-origin pointers, Hold, Stop, and local
+monitoring remain intact. No global Mac rename or privileged network change is
+required.
+
+One Sol round approved the behavior without blocking findings. The final full
+implementation check and final packaged local-address probe pass. Physical
+second-device, mobile, actual DHCP-change, and multicast-blocking-network checks
+remain separate. See [local address verification](verification-friendly-address-2026-11-02.md)
+for exact passing and intermittent failing evidence and the deferred cleanup nit.
