@@ -15,7 +15,14 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
     @Published var setup: SourceSetup?
     @Published var provenSetup: SourceSetup?
     @Published var preview: PlaybackDescriptor?
+    /// The IP address link. Join codes always use it, and it remains the fallback for every invitation.
     @Published var viewerURL: URL?
+    /// Whether to publish a readable `.local` name for the viewing address while sharing.
+    @Published private(set) var localAddressEnabled: Bool
+    /// The operator's chosen label. The effective name can differ after a conflict.
+    @Published private(set) var localAddressLabel: String
+    @Published private(set) var localAddress: LocalAddressState = .stopped
+    private let localAddressPublisher = LocalAddressPublisher()
     @Published var viewers: [ViewerActivity] = []
     @Published var busy = false
     @Published private var preparingConnection = false
@@ -55,6 +62,7 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
     @Published var nativePreviewPlaying = false
     @Published var setupConfirmed = false
     @Published var copiedLink = false
+    @Published var copiedIPLink = false
     @Published var lastFrameAt: Date?
     private var pendingScreenPermission: (setup: SourceSetup, remember: Bool)?
     private var screenPermissionDenied = false
@@ -139,6 +147,12 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
         transmitterRejoin = integration ? false : defaults.bool(forKey: "transmitterWiFiRejoin")
         viewerApproval = integration ? false : defaults.bool(forKey: "viewerApproval")
         sharedPointers = integration ? false : defaults.bool(forKey: "sharedPointers")
+        localAddressEnabled = defaults.object(forKey: "localAddressEnabled") as? Bool ?? true
+        localAddressLabel = defaults.string(forKey: "localAddressName").flatMap { try? LocalAddressName.validated($0).get() } ?? LocalAddressName.defaultLabel
+        localAddressPublisher.onChange = { [weak self] state in
+            // Deliver in order; the publisher reports each change once on its own queue.
+            DispatchQueue.main.async { MainActor.assumeIsolated { self?.localAddressChanged(state) } }
+        }
     }
 
     var sourceLabel: String {
@@ -501,6 +515,7 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
             localPlayer.stop(); audiencePlayer.stop(); audiencePreviewPlaying = false
             if !changingSource {
                 gateway.stop(); gatewayPort = nil; viewerURL = nil; viewers = []; sharingPower.hold(false)
+                localAddressPublisher.stop()
                 currentRuntime = nil
             }
             preview = nil; nativePreviewPlaying = false; sourceHasAudio = false; audienceHasAudio = false; testSoundConfirmed = false
@@ -636,13 +651,14 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
             if gatewayPort == nil { gatewayPort = try await gateway.start(address: viewerAddress) }
             guard !shuttingDown else { busy = false; return }
             if let port = gatewayPort, let snapshot = currentRuntime { viewerURL = URL(string: "http://\(viewerAddress):\(port)/s/\(snapshot.guestToken)/") }
+            updateLocalAddress()
             let audienceURL = await runtime.localRTSP("live")
             guard !shuttingDown else { busy = false; return }
             try audiencePlayer.start(url: audienceURL)
             networkChanged = false; sharingPower.hold(true)
         } catch {
             guard !shuttingDown else { busy = false; return }
-            gateway.stop(); gatewayPort = nil; viewerURL = nil; await runtime.stopSharing(); apply(await runtime.snapshot()); outgoingTransition.reset(); audiencePlayer.stop(); self.error = "Sharing could not start. Check the viewing network and try again."; lastRuntimeProblem = Redaction.text(error.localizedDescription)
+            gateway.stop(); gatewayPort = nil; viewerURL = nil; localAddressPublisher.stop(); await runtime.stopSharing(); apply(await runtime.snapshot()); outgoingTransition.reset(); audiencePlayer.stop(); self.error = "Sharing could not start. Check the viewing network and try again."; lastRuntimeProblem = Redaction.text(error.localizedDescription)
         }
         busy = false; writeIntegrationSession()
     }
@@ -676,6 +692,8 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
     }
     private func endSharing() async {
         sharingPower.hold(false)
+        // The name ends with the viewing link. Stop rotates the link, so old links stay expired.
+        localAddressPublisher.stop()
         outgoingTransition.reset()
         audiencePlayer.stop(); audiencePreviewPlaying = false; audienceHasAudio = false; testSoundConfirmed = false
         await runtime.stopSharing()
@@ -715,9 +733,10 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
                 publishGatewayState()
                 viewerURL = URL(string: "http://\(address):\(port)/s/\(snapshot.guestToken)/")
                 networkChanged = true
+                updateLocalAddress()
                 guard !shuttingDown else { return }
                 _ = try await gateway.start(address: address, port: port)
-            } else { gateway.stop(); gatewayPort = nil; viewerURL = nil; viewers = [] }
+            } else { gateway.stop(); gatewayPort = nil; viewerURL = nil; viewers = []; localAddressPublisher.stop() }
             viewerNetworkNeedsUpdate = false
         }
         catch { lastRuntimeProblem = Redaction.text(error.localizedDescription) }
@@ -794,9 +813,69 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
         updateDisplayWake()
         if !integration && !shuttingDown { defaults.set(visible, forKey: "floatingVisible") }
     }
+    /// Copies the local-address link when that name is active, otherwise the IP address link.
     func copyLink() {
-        guard let viewerURL else { return }; NSPasteboard.general.clearContents(); NSPasteboard.general.setString(viewerURL.absoluteString, forType: .string)
+        guard let url = invitationURL else { return }; NSPasteboard.general.clearContents(); NSPasteboard.general.setString(url.absoluteString, forType: .string)
         copiedLink = true; Task { try? await Task.sleep(nanoseconds: 2_000_000_000); copiedLink = false }
+    }
+    func copyIPLink() {
+        guard let viewerURL else { return }; NSPasteboard.general.clearContents(); NSPasteboard.general.setString(viewerURL.absoluteString, forType: .string)
+        copiedIPLink = true; Task { try? await Task.sleep(nanoseconds: 2_000_000_000); copiedIPLink = false }
+    }
+    /// The same link at the active `.local` name. The private path and port are unchanged.
+    var localViewerURL: URL? {
+        guard state.sharing, let label = localAddress.activeLabel, let viewerURL,
+              var parts = URLComponents(url: viewerURL, resolvingAgainstBaseURL: false) else { return nil }
+        parts.host = LocalAddressName.host(label)
+        return parts.url
+    }
+    var invitationURL: URL? { localViewerURL ?? viewerURL }
+    var copyLinkHelp: String {
+        guard let host = localViewerURL?.host else { return "Copy the viewing link. \(viewingInstructions)" }
+        return "Copy the \(host) viewing link. Join codes use the IP address."
+    }
+    func setLocalAddress(enabled: Bool, label: String) {
+        guard case .success(let valid) = LocalAddressName.validated(label) else { return }
+        guard enabled != localAddressEnabled || valid != localAddressLabel else { return }
+        localAddressEnabled = enabled; localAddressLabel = valid
+        if !integration { defaults.set(enabled, forKey: "localAddressEnabled"); defaults.set(valid, forKey: "localAddressName") }
+        SessionLog.shared.record("local.address.setting", ["enabled": enabled])
+        updateLocalAddress()
+    }
+    /// Publishes only while sharing on a network viewers can join, on that viewing interface and address.
+    private func updateLocalAddress() {
+        guard !shuttingDown, state.sharing, gatewayPort != nil, localAddressEnabled, canInviteOtherDevices, viewerInterface != "lo0" else {
+            localAddressPublisher.stop(); return
+        }
+        localAddressPublisher.publish(label: localAddressLabel, scope: .interface(viewerInterface), address: viewerAddress)
+    }
+    func localAddressChanged(_ value: LocalAddressState) {
+        localAddress = value
+        let detail: [String: Any]
+        switch value {
+        case .stopped: detail = ["state": "stopped"]
+        case .checking(let label): detail = ["state": "checking", "renamed": label != localAddressLabel]
+        case .active(let label): detail = ["state": "active", "renamed": label != localAddressLabel]
+        case .unavailable(let problem): detail = ["state": "unavailable", "problem": String(describing: problem)]
+        }
+        SessionLog.shared.record("local.address", detail)
+        writeIntegrationSession()
+    }
+    /// What viewers can use, in the operator's words. Shown in Settings and invitations.
+    var localAddressStatus: (text: String, attention: Bool) {
+        let requested = LocalAddressName.host(localAddressLabel)
+        if !localAddressEnabled { return ("Off. Invitations use the IP address.", false) }
+        if !canInviteOtherDevices { return ("Choose a viewing network to use \(requested).", false) }
+        switch localAddress {
+        case .stopped where state.sharing: return ("Starting \(requested)…", false)
+        case .stopped: return ("Viewers can use \(requested) while you share.", false)
+        case .checking(let label): return ("Checking \(LocalAddressName.host(label)) on this network…", false)
+        case .active(let label) where label == localAddressLabel: return ("Viewers on this network can open \(requested).", false)
+        case .active(let label): return ("\(requested) is in use on this network, so viewers use \(LocalAddressName.host(label)).", true)
+        case .unavailable(.inUse): return ("\(requested) and its numbered alternatives are in use. Invitations use the IP address.", true)
+        case .unavailable(.interface): return ("The viewing network isn't ready for \(requested). Invitations use the IP address.", true)
+        case .unavailable(.service): return ("\(requested) isn't available right now. Invitations use the IP address while Setbeam retries.", true)
+        }
     }
     func loadPrivateSettings() {
         savedNetworkURL = activeNetworkURL ?? provenSetup.flatMap { $0.kind == .network ? SecureSettings.read($0.credentialAccount) : nil } ?? ""
@@ -824,6 +903,7 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
             data["nativePreviewPlaying"] = nativePreviewPlaying; data["nativePreviewProblem"] = nativePreviewProblem.map(Redaction.text) ?? ""
             data["lastRuntimeProblem"] = Redaction.text(lastRuntimeProblem); data["setupConfirmed"] = setupConfirmed
             data["connectionStage"] = connectionStage?.rawValue ?? ""
+            data["localAddress"] = localAddressStatus.text
             guard let encoded = try? JSONSerialization.data(withJSONObject: data, options: [.prettyPrinted, .sortedKeys]), let text = String(data: encoded, encoding: .utf8) else { return }
             NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string); diagnosticCopied = true
         }
@@ -852,13 +932,14 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
     }
     func shutdown() async {
         shuttingDown = true; pollTask?.cancel(); runtimeUpdates?.cancel(); sourceBrowser.stop(); observers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
-        floating.close(); localPlayer.stop(); audiencePlayer.stop(); gateway.stop(); sharingPower.hold(false); displayPower.hold(false)
+        floating.close(); localPlayer.stop(); audiencePlayer.stop(); gateway.stop(); localAddressPublisher.stop(); sharingPower.hold(false); displayPower.hold(false)
         SessionLog.shared.record("app.quit", ["sharing": state.sharing])
         await runtime.shutdown(); apply(await runtime.snapshot())
     }
     private func writeIntegrationSession() {
         guard let viewerURL else { return }
-        writeFile(option: "--session-file", value: ["viewerURL": viewerURL.absoluteString, "pid": ProcessInfo.processInfo.processIdentifier])
+        writeFile(option: "--session-file", value: ["viewerURL": viewerURL.absoluteString, "localURL": localViewerURL?.absoluteString ?? "",
+            "pid": ProcessInfo.processInfo.processIdentifier])
     }
     private func writeExperienceState() {
         writeFile(option: "--experience-file", value: ["monitoring": state.monitoring, "sharing": state.sharing, "holding": state.holding,
@@ -870,7 +951,9 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
             "audiencePreviewPlaying": audiencePreviewPlaying, "sourceHasAudio": sourceHasAudio, "audienceHasAudio": audienceHasAudio,
             "otherDeviceViewers": otherDeviceViewers, "setupCheckPassed": setupCheck.passed, "previousSource": previousSourceName ?? "",
             "viewerApproval": viewerApproval, "sharedPointers": sharedPointers, "viewersPending": pendingViewers.count,
-            "viewersPointing": pointingViewers, "nativePointers": pointerPresence.items.count])
+            "viewersPointing": pointingViewers, "nativePointers": pointerPresence.items.count,
+            "localAddressEnabled": localAddressEnabled, "localAddressName": localAddressLabel,
+            "localAddressActive": localAddress.activeLabel ?? "", "localAddressStatus": localAddressStatus.text])
     }
     private func writeFile(option: String, value: [String: Any]) {
         let args = CommandLine.arguments

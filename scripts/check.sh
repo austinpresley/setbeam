@@ -19,6 +19,8 @@ if [[ -x Vendor/bin/ffmpeg && -x Vendor/bin/mediamtx ]]; then
   cat build/logs/source-recovery.log
   swift run --skip-build SetbeamProbe --access-test --tools "${SETBEAM_TEST_TOOLS:-$ROOT/Vendor/bin}" --fixtures "${SETBEAM_TEST_FIXTURES:-$ROOT/Fixtures}" > build/logs/viewer-access.log 2>&1 || { cat build/logs/viewer-access.log; exit 1; }
   cat build/logs/viewer-access.log
+  swift run --skip-build SetbeamProbe --local-address-test --tools "${SETBEAM_TEST_TOOLS:-$ROOT/Vendor/bin}" --fixtures "${SETBEAM_TEST_FIXTURES:-$ROOT/Fixtures}" > build/logs/local-address.log 2>&1 || { cat build/logs/local-address.log; exit 1; }
+  cat build/logs/local-address.log
   swift run --skip-build SetbeamProbe --safety-test --tools "${SETBEAM_TEST_TOOLS:-$ROOT/Vendor/bin}" --fixtures "${SETBEAM_TEST_FIXTURES:-$ROOT/Fixtures}" > build/logs/source-switching.log 2>&1 || { cat build/logs/source-switching.log; exit 1; }
   cat build/logs/source-switching.log
   swift run --skip-build SetbeamProbe --format-test --tools "${SETBEAM_TEST_TOOLS:-$ROOT/Vendor/bin}" --fixtures "${SETBEAM_TEST_FIXTURES:-$ROOT/Fixtures}" > build/logs/media-formats.log 2>&1 || { cat build/logs/media-formats.log; exit 1; }

@@ -24,6 +24,9 @@ import SetbeamCore
             if values.contains("--frame-rate-test") {
                 try await testFrameRates(tools: tools, fixtures: fixtures, output: output); return
             }
+            if values.contains("--local-address-test") {
+                try await testLocalAddress(tools: tools, fixtures: fixtures, output: output); return
+            }
             if values.contains("--access-test") {
                 try await testViewerAccess(tools: tools, fixtures: fixtures, output: output); return
             }

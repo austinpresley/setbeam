@@ -14,7 +14,9 @@ struct MonitorJoinCodesPanel: View {
         } else {
             GeometryReader { geometry in
                 let sectionHeight = (geometry.size.height - 16) / 2
-                let codeSize = floor(min(Self.width, max(64, sectionHeight - 74)))
+                // The local address adds one caption line under Copy viewing link.
+                let linkHeight: CGFloat = model.localAddressEnabled ? 40 : 28
+                let codeSize = floor(min(Self.width, max(64, sectionHeight - 46 - linkHeight)))
                 VStack(spacing: 16) {
                     VStack(spacing: 8) {
                         Text("1. Join Wi-Fi").font(.headline)
@@ -48,11 +50,21 @@ struct MonitorJoinCodesPanel: View {
                                 Button(action: model.copyLink) {
                                     Label(model.copiedLink ? "Link copied" : "Copy viewing link", systemImage: model.copiedLink ? "checkmark" : "link")
                                 }.buttonStyle(.link).font(.caption).disabled(model.viewerURL == nil)
-                                    .help(model.viewingInstructions)
-                            }.frame(height: 28)
+                                    .help(model.copyLinkHelp)
+                                    .contextMenu {
+                                        Button("Copy IP Address Link") { model.copyIPLink() }
+                                    }
+                                if model.localAddressEnabled {
+                                    let status = model.localAddressStatus
+                                    Text(model.localViewerURL?.host ?? (status.attention ? "Using IP address" : "IP address for now"))
+                                        .font(.caption2).foregroundStyle(status.attention ? .orange : .secondary)
+                                        .lineLimit(1).truncationMode(.middle)
+                                        .help(status.text)
+                                }
+                            }.frame(height: linkHeight)
                         } else {
                             Text("Start sharing to invite viewers").font(.caption).foregroundStyle(.secondary)
-                                .frame(height: 28)
+                                .frame(height: linkHeight)
                         }
                     }.frame(maxWidth: .infinity).frame(height: sectionHeight)
                 }

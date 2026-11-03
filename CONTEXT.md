@@ -42,3 +42,7 @@ _Avoid_: Account, login, or verified identity; names are labels chosen by viewer
 **Shared pointer**:
 An admitted viewer's opt-in, named, colored pointer over the shared picture, seen by the operator and other participating viewers. It is presence only and grants no control.
 _Avoid_: Remote control, annotation, or cursor highlighting of the operator's own cursor.
+
+**Local address**:
+A readable name ending in `.local`, such as `setbeam.local`, that viewers on the same network can use in place of the IP address in the viewing link. It exists only while sharing, keeps the link's private code, and is published by this Mac without an internet service.
+_Avoid_: Hostname, domain, Bonjour name, or a permanent link.

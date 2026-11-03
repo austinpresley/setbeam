@@ -239,6 +239,8 @@ struct AdvancedView: View {
     @State private var remember = true
     @State private var showStream = false
     @State private var validation: String?
+    @State private var localEnabled: Bool
+    @State private var localLabel: String
     init(model: SessionModel) {
         self.model = model
         _address = State(initialValue: model.savedNetworkURL); _name = State(initialValue: model.setup?.name ?? "Network source")
@@ -247,6 +249,11 @@ struct AdvancedView: View {
         _password = State(initialValue: model.wifiPassword); _audio = State(initialValue: model.setup?.audioID ?? "")
         _rejoin = State(initialValue: model.transmitterRejoin); _rejoinPassword = State(initialValue: model.transmitterWiFiPassword)
         _showStream = State(initialValue: model.setup?.kind == .network)
+        _localEnabled = State(initialValue: model.localAddressEnabled); _localLabel = State(initialValue: model.localAddressLabel)
+    }
+    private var localProblem: LocalAddressName.Problem? {
+        guard localEnabled, case .failure(let problem) = LocalAddressName.validated(localLabel) else { return nil }
+        return problem
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -296,6 +303,20 @@ struct AdvancedView: View {
                         TextField("Wi-Fi name", text: $ssid, prompt: Text("Optional"))
                         SecureField("Wi-Fi password", text: $password)
                         Text("Wi-Fi details create a join code. Changing the viewer network stops sharing and keeps local monitoring running.").font(.caption).foregroundStyle(.secondary)
+                        Toggle("Offer a local address", isOn: $localEnabled)
+                        if localEnabled {
+                            LabeledContent("Local address") {
+                                HStack(spacing: 4) {
+                                    TextField("Local address", text: $localLabel, prompt: Text(LocalAddressName.defaultLabel))
+                                        .labelsHidden().multilineTextAlignment(.trailing).frame(width: 180)
+                                        .accessibilityLabel("Local address name")
+                                    Text(".local").foregroundStyle(.secondary).accessibilityHidden(true)
+                                }
+                            }
+                            localAddressNote
+                        }
+                        Text("A readable name for the viewing link on this network, with no internet service. It works only while you share and keeps the link's private code. Some devices and networks can't open .local names, so join codes use the IP address.")
+                            .font(.caption).foregroundStyle(.secondary)
                     }.id(AdvancedSection.network)
                     Section("Diagnostics") {
                         Button(model.diagnosticCopied ? "Diagnostics copied" : "Copy diagnostics") { model.diagnostics() }
@@ -309,9 +330,22 @@ struct AdvancedView: View {
             if let validation { Text(validation).font(.caption).foregroundStyle(.orange) }
             HStack {
                 Button("Cancel") { model.sheet = nil }.keyboardShortcut(.cancelAction)
-                Spacer(); Button("Save") { save() }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
+                Spacer(); Button("Save") { save() }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction).disabled(localProblem != nil)
             }
         }.padding(24).frame(width: 570)
+    }
+    /// The validation problem, an unsaved change, or the effective name in use now.
+    @ViewBuilder private var localAddressNote: some View {
+        if let localProblem {
+            Label(localProblem.message, systemImage: "exclamationmark.circle").font(.caption).foregroundStyle(.orange)
+        } else if let draft = try? LocalAddressName.validated(localLabel).get(), draft != model.localAddressLabel || !model.localAddressEnabled {
+            Text(model.state.sharing ? "Save to use \(LocalAddressName.host(draft)). Viewers who opened the current name need the new link." : "Save to use \(LocalAddressName.host(draft)) when you share.")
+                .font(.caption).foregroundStyle(.secondary)
+        } else {
+            let status = model.localAddressStatus
+            Label(status.text.unbrokenHyphens, systemImage: status.attention ? "exclamationmark.triangle" : model.localAddress.activeLabel != nil ? "checkmark.circle" : "network")
+                .font(.caption).foregroundStyle(status.attention ? .orange : .secondary)
+        }
     }
     private func connectNetwork() {
         do { _ = try VideoSource.network(address).validated() }
@@ -327,6 +361,7 @@ struct AdvancedView: View {
             model.setTransmitterRejoin(rejoin, password: rejoinPassword)
         }
         if network != model.networkChoice || ssid != model.wifiSSID || password != model.wifiPassword { model.saveViewingSettings(network: network, ssid: ssid, password: password) }
+        model.setLocalAddress(enabled: localEnabled, label: localEnabled ? localLabel : model.localAddressLabel)
         if var setup = model.setup, setup.kind == .capture, setup.audioID != (audio.isEmpty ? nil : audio) {
             setup.audioID = audio.isEmpty ? nil : audio; setup.name = name
             model.connect(setup, remember: remember)
@@ -399,14 +434,16 @@ struct JoinCodesView: View {
                 }.frame(maxWidth: .infinity)
                 Text(model.viewingInstructions)
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                if model.localAddressEnabled { InvitationAddressView(model: model) }
                 Button(model.wifiSSID.isEmpty ? "Add a Wi-Fi join code" : "Edit viewing Wi-Fi") { model.loadPrivateSettings(); model.sheet = .viewingWiFi }.buttonStyle(.link)
                 Text("\(model.openedViewers) opened · \(model.verifiedViewers) playing").font(.caption).foregroundStyle(.secondary)
             } else { Text("Start sharing to invite viewers. Your local preview stays private.").foregroundStyle(.secondary) }
             HStack {
                 Button(model.copiedLink ? "Link copied" : "Copy viewing link") { model.copyLink() }.disabled(!model.state.sharing || !model.canInviteOtherDevices)
+                    .help(model.copyLinkHelp)
                 Spacer(); Button("Done") { model.sheet = nil }.keyboardShortcut(.defaultAction)
             }
-        }.padding(28).frame(width: model.wifiSSID.isEmpty ? 355 : 480)
+        }.padding(28).frame(width: model.wifiSSID.isEmpty ? 380 : 480)
     }
 }
 
@@ -477,4 +514,32 @@ struct AboutView: View {
             HStack { Button("Open source notices") { NSWorkspace.shared.open(AppAssets.root.appendingPathComponent("Licenses")) }; Spacer(); Button("Done") { model.sheet = nil }.keyboardShortcut(.defaultAction) }
         }.padding(28).frame(width: 420)
     }
+}
+
+/// The name the viewing link uses now, with the IP address link as an explicit fallback.
+struct InvitationAddressView: View {
+    @ObservedObject var model: SessionModel
+    var body: some View {
+        let status = model.localAddressStatus
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: status.attention ? "exclamationmark.triangle" : "link").foregroundStyle(status.attention ? .orange : .secondary)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(model.localViewerURL?.host ?? "IP address \(model.viewerAddress)").font(.callout.weight(.medium)).textSelection(.enabled)
+                    Text(model.localViewerURL == nil || status.attention ? status.text.unbrokenHyphens : "Copy viewing link uses this name. The link still includes its private code.")
+                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }.accessibilityElement(children: .combine)
+                if model.localViewerURL != nil {
+                    Button(model.copiedIPLink ? "IP address link copied" : "Copy IP address link") { model.copyIPLink() }.buttonStyle(.link).font(.caption)
+                        .help("Copy the link with this Mac's IP address, for devices that can't open .local names")
+                }
+            }
+        }
+    }
+}
+
+extension String {
+    /// Keeps names such as `stage-a-2.local` on one line inside wrapped sentences.
+    var unbrokenHyphens: String { replacingOccurrences(of: "-", with: "\u{2011}") }
 }
