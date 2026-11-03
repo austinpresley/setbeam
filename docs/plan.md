@@ -206,3 +206,17 @@ implementation check and final packaged local-address probe pass. Physical
 second-device, mobile, actual DHCP-change, and multicast-blocking-network checks
 remain separate. See [local address verification](verification-friendly-address-2026-11-02.md)
 for exact passing and intermittent failing evidence and the deferred cleanup nit.
+
+## Build 24 completed viewer name and approval joining
+
+Austin requested completion of S-002 with Opus 5.5 on high and a Sol 6.1 review
+loop on high. New visitors under approval review a name and explicitly ask before
+a request is created. A dedicated join card shows waiting and the operator's
+decision; restored passes keep their state, optional naming remains available
+with approval off, and retired links stay unavailable after retry.
+
+GPT-6.1 Sol approved in round 2 after an expired-link regression fix with two
+checks proven to fail before the fix. The final full local suite passes. Physical
+phone/tablet/second-computer, real on-screen keyboard, and spoken accessibility
+qualification remain open. See [viewer join verification](verification-viewer-join-2026-11-02.md)
+for the review ledger, exact failures, local evidence, and packaged handoff.

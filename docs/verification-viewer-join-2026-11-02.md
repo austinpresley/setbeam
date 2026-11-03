@@ -177,3 +177,16 @@ No packaged source changed after the rebuild. Results: `build/viewer-join/round2
 The parent ran `scripts/build-app.sh` locally after approval. All 37 candidate app files match the fresh current-source rebuild byte for byte. All 80 inputs in the frozen source manifest and all seven viewer assets match this checkout. Build 24 and strict recursive signatures pass. The executable SHA-256 remains `431628cfe437aef941aa97049afeee6653a3039dab2c69f31611d18945279585`. Results are in `build/viewer-join-parent/package-confirm.txt`.
 
 Parent visual inspection confirms readable desktop and narrow-phone joining, waiting, declined, removed, and unavailable states. The 150% text example wraps its submit button beneath the field without horizontal overflow; content remains vertically scrollable. Expired-link captures show the form hidden before and after Try again. These are viewport emulations on this Mac, not physical-device or spoken accessibility results.
+
+
+## Parent packaged runtime and installation
+
+- Reviewed source commit: `12404e77d3b0c8d6b813f0383993c3e5cd950fd9`. No behavior code changed after Sol's approval. The parent ran the release `SetbeamProbe --access-test` against the frozen distribution's own helpers and fixtures; all seven checks pass. This exercises real gateway requests, admitted/refused RTSP and WHEP access, removal preserving another reader, Hold access, and Stop preserving local monitoring. Log: `build/viewer-join-parent/packaged-access.log`. The complete post-fix suite already passed, so it was not repeated after the unchanged package check.
+- Archive: `dist/Setbeam-0.2.0-build24-macOS-arm64.zip`, SHA-256 `a5b886f5106b028640fdf21ad372b5e3f06efcb347961e5f10506bd17dc1ed0d`. ZIP integrity, every extracted file, and strict extracted-app signatures pass. It includes the app, `BUILD-NOTES.md`, `APP-SHA256.txt` for 37 app files, and `SOURCE-MANIFEST.txt` for 134 source/test/resource/build inputs. No QA sessions, preferences, live links, logs, or runtime directories are included.
+- Installed at `~/Applications/Setbeam.app`, replacing the idle Build 23. All 37 installed app files match the archive, and strict recursive signatures pass. The previous build is retained at `~/Applications/.Setbeam-before-s002-build24.app`. The installed app was not launched against Austin's saved source; isolated candidate QA supplies the runtime evidence.
+- S-002 is recorded as implementation complete, with physical phone/tablet/second-computer, real on-screen keyboard, and spoken accessibility checks still open. Other backlog stories were not completed by this change.
+- Preexisting plan/status/backlog/research notes were preserved. Only the feature's own plan/status additions are staged; the previously untracked backlog remains untracked with its S-002 entry updated. No source checkout or unrelated notes are part of the delivery.
+
+## Private delivery
+
+Delivery `20261103T041908Z--5f5cf49f3d6e` completed with remote verification through `agent-deliver`. The finished Build 24 archive and SHA-256 file are in Austin Deliveries / Setbeam / Build 24 viewer joining: https://drive.google.com/drive/folders/1ZVZBVtLMibCOPFqz-KDjx09AfHS0ZtBE. Only those two finished files were uploaded.
