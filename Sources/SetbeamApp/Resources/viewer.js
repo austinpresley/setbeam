@@ -18,8 +18,14 @@
   let heartbeatAt = 0, reportedPlaying;
   let viewerName = '', pointersOn = false;
   try { viewerName = sessionStorage.getItem('setbeam-viewer-name') || ''; } catch { /* Naming also works without storage. */ }
-  const nameInput = document.getElementById('viewer-name');
-  nameInput.value = viewerName;
+  // One identity, a name and a color, labels this session for the operator and for shared pointers.
+  // It is chosen once on the join card and saved only in this tab. Names are labels, not verified.
+  const palette = globalThis.SetbeamPointers?.COLORS || {blue: ['#1a5ed9', '#fff']};
+  const colorNames = Object.keys(palette);
+  let viewerColor;
+  try { viewerColor = sessionStorage.getItem('setbeam-pointer-color'); } catch {}
+  if (!Object.hasOwn(palette, viewerColor)) viewerColor = colorNames[Math.floor(Math.random() * colorNames.length)];
+  let draftColor = viewerColor, editing = false;
   let healthGeneration = 0, statsPrevious, statsPending = false, healthQuality = 'checking', healthAt = 0, badSamples = 0, goodSamples = 0;
   let keepAwake = false, wakeLock, wakeLockPending = false;
   const id = globalThis.crypto?.randomUUID?.() || Math.random().toString(36).slice(2) + Date.now().toString(36);
@@ -29,13 +35,16 @@
   let pass, access = 'joining', approval = false, mediaReady = false, joinRunning = false;
   // Under approval a new request is sent only when the viewer presses Ask to join. A saved name
   // prefills the form; restoring a pass resumes its request or decision without asking again.
-  let asking = false, pollAgain = false, joinNote = '', joinTrouble = false, joinNumber, joinDirty = false, shownJoin, lockShown = false;
+  let asking = false, pollAgain = false, joinNote = '', joinTrouble = false, joinNumber, joinDirty = false, shownJoin;
   try { pass = sessionStorage.getItem(passKey) || undefined; } catch { /* A tab without storage joins again after reload. */ }
   const refused = () => access === 'declined' || access === 'removed';
+  // Under approval a name is fixed once the session has one; a session admitted unnamed may set one first label.
+  const nameLocked = () => approval && !!pass && !!viewerName;
   const pointers = globalThis.SetbeamPointers?.attach({
-    pass: () => pass, name: () => viewerName, nameLocked: () => approval && !!viewerName,
-    setName: name => saveName(name), live: () => mode === 'live' && access === 'admitted' && !unavailable
+    pass: () => pass, name: () => viewerName, color: () => viewerColor, nameLocked,
+    editIdentity: () => openEditor(), live: () => mode === 'live' && access === 'admitted' && !unavailable
   });
+  const chat = globalThis.SetbeamChat?.attach({pass: () => pass, live: () => playing(), revision: () => revision});
   const playing = () => mode === 'live' && receivedTrack && !video.paused && video.readyState >= 2 && Date.now() - lastFrameAt < 6000;
   const stalled = () => !document.hidden && !playBlocked && Date.now() - (lastFrameAt || readerStartedAt) > 10000;
   // A stream must deliver its first state quickly and a keepalive about every 10 s after that.
@@ -59,7 +68,9 @@
   }
   // Badge label, card title, copy, symbol, and page state for each step of the join page.
   const joinViews = {
-    name: ['Ask to join', 'Ask to join', 'The operator admits each viewer. Enter a name they will recognize.', 'user', 'ask'],
+    identify: ['Joining', 'Join this feed', 'Choose a name and color so the operator knows who is watching.', 'user', 'ask'],
+    name: ['Ask to join', 'Ask to join', 'The operator admits each viewer. Choose a name they will recognize and a color.', 'user', 'ask'],
+    edit: ['', 'Your name and color', 'Change how you appear to the operator and to other viewers.', 'user', ''],
     full: ['Session busy', 'This session is busy', 'Too many people are waiting to join. Try again shortly.', 'user', 'ask'],
     pending: ['Waiting to join', 'Waiting for the operator', 'Keep this page open. The picture starts when the operator admits you.', 'loader', 'pending'],
     declined: ['Not admitted', 'The operator declined this request', 'Ask the operator if you should be watching.', 'link-off', 'refused'],
@@ -72,15 +83,26 @@
     if (!['name', 'full', 'pending', 'declined', 'removed'].includes(access)) return undefined;
     if (refused()) return access;
     if (unavailable) return 'unavailable';
-    return mode === 'stopped' ? 'ended' : access;
+    if (mode === 'stopped') return 'ended';
+    // With approval off the same name and color step comes first, then the picture plays.
+    return access === 'name' && !approval ? 'identify' : access;
+  }
+  const identityForm = view => view === 'name' || view === 'identify' || view === 'edit';
+  // Every place the name appears is listed, so the viewer knows who sees it before choosing.
+  function identityHint(view) {
+    const seen = pointersOn ? 'Shown to the operator, and to other viewers when you point.' : 'Shown to the operator.';
+    if (view === 'name') return seen + ' It stays fixed after you ask. Names are not verified.';
+    if (view === 'edit' && nameLocked()) return 'Names stay fixed while the operator approves viewers. You can change your color.';
+    return seen + ' Names are not verified.';
   }
   function joinMessage(view) {
     if (view === 'name' && asking) return 'Sending your request…';
-    if (view === 'name' && joinNote === 'error') return navigator.onLine === false
+    if (view === 'identify' && asking) return 'Joining…';
+    if ((view === 'name' || view === 'identify') && joinNote === 'error') return navigator.onLine === false
       ? 'This device is offline. Reconnect to the viewing network, then try again.'
       : 'The request did not reach the operator. Check that you are on the viewing network, then try again.';
     if (view === 'name' && joinNote === 'again') return 'This page needs to ask again. Check your name, then send a new request.';
-    if (view === 'name' && joinNote === 'empty') return 'Enter a name the operator will recognize.';
+    if (identityForm(view) && joinNote === 'empty') return 'Enter a name the operator will recognize.';
     if (view === 'pending' && joinTrouble) return 'Connection lost. Keep this page open while it reconnects.';
     if (view === 'full' && asking) return 'Trying again…';
     return '';
@@ -102,25 +124,59 @@
     document.getElementById('join-icon').setAttribute('href', '#i-' + symbol);
     const detail = joinDetail(view), joinRetry = document.getElementById('join-retry');
     text(document.getElementById('join-detail'), detail); document.getElementById('join-detail').hidden = !detail;
-    document.getElementById('join-form').hidden = view !== 'name';
-    document.getElementById('join-submit').disabled = asking; joinName.readOnly = asking;
+    const form = identityForm(view), locked = view === 'edit' && nameLocked(), submit = document.getElementById('join-submit');
+    document.getElementById('join-form').hidden = !form;
+    text(submit, view === 'name' ? 'Ask to join' : view === 'edit' ? 'Save' : 'Join');
+    submit.disabled = asking; joinName.readOnly = asking || locked;
+    document.getElementById('join-cancel').hidden = view !== 'edit';
+    document.getElementById('join-network').hidden = view === 'edit';
+    text(document.getElementById('join-hint'), identityHint(view));
     joinRetry.hidden = !(view === 'unavailable' || view === 'full' && approval); joinRetry.disabled = asking;
     text(document.getElementById('join-status'), joinMessage(view));
     if (view === previous) return;
-    if (view === 'name' && !joinDirty && focused !== joinName) joinName.value = viewerName;
-    if (hadFocus && (previous || globalThis.matchMedia?.('(pointer: fine)').matches)) (view === 'name' ? joinName : heading).focus();
+    if (form && !joinDirty && focused !== joinName) { joinName.value = viewerName; draftColor = viewerColor; }
+    renderSwatches();
+    // Changing the name or color was asked for, so the editor always takes focus.
+    if (view === 'edit') (locked ? swatchInputs.find(input => input.checked) || submit : joinName).focus();
+    else if (hadFocus && (previous || globalThis.matchMedia?.('(pointer: fine)').matches)) (form ? joinName : heading).focus();
   }
+  // Connection help shows the one identity and offers to change it; it has no name field of its own.
+  function renderIdentity() {
+    text(document.getElementById('identity-name'), viewerName || 'No name yet');
+    document.getElementById('identity-dot').style.setProperty('--c', palette[viewerColor][0]);
+    const locked = nameLocked();
+    text(document.getElementById('identity-note'), locked ? 'Names stay fixed while the operator approves viewers. You can change your color.'
+      : pointersOn ? 'The operator sees this name, and other viewers see it when you point.' : 'The operator sees this name.');
+    const edit = document.getElementById('identity-edit');
+    text(edit, locked ? 'Change color' : 'Change name or color');
+    edit.hidden = !canEdit();
+    const direct = document.getElementById('identity-button');
+    direct.hidden = !canEdit();
+    direct.setAttribute('aria-expanded', String(editing));
+    action(direct, (viewerName || 'Your identity') + '. ' + (locked ? 'Change color' : 'Change name or color'));
+  }
+  const canEdit = () => access === 'admitted' && !unavailable && mode !== 'stopped';
+  function openEditor() {
+    if (!canEdit()) return;
+    if (editing) { closeEditor(); return; }
+    closeHelp(); editing = true; joinDirty = false; joinNote = ''; update();
+    if (globalThis.matchMedia?.('(max-width:600px), (max-height:600px)').matches) document.getElementById('join').scrollIntoView?.({block: 'nearest'});
+  }
+  function closeEditor() { editing = false; joinNote = ''; update(); document.getElementById('identity-button').focus(); }
   function update() {
     const live = playing(), waiting = everPlayed ? 'reconnecting' : 'connecting', view = joinView();
+    if (editing && (view || !canEdit())) editing = false;
+    const shown = view || (editing ? 'edit' : undefined);
     const state = view ? joinViews[view][4] : unavailable ? 'unavailable' : playBlocked && mode === 'live' ? 'blocked' : mode === 'live' && !live ? waiting : mode;
     label.className = 'state ' + state;
-    player.className = 'player ' + state + (view ? ' join-open' : '');
+    const collaborationClasses = ['chat-open', 'keyboard-tight'].filter(name => player.classList?.contains(name)).join(' ');
+    player.className = 'player ' + state + (view ? ' join-open' : editing ? ' identity-open' : '') + (collaborationClasses ? ' ' + collaborationClasses : '');
     sound.hidden = !hasAudio; sound.disabled = !live;
     pip.hidden = !pipSupported(); pip.disabled = !live;
     retry.hidden = !(playBlocked && mode === 'live') && !unavailable;
     action(retry, unavailable ? 'Reconnect' : 'Play feed');
     document.getElementById('retry-icon').setAttribute('href', unavailable ? '#i-loader' : '#i-play');
-    if (view || shownJoin) renderJoin(view);
+    if (shown || shownJoin) renderJoin(shown);
     // The join page replaces the picture slate until the session is admitted.
     if (view) text(label, joinViews[view][0]);
     else if (unavailable) { text(label, 'Session unavailable'); show('This viewing link is unavailable', 'Ask the operator for the current code.', 'link-off'); }
@@ -130,14 +186,8 @@
     else if (live) { text(label, 'Live feed'); slate.hidden = true; }
     else { text(label, everPlayed ? 'Reconnecting' : 'Connecting'); show('Waiting for the picture', everPlayed ? 'Keep this page open. Stay on the viewing network.' : 'Waiting for the picture.', 'loader'); }
     video.muted = mode !== 'live' || unavailable || sound.getAttribute('aria-pressed') !== 'true';
-    // Under approval a name is fixed once the session has one; Connection help then shows it read-only.
-    const locked = approval && !!pass && !!viewerName;
-    if (locked !== lockShown) {
-      lockShown = locked; nameInput.readOnly = locked; document.getElementById('viewer-name-save').hidden = locked;
-      if (locked) nameInput.value = viewerName;
-      text(document.getElementById('viewer-name-status'), locked ? 'Shown to the operator. Names stay fixed while the operator approves viewers.'
-        : viewerName ? 'Name saved for this tab. Shown to the operator.' : 'Shown to the operator.');
-    }
+    renderIdentity();
+    if (editing) positionIdentityEditor();
     const ended = mode === 'stopped' || unavailable || refused();
     if (ended && keepAwake) releaseAwake();
     awake.disabled = ended;
@@ -145,7 +195,49 @@
     // Pointing ends with the session: removal, refusal, Stop, and an unavailable link all close it.
     const pointable = pointersOn && access === 'admitted' && !unavailable && mode !== 'stopped';
     pointers?.update({enabled: pointable, live: pointable && mode === 'live', revision});
+    chat?.update({admitted: access === 'admitted', active: !ended, live: playing(), revision});
   }
+  const controls = document.getElementById('controls');
+  const controlsToggle = document.getElementById('controls-toggle');
+  let controlsShown = false, controlsTimer;
+  const controlsPinned = () => editing || controls.contains(document.activeElement) ||
+    !document.getElementById('help-panel').hidden || !document.getElementById('pointer-panel').hidden;
+  function displayControls(shown) {
+    controlsShown = shown; controls.hidden = !shown;
+    controlsToggle.setAttribute('aria-expanded', String(shown));
+    action(controlsToggle, shown ? 'Hide viewer controls' : 'Show viewer controls');
+  }
+  function scheduleControls() {
+    clearTimeout(controlsTimer);
+    controlsTimer = setTimeout(() => {
+      if (controlsPinned()) scheduleControls(); else displayControls(false);
+    }, 3000);
+  }
+  function revealControls() { displayControls(true); scheduleControls(); }
+  controlsToggle.addEventListener('click', () => {
+    if (controlsShown && !controlsPinned()) { clearTimeout(controlsTimer); displayControls(false); }
+    else revealControls();
+  });
+  controlsToggle.addEventListener('focus', () => {
+    // Pointer focus precedes click; revealing here would make that same click close it.
+    if (controlsToggle.matches?.(':focus-visible')) revealControls();
+  });
+  controls.addEventListener('focusin', revealControls);
+  controls.addEventListener('focusout', scheduleControls);
+  controls.addEventListener('pointermove', revealControls);
+  const pictureIsPointing = () => document.getElementById('picture').classList?.contains?.('pointing');
+  document.getElementById('picture').addEventListener('pointermove', event => {
+    if (event.pointerType !== 'touch' && !pictureIsPointing()) revealControls();
+  });
+  displayControls(false);
+  function positionIdentityEditor() {
+    const picture = document.getElementById('picture');
+    if (typeof picture.getBoundingClientRect !== 'function') return;
+    const outer = player.getBoundingClientRect(), content = picture.getBoundingClientRect();
+    player.style.setProperty('--identity-right', Math.max(6, outer.right - content.right + 6) + 'px');
+  }
+  window.addEventListener('resize', positionIdentityEditor);
+  document.getElementById('pointer').addEventListener('click', () => { if (editing) closeEditor(); }, {capture: true});
   function exitPip() {
     try {
       if (document.pictureInPictureElement === video) document.exitPictureInPicture()?.catch?.(() => {});
@@ -279,17 +371,24 @@
   sound.addEventListener('click', toggleSound);
   retry.addEventListener('click', () => { engageAwake(); if (unavailable) { unavailable = false; config = undefined; poll(); } else { play(); } });
   awake.addEventListener('click', () => { if (keepAwake) releaseAwake(); else engageAwake(); });
-  document.getElementById('picture').addEventListener('click', engageAwake);
+  document.getElementById('picture').addEventListener('click', event => {
+    engageAwake();
+    if (!event?.target?.closest?.('button') && !pictureIsPointing()) revealControls();
+  });
   document.getElementById('picture').addEventListener('dblclick', event => { if (!event.target.closest('button')) toggleFullscreen(); });
   fullscreen.addEventListener('click', toggleFullscreen);
   help.addEventListener('click', () => {
     const panel = document.getElementById('help-panel'); panel.hidden = !panel.hidden;
-    help.setAttribute('aria-expanded', String(!panel.hidden));
+    help.setAttribute('aria-expanded', String(!panel.hidden)); revealControls();
   });
   document.addEventListener('click', event => { if (!help.contains(event.target) && !document.getElementById('help-panel').contains(event.target)) closeHelp(); });
   document.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && editing) { event.preventDefault(); closeEditor(); return; }
     if (event.key === 'Escape' && !document.getElementById('help-panel').hidden) {
       event.preventDefault(); closeHelp(); help.focus(); return;
+    }
+    if (!event.defaultPrevented && event.key === 'Escape' && controlsShown && document.getElementById('pointer-panel').hidden) {
+      event.preventDefault(); displayControls(false); controlsToggle.focus(); displayControls(false); return;
     }
     if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey || event.repeat || event.target.closest?.('input,textarea,select,[contenteditable]')) return;
     if (event.key.toLowerCase() === 'm') { event.preventDefault(); toggleSound(); }
@@ -310,11 +409,11 @@
     sampleHealth();
     if (!pass || refused()) return Promise.resolve();
     const sent = pass;
-    const body = {pass, mobile: /iPhone|iPad|Android/.test(navigator.userAgent), playing: reportedPlaying, health: viewerHealth(), revision};
+    const body = {pass, mobile: /iPhone|iPad|Android/.test(navigator.userAgent), playing: reportedPlaying, health: viewerHealth(), revision, color: viewerColor};
     // Under approval the gateway accepts only a first label for a session admitted unnamed.
     if (!approval || viewerName) body.name = viewerName;
     return request('heartbeat', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)})
-      .then(response => { if (sent === pass && response.ok) admission(response.body?.admission); }).catch(() => {});
+      .then(response => { if (sent === pass && response.ok) { admission(response.body?.admission); chat?.activity(response.body?.chatLastID); } }).catch(() => {});
   }
   // Removal and refusal end playback at once. An unknown pass, such as after a restarted gateway, joins again.
   function admission(value) {
@@ -329,14 +428,16 @@
   async function join() {
     if (joinRunning || refused()) return false;
     const asked = asking, hadPass = !!pass;
-    // Under approval a new request goes out only after the viewer presses Ask to join.
-    if (!pass && (access === 'name' || access === 'full') && approval && !asked) return false;
+    // A new session waits on the join card until the viewer chooses a name and color. Under approval
+    // a request goes out only after Ask to join. A restored pass resumes its state as before.
+    if (!pass && !asked && (access === 'name' || !viewerName)) { access = 'name'; return false; }
+    if (!pass && access === 'full' && approval && !asked) return false;
     joinRunning = true;
     try {
       let response;
       try {
         response = await request('join', {method: 'POST', headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({pass, name: (asked || !approval) && viewerName || undefined, ask: asked || undefined, color: pointers?.color(), mobile: mobile()})});
+          body: JSON.stringify({pass, name: (asked || !approval) && viewerName || undefined, ask: asked || undefined, color: viewerColor, mobile: mobile()})});
       } catch (error) {
         // A failed request is reported in the form; the viewer decides whether to send it again.
         if (!asked) throw error;
@@ -359,7 +460,7 @@
       pass = response.body.pass; access = response.body.admission; mediaReady = response.body.ready === true;
       joinNumber = Number.isInteger(response.body.number) ? response.body.number : undefined; joinNote = '';
       try { sessionStorage.setItem(passKey, pass); } catch {}
-      if (approval && typeof response.body.name === 'string') { viewerName = response.body.name; nameInput.value = viewerName; }
+      if (approval && typeof response.body.name === 'string') viewerName = response.body.name;
       if (access !== 'admitted') { config = undefined; closeReader(); }
       return access === 'admitted' && mediaReady;
     } finally { joinRunning = false; }
@@ -418,22 +519,19 @@
   function cleanName(value) {
     return [...value.replace(/[\u0000-\u0008\u000e-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u206f]/g, '').trim().replace(/\s+/g, ' ')].slice(0, 40).join('');
   }
-  function saveName(value) {
-    if (approval && pass && viewerName) return viewerName;
-    viewerName = cleanName(value);
-    nameInput.value = viewerName;
-    try { sessionStorage.setItem('setbeam-viewer-name', viewerName); } catch { /* Keep the name for this page. */ }
-    text(document.getElementById('viewer-name-status'), viewerName ? 'Name saved for this tab. Shown to the operator.' : 'Using your browser label.');
-    return viewerName;
-  }
-  document.getElementById('viewer-name-form').addEventListener('submit', event => {
-    event.preventDefault();
-    saveName(nameInput.value);
-    heartbeat();
-  });
   const joinName = document.getElementById('join-name');
   joinName.value = viewerName;
   joinName.addEventListener('input', () => { joinDirty = true; });
+  const swatchInputs = [];
+  for (const name of colorNames) {
+    const option = document.createElement('label'); option.className = 'swatch'; option.title = name[0].toUpperCase() + name.slice(1);
+    const input = document.createElement('input'); input.type = 'radio'; input.name = 'viewer-color'; input.value = name;
+    input.setAttribute('aria-label', option.title);
+    const dot = document.createElement('span'); dot.style.setProperty('--c', palette[name][0]);
+    input.addEventListener('change', () => { if (input.checked) { draftColor = name; joinDirty = true; } });
+    option.append(input, dot); document.getElementById('join-colors').append(option); swatchInputs.push(input);
+  }
+  function renderSwatches() { for (const input of swatchInputs) input.checked = input.value === draftColor; }
   function ask() {
     asking = true; joinNote = ''; update();
     if (pollRunning) pollAgain = true; else poll();
@@ -441,13 +539,20 @@
   document.getElementById('join-form').addEventListener('submit', event => {
     event.preventDefault();
     if (asking) return;
-    const name = cleanName(joinName.value);
+    const name = editing && nameLocked() ? viewerName : cleanName(joinName.value);
     joinName.value = name;
     if (!name) { joinNote = 'empty'; update(); joinName.focus(); return; }
-    viewerName = name; nameInput.value = name; joinDirty = false;
-    try { sessionStorage.setItem('setbeam-viewer-name', name); } catch {}
-    ask();
+    const changed = name !== viewerName || draftColor !== viewerColor;
+    viewerName = name; viewerColor = draftColor; joinDirty = false;
+    try { sessionStorage.setItem('setbeam-viewer-name', name); sessionStorage.setItem('setbeam-pointer-color', viewerColor); } catch {}
+    if (!editing) { ask(); return; }
+    // An admitted session's heartbeat carries the change; an open pointer channel announces it again.
+    closeEditor();
+    if (changed) { heartbeat(); pointers?.identityChanged?.(); }
   });
+  document.getElementById('join-cancel').addEventListener('click', closeEditor);
+  document.getElementById('identity-edit').addEventListener('click', openEditor);
+  document.getElementById('identity-button').addEventListener('click', openEditor);
   document.getElementById('join-retry').addEventListener('click', () => {
     if (asking) return;
     joinTrouble = false;

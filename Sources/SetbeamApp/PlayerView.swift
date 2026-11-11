@@ -15,7 +15,7 @@ struct PlayerView: View {
     var pointers: PointerPresenceModel?
     var body: some View {
         ZStack {
-            Color(red: 0.12, green: 0.12, blue: 0.14)
+            MonitorStyle.stage
             if let picture = player.picture {
                 PictureView(picture: picture)
                     .accessibilityLabel(connectionStage == nil ? "Live feed preview" : "Last received picture")

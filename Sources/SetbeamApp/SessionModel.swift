@@ -2,11 +2,11 @@ import Foundation
 import SwiftUI
 import AppKit
 import AVFoundation
+import CoreImage
 import IOKit.pwr_mgt
 import SetbeamCore
 
-enum AppSheet: String, Identifiable { case connection, picture, advanced, incoming, join, viewingWiFi, viewers, setupCheck, rename, about; var id: String { rawValue } }
-enum AdvancedSection: Hashable { case workspace, connection, network, diagnostics }
+enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSource, incoming, join, setupCheck, rename, about, permissions; var id: String { rawValue } }
 
 @MainActor final class SessionModel: ObservableObject {
     @Published var title: String { didSet { if !integration { defaults.set(title, forKey: "sessionTitle") }; publishGatewayState() } }
@@ -23,8 +23,18 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
     @Published private(set) var localAddressLabel: String
     @Published private(set) var localAddress: LocalAddressState = .stopped
     private let localAddressPublisher = LocalAddressPublisher()
-    @Published var viewers: [ViewerActivity] = []
+    /// Whether viewers may type the local address by itself and ask to join. Off by default, and only
+    /// in effect while sharing with viewer approval and an active local address.
+    @Published private(set) var shortAddressEnabled: Bool
+    @Published private(set) var shortAddress: ShortAddressListener.State = .stopped
+    private let shortAddressListener = ShortAddressListener()
+    /// Changes with each viewing link, so a request from an earlier link can never be admitted into this one.
+    private(set) var viewingLink = 0
+    /// Requests to join, announced once each with a card that keeps this Mac's other apps in front.
+    let joinRequests = JoinRequestCenter()
+    @Published var viewers: [ViewerActivity] = [] { didSet { observeJoinRequests() } }
     @Published var busy = false
+    @Published private(set) var stoppingSharing = false
     @Published private var preparingConnection = false
     @Published var error: String? {
         didSet { if let error, error != oldValue { SessionLog.shared.record("operator.message", ["message": error]) } }
@@ -36,6 +46,7 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
     let audiencePlayer = NativePreview(audioEnabled: false, width: 384, frameRate: 8)
     @Published var audiencePreviewPlaying = false
     @Published private var outgoingTransition = OutgoingTransition()
+    @Published private(set) var audienceControl = AudienceControlState()
     @Published var sourceHasAudio = false
     @Published var audienceHasAudio = false
     @Published var expectsAudio = false
@@ -43,12 +54,49 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
     let sourceBrowser: SourceBrowser
     @Published var pipVisible = false
     @Published var sheet: AppSheet?
-    var advancedSection: AdvancedSection = .workspace
+    @Published var sourceDetailsDirty = false
+    var protectsSourceDraft: Bool { sheet == .sourceDetails && sourceDetailsDirty }
+    @Published var sharingSection: SharingSection?
+    private var lastSharingSection = SharingSection.invite
+    @Published var sharingInWindow = false
+    @Published private(set) var sharingFocusRequest = 0
+    @Published var sharingCanDock = true
+    weak var monitorWindow: NSWindow?
+    var openMonitor: (() -> Void)?
+    func reopenMonitor() {
+        openMonitor?()
+        monitorWindow?.deminiaturize(nil)
+        monitorWindow?.makeKeyAndOrderFront(nil)
+        NSApp.unhide(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+    weak var sharingWindow: NSWindow?
+    @Published var settingsSection: SettingsSection = .permissions
+    @Published var sharingDraft: SharingOptionsDraft?
+    @Published var viewingWiFiDraft: ViewingWiFiDraft?
+    @Published private(set) var chatMessages: [ChatMessage] = []
+    @Published private(set) var chatImages: [Int: NSImage] = [:]
+    @Published private(set) var chatCapturing = false
+    @Published private var chatReadThrough = 0
+    var chatUnreadCount: Int { chatMessages.filter { !$0.operatorMessage && $0.id > chatReadThrough }.count }
+    func markChatRead() { let id = chatMessages.last?.id ?? 0; if chatReadThrough != id { chatReadThrough = id } }
+    @Published var chatText = ""
+    @Published var chatReplyTo: Int?
+    @Published private(set) var chatAttachment: Data?
+    @Published var chatProblem: String?
+    @Published var chatOperatorName = "DigiTech" { didSet { if !integration { defaults.set(chatOperatorName, forKey: "chatOperatorName") } } }
+    @Published var chatOperatorColor = PointerColor.orange { didSet { if !integration { defaults.set(chatOperatorColor.rawValue, forKey: "chatOperatorColor") } } }
+    private var chatAttachmentRevision: Int?
+    private var chatAttachmentLink: Int?
+    private var chatCaptureGeneration = UUID()
+    @Published private(set) var sharingOptionsTarget = 0
+    private var loadedWiFiSSID: String?
     @Published var networks: [NetworkAddress]
     @Published var viewerAddress: String
     @Published var networkChoice: String
     @Published var wifiSSID: String
     @Published var wifiPassword = ""
+    @Published private(set) var viewingWiFiPasswordAvailable = true
     @Published var screenDisplays: [MacDisplay] = []
     /// Observed for a selected window only. Never used to choose a different window.
     @Published private(set) var windowPresence: MacWindowPresence?
@@ -79,11 +127,19 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
     @Published private(set) var viewerApproval: Bool
     /// Admitted viewers may opt in to point at the picture with a name and color.
     @Published private(set) var sharedPointers: Bool
+    /// Whether this Mac's main and floating monitors draw viewers' pointers. A separate operator view
+    /// choice from letting viewers point; it is never saved and starts off for each sharing session.
+    @Published private(set) var pointersOnThisMac = false
+    @Published private(set) var pointersOnSourceDisplay = false
+    private let sourceDisplayPointers = SourceDisplayPointers()
+    private var pointerDisplayIdentity: String?
+    private var displayObserver: NSObjectProtocol?
     /// Native pointer overlay state. Observed only by the overlays, not by whole windows.
     let pointerPresence = PointerPresenceModel()
     private var accessSync: Task<Void, Never>?
     private var accessSyncAgain = false
     @Published var transmitterWiFiPassword = ""
+    @Published private(set) var transmitterOpenNetwork = false
     @Published var rejoinProblem: String?
     private(set) var savedNetworkURL = ""
     private var nativePreviewProblem: String?
@@ -102,8 +158,8 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
     private var readiness = SetupReadiness()
     private var activeNetworkURL: String?
     private var previousSource: (setup: SourceSetup, address: String?, remember: Bool)?
-    private var rememberSetup = true
-    private var rememberFailed = false
+    @Published private(set) var rememberSetup = true
+    @Published private(set) var rememberFailed = false
     private var connectedAt = Date.distantPast
     private var lastRuntimeProblem = ""
     private let sharingPower = PowerAssertion(type: kIOPMAssertionTypePreventUserIdleSystemSleep, reason: "Setbeam feed sharing")
@@ -115,6 +171,8 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
     private var rejoinAttempt: (permit: RejoinPermit, ssid: String)?
     private var observers: [NSObjectProtocol] = []
     private lazy var floating = FloatingPreviewWindow(model: self)
+    private let joinCodeWindow = JoinCodeWindow()
+    func showJoinCodeWindow() { loadViewingWiFi(); joinCodeWindow.show(model: self) }
 
     init(initialState: SessionState = SessionState(), preferences: UserDefaults? = nil) {
         state = initialState
@@ -131,6 +189,9 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
         } else { defaults = .standard }
         store = ProvenSetupStore(defaults: defaults)
         title = defaults.string(forKey: "sessionTitle") ?? "My feed"
+        chatOperatorName = defaults.string(forKey: "chatOperatorName") ?? "DigiTech"
+        chatOperatorColor = defaults.string(forKey: "chatOperatorColor").flatMap(PointerColor.init(rawValue:)) ?? .orange
+        settingsSection = SettingsSection(rawValue: defaults.string(forKey: "settingsSection") ?? "") ?? .permissions
         let available = NetworkAddress.available()
         networks = available
         let choice = integration ? "lo0" : defaults.string(forKey: "viewerInterface") ?? "automatic"
@@ -149,10 +210,16 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
         sharedPointers = integration ? false : defaults.bool(forKey: "sharedPointers")
         localAddressEnabled = defaults.object(forKey: "localAddressEnabled") as? Bool ?? true
         localAddressLabel = defaults.string(forKey: "localAddressName").flatMap { try? LocalAddressName.validated($0).get() } ?? LocalAddressName.defaultLabel
+        shortAddressEnabled = defaults.bool(forKey: "shortAddressEnabled")
         localAddressPublisher.onChange = { [weak self] state in
             // Deliver in order; the publisher reports each change once on its own queue.
             DispatchQueue.main.async { MainActor.assumeIsolated { self?.localAddressChanged(state) } }
         }
+        shortAddressListener.onChange = { [weak self] state in
+            DispatchQueue.main.async { MainActor.assumeIsolated { self?.shortAddressChanged(state) } }
+        }
+        joinRequests.model = self
+        audienceControl.observe(state)
     }
 
     var sourceLabel: String {
@@ -173,16 +240,21 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
         return "Join the same Wi-Fi as this Mac, then scan to watch."
     }
     var localReady: Bool { state.sourceAvailable && nativePreviewPlaying }
-    private var outgoingReady: Bool { state.audienceAvailable && (state.holding || state.sourceAvailable) }
-    var outgoingIsChanging: Bool { state.sharing && !outgoingReady && outgoingTransition.activeChange() != nil }
-    var outgoingNeedsAttention: Bool {
-        state.sharing && !outgoingReady && !outgoingIsChanging
+    var floatingPresentation: FloatingPreviewState {
+        FloatingPreviewState(session: state, control: audienceControl, localReady: localReady, busy: busy,
+                             starting: outgoingTransition.activeChange() == .startSharing, viewers: viewers)
     }
-    var sharingTitle: String {
-        guard state.sharing else { return "Private" }
-        if outgoingIsChanging, let change = outgoingTransition.activeChange() { return change.title }
-        if state.holding { return "On hold" }
-        return outgoingNeedsAttention ? "Reconnecting" : "Sharing"
+    private var outgoingReady: Bool { state.audienceAvailable && (state.holding || state.sourceAvailable) }
+    var audiencePresentation: AudiencePresentation {
+        AudiencePresentation(session: state, control: audienceControl, change: outgoingTransition.activeChange(),
+                             localReady: localReady, busy: busy, stopping: stoppingSharing)
+    }
+    var outgoingIsChanging: Bool { state.sharing && audiencePresentation.isChanging }
+    var outgoingNeedsAttention: Bool { state.sharing && audiencePresentation.needsAttention }
+    var sharingTitle: String { audiencePresentation.title }
+    func performAudienceAction() {
+        guard audiencePresentation.primaryEnabled, let target = audiencePresentation.primaryTarget else { return }
+        setAudienceHold(target.holding)
     }
     var connectionStage: ConnectionStage? {
         guard setup != nil, !localReady, !permissionDenied, preparingConnection || state.monitoring else { return nil }
@@ -227,8 +299,31 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
     /// The approval choice MediaMTX has accepted. A failed change retries, so the shared credential
     /// never stays usable while the gateway is asking viewers to wait.
     private var appliedApproval = false
-    /// Pointers describe the live shared picture, so they appear only while it is being shared.
-    var showsPointers: Bool { sharedPointers && state.sharing && !state.holding }
+    /// Pointers describe the live shared picture, so they appear only while it is being shared,
+    /// and on this Mac only after the operator chooses to see them.
+    var showsPointers: Bool { sharedPointers && pointersOnThisMac && state.sharing && !state.holding }
+    func setPointersOnThisMac(_ visible: Bool) {
+        guard visible != pointersOnThisMac else { return }
+        pointersOnThisMac = visible
+        SessionLog.shared.record("viewers.pointersOnThisMac", ["visible": visible])
+    }
+    var canShowPointersOnSourceDisplay: Bool {
+        guard sharedPointers, state.sharing, setup?.kind == .macScreen, let id = setup?.videoID,
+              let screen = SourceDisplayPointers.screen(for: id), let size = localPlayer.picture?.size,
+              size.width > 0, size.height > 0 else { return false }
+        return abs((size.width / size.height) / (screen.frame.width / screen.frame.height) - 1) < 0.005
+    }
+    func setPointersOnSourceDisplay(_ visible: Bool) {
+        pointersOnSourceDisplay = visible && canShowPointersOnSourceDisplay
+        updateSourceDisplayPointers()
+    }
+    private func updateSourceDisplayPointers() {
+        let identity = setup?.kind == .macScreen ? setup?.videoID : nil
+        if pointerDisplayIdentity != identity { pointersOnSourceDisplay = false; pointerDisplayIdentity = identity }
+        if !state.sharing || !sharedPointers { pointersOnSourceDisplay = false }
+        sourceDisplayPointers.update(display: identity,
+            visible: pointersOnSourceDisplay && canShowPointersOnSourceDisplay && state.audience == .live && audienceControl.pending == nil && !stoppingSharing && !shuttingDown, presence: pointerPresence)
+    }
 
     func setViewerApproval(_ enabled: Bool) {
         guard enabled != viewerApproval else { return }
@@ -236,6 +331,7 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
         if !integration { defaults.set(enabled, forKey: "viewerApproval") }
         SessionLog.shared.record("viewers.approval", ["enabled": enabled])
         gateway.setAccess(approval: enabled, pointers: sharedPointers)
+        updateShortAddress()
         viewers = gateway.viewers
         syncViewerAccess()
     }
@@ -246,23 +342,43 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
         SessionLog.shared.record("viewers.pointers", ["enabled": enabled])
         gateway.setAccess(approval: viewerApproval, pointers: enabled)
         if !enabled { pointerPresence.clear() }
+        updateSourceDisplayPointers()
         viewers = gateway.viewers
     }
     func admitViewer(_ viewer: ViewerActivity) {
         guard gateway.approve(number: viewer.number) else { return }
-        SessionLog.shared.record("viewer.admit", ["number": viewer.number])
+        SessionLog.shared.record("viewer.admit", ["number": viewer.number, "shortAddress": viewer.shortAddress])
         viewers = gateway.viewers; syncViewerAccess()
     }
     func declineViewer(_ viewer: ViewerActivity) {
         guard gateway.decline(number: viewer.number) else { return }
-        SessionLog.shared.record("viewer.decline", ["number": viewer.number])
+        SessionLog.shared.record("viewer.decline", ["number": viewer.number, "shortAddress": viewer.shortAddress])
         viewers = gateway.viewers
+    }
+    /// Acts on a request card only if that exact request is still waiting on the current link.
+    /// A card from an earlier link, a request already decided elsewhere, or one that lapsed does nothing.
+    @discardableResult func answer(_ request: JoinRequest, admit: Bool) -> Bool {
+        guard state.sharing, viewerApproval else { return false }
+        viewers = gateway.viewers
+        guard let viewer = request.current(in: viewers, link: viewingLink) else { return false }
+        if admit { admitViewer(viewer) } else { declineViewer(viewer) }
+        return true
+    }
+    private func observeJoinRequests() {
+        joinRequests.observe(link: viewingLink, active: state.sharing && viewerApproval, viewers: viewers)
     }
     /// Ends this session's playback and presence immediately; other viewers continue.
     func removeViewer(_ viewer: ViewerActivity) {
         guard gateway.remove(number: viewer.number) else { return }
         SessionLog.shared.record("viewer.remove", ["number": viewer.number])
         viewers = gateway.viewers; syncViewerAccess()
+    }
+    /// The floating card must not remove a session from an earlier viewing link.
+    func removeViewer(_ reference: JoinRequest) {
+        guard state.sharing, viewerApproval else { return }
+        viewers = gateway.viewers
+        guard let current = reference.current(in: viewers, link: viewingLink, admission: .admitted) else { return }
+        removeViewer(current)
     }
     /// Applies the gateway's admitted readers to the media server, one change at a time. A page
     /// receives its own credential only after the server has accepted it.
@@ -294,7 +410,8 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
     var incomingAudioLabel: String { !state.sourceAvailable ? "Input audio: waiting" : sourceHasAudio ? "Input audio: track received" : "Input audio: no track" }
     var audienceAudioLabel: String {
         if !state.sharing { return "Audience audio: off" }
-        if state.holding { return "Audience audio: silenced by Hold" }
+        if audiencePresentation.confirmedHold { return "Audience audio: silenced by Hold" }
+        if audiencePresentation.phase != .sharing { return "Audience audio: not confirmed" }
         if state.audience != .live { return "Audience audio: reconnecting" }
         return audienceHasAudio ? "Audience audio: included" : "Audience audio: no track"
     }
@@ -302,8 +419,7 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
     var restoreFloating: Bool { !integration && defaults.bool(forKey: "floatingVisible") }
     var audienceLabel: String {
         guard state.sharing else { return "Only you can see this" }
-        if outgoingIsChanging { return sharingTitle }
-        switch state.audience { case .holding: return "Audience on hold"; case .reconnecting: return "Audience reconnecting"; default: return "Sharing with viewers" }
+        return sharingTitle
     }
     var statusLabel: String {
         if preparingConnection { return "Connecting" }
@@ -311,8 +427,7 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
         if connectingToPicture { return "Connecting" }
         if setup?.kind == .accsoon, let device = wirelessDevices.first(where: { $0.id == setup?.wirelessUID }), !device.videoAvailable { return "Waiting for a source" }
         if !localReady { return "Reconnecting" }
-        if state.holding { return "On hold" }
-        if state.sharing { return state.audience == .live ? "Sharing" : "Connecting viewers" }
+        if state.sharing { return sharingTitle }
         return "Private preview"
     }
     var recoveryTitle: String {
@@ -330,6 +445,23 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
         if state.sourceAvailable && !nativePreviewPlaying { return "Restoring your preview" }
         return setup.kind == .network || setup.kind == .incoming ? "Waiting for \(setup.name)" : "Waiting for a picture"
     }
+    /// The floating monitor keeps useful recovery guidance without displaying a source title.
+    var floatingRecoveryTitle: String {
+        if permissionDenied { return recoveryTitle }
+        if connectingToPicture { return connectionStageTitle ?? "Connecting to source" }
+        if state.sourceAvailable && !nativePreviewPlaying { return recoveryTitle }
+        switch setup?.kind {
+        case .capture:
+            if !captureDevices.contains(where: { $0.id == setup?.videoID && !$0.audio }) { return "Connect the selected capture device" }
+            return recoveryTitle
+        case .accsoon:
+            if let device = wirelessDevices.first(where: { $0.id == setup?.wirelessUID }), !device.videoAvailable { return "Connect a picture to your transmitter" }
+            return "Reconnecting to the selected transmitter"
+        case .network: return "Waiting for the selected stream"
+        case .incoming: return "Waiting for incoming video"
+        default: return recoveryTitle
+        }
+    }
     var recoveryDetail: String {
         if permissionDenied { return "Enable Setbeam in Privacy & Security, then retry. Access is only needed for the input you chose." }
         if connectingToPicture { return "Your monitor is opening. Your picture stays private until you start sharing." }
@@ -342,7 +474,7 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
         if setup.kind == .capture { return "Connect the selected device to this Mac. If it is connected, check the HDMI or SDI cable and turn on the source. Setbeam keeps trying this same input." }
         if setup.kind == .network {
             if setup.networkProfile == .pyroH {
-                return "Turn on the Pyro H and its computer or camera output. Rejoin the transmitter's Wi-Fi and close HollyView or other direct viewers. Setbeam keeps retrying the selected stream. Use Advanced if its address has changed."
+                return "Turn on the Pyro H and its computer or camera output. Rejoin the transmitter's Wi-Fi and close HollyView or other direct viewers. Setbeam keeps retrying the selected stream. Choose Enter Stream Address if its address has changed."
             }
             return setup.sourceWiFi.isEmpty ? "Turn on the source and check that this Mac is on its network. Your picture will return here automatically." : "Turn on the source and join \(setup.sourceWiFi) in Wi-Fi Settings. Your picture will return here automatically."
         }
@@ -390,12 +522,21 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
             }
         }
         refreshCaptureDevices()
+        displayObserver = NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.setPointersOnSourceDisplay(false) }
+        }
         let center = NSWorkspace.shared.notificationCenter
+        for event in [NSWorkspace.sessionDidResignActiveNotification, NSWorkspace.willSleepNotification, NSWorkspace.screensDidSleepNotification] {
+            observers.append(center.addObserver(forName: event, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in self?.setPointersOnSourceDisplay(false) }
+            })
+        }
         observers.append(center.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.refreshCaptureDevices(); self?.localPlayer.retry(); self?.audiencePlayer.retry() }
         })
         if integration { connect(SourceSetup(kind: .sample, name: "Sample feed"), remember: false) }
         else if let saved = provenSetup { restore(saved) }
+        else if showsPermissionsAtLaunch { defaults.set(true, forKey: "permissionsIntroduced"); sheet = .permissions }
         pollTask = Task { [weak self] in
             var tick = 0
             while !Task.isCancelled {
@@ -403,6 +544,8 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
                 guard let self, !Task.isCancelled, !self.shuttingDown else { return }
                 tick += 1
                 self.observeSelectedWindow()
+                self.refreshChat()
+                self.updateSourceDisplayPointers()
                 self.updateDisplayWake()
                 self.rejoinTransmitterIfNeeded()
                 if tick % 3 == 0 && !self.busy {
@@ -419,12 +562,15 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
         }
     }
     func apply(_ snapshot: RuntimeSnapshot) {
+        if currentRuntime?.audienceRevision != snapshot.audienceRevision || snapshot.session.audience != .live { clearChatAttachment() }
         currentRuntime = snapshot; preview = snapshot.session.monitoring ? snapshot.preview : nil
         sourceHasAudio = snapshot.sourceHasAudio; audienceHasAudio = snapshot.audienceHasAudio
         state = snapshot.session
+        audienceControl.observe(snapshot.session)
         lastRuntimeProblem = snapshot.message ?? ""
         outgoingTransition.observeReady(outgoingReady)
         if let frame = snapshot.lastFrameAt { lastFrameAt = frame }
+        updateSourceDisplayPointers()
     }
     /// Follows the selected window's presence and title. A briefly hidden window resumes on its running
     /// capture; if the picture has not returned three seconds after the window did, retry without waiting
@@ -445,7 +591,33 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
         candidate.window = window.identity
         connect(candidate)
     }
-    func openSources() { refreshCaptureDevices(); sheet = .connection; Task { await refreshWireless() } }
+    @discardableResult func present(_ next: AppSheet, prepare: () -> Void = {}) -> Bool {
+        if sheet == next { monitorWindow?.makeKeyAndOrderFront(nil); return true }
+        guard !protectsSourceDraft else { monitorWindow?.makeKeyAndOrderFront(nil); return false }
+        prepare()
+        sheet = next
+        monitorWindow?.makeKeyAndOrderFront(nil)
+        return true
+    }
+    func showJoinCodes() { present(.join) { loadViewingWiFi() } }
+    func openSources() {
+        guard present(.connection) else { return }
+        refreshCaptureDevices(); Task { await refreshWireless() }
+    }
+    /// The source kinds chosen in Permissions, so reopening it explains the same access.
+    var permissionUses: PermissionUses {
+        get {
+            let saved = defaults.dictionary(forKey: "permissionUses") as? [String: Bool] ?? [:]
+            return PermissionUses(screen: saved["screen"] ?? false, camera: saved["camera"] ?? false,
+                                  transmitter: saved["transmitter"] ?? false, sharing: saved["sharing"] ?? true)
+        }
+        set {
+            guard !integration else { return }
+            defaults.set(["screen": newValue.screen, "camera": newValue.camera, "transmitter": newValue.transmitter, "sharing": newValue.sharing], forKey: "permissionUses")
+        }
+    }
+    /// First run explains access before any source asks for it. A Mac with a working setup has already been through it.
+    var showsPermissionsAtLaunch: Bool { !integration && provenSetup == nil && !defaults.bool(forKey: "permissionsIntroduced") }
     func refreshWireless() async {
         do { wirelessDevices = try await runtime.discoverWireless(); wirelessDiscoveryProblem = nil }
         catch { wirelessDiscoveryProblem = error.localizedDescription }
@@ -464,7 +636,45 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
         if device.network.interface == "lo0" { candidate.name = "Pyro H test stream" }
         connect(candidate, address: device.address)
     }
-    func openAdvanced(section: AdvancedSection = .workspace) { advancedSection = section; loadPrivateSettings(); sheet = .advanced }
+    func openSourceDetails() {
+        present(.sourceDetails) {
+            refreshCaptureDevices()
+            if !integration, setup?.kind == .accsoon, let ssid = setup?.sourceWiFi, !ssid.isEmpty {
+                transmitterWiFiPassword = SecureSettings.read("source-wifi-\(ssid)") ?? ""
+                transmitterOpenNetwork = defaults.bool(forKey: "sourceWiFiOpen-\(ssid)")
+            }
+        }
+    }
+    func openNetworkSource() {
+        present(.networkSource) {
+            savedNetworkURL = Self.networkSourcePrefill(kind: setup?.kind, activeAddress: activeNetworkURL)
+                ?? provenSetup.flatMap { $0.kind == .network ? SecureSettings.read($0.credentialAccount) : nil } ?? ""
+        }
+    }
+    nonisolated static func networkSourcePrefill(kind: InputKind?, activeAddress: String?) -> String? {
+        kind == .network ? activeAddress : nil
+    }
+    func showSharing(_ section: SharingSection) {
+        if sheet != nil || monitorWindow?.isVisible == false { sharingInWindow = true }
+        if section == .invite { loadViewingWiFi() }
+        if section == .options { prepareSharingDraft() }
+        lastSharingSection = section
+        sharingSection = section
+        sharingFocusRequest &+= 1
+        if sharingInWindow { sharingWindow?.makeKeyAndOrderFront(nil) }
+    }
+    func showSharingStatus() { showSharing(sharingSection ?? lastSharingSection) }
+    func showViewingNetwork() { showSharing(.options); sharingOptionsTarget &+= 1 }
+    func prepareSharingDraft() {
+        if sharingDraft == nil { sharingDraft = SharingOptionsDraft(address: localAddressLabel, network: networkChoice, quality: audienceQuality, frameRate: audienceFrameRate) }
+    }
+    func selectSettings(_ section: SettingsSection) {
+        settingsSection = section
+        if !integration { defaults.set(section.rawValue, forKey: "settingsSection") }
+    }
+    func closeSharing() { sharingSection = nil; sharingInWindow = false }
+    func showSharingInWindow() { sharingInWindow = true; sharingFocusRequest &+= 1; sharingWindow?.makeKeyAndOrderFront(nil) }
+    func dockSharing() { guard sharingCanDock else { return }; sharingInWindow = false; sharingFocusRequest &+= 1 }
     func restore(_ saved: SourceSetup) {
         // A window identity lasts only as long as its owner process. Restore that exact window or ask.
         if saved.kind == .macWindow, (saved.window.map { MacWindowLocator.status(of: $0).presence } ?? .closed) == .closed {
@@ -474,7 +684,7 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
         }
         let address = saved.kind == .network || saved.kind == .incoming ? SecureSettings.read(saved.credentialAccount) : nil
         if (saved.kind == .network || saved.kind == .incoming) && address == nil {
-            error = "The saved address is unavailable. Reconnect this source in Advanced."
+            error = "The saved address is unavailable. Reconnect this source using Enter Stream Address."
             if !state.monitoring { setup = saved }
             return
         }
@@ -509,13 +719,15 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
             }
             if state.sharing {
                 outgoingTransition.begin(.hold)
+                audienceControl.begin(.hold)
+                gateway.setChatFramePermission(false); clearChatAttachment(); updateSourceDisplayPointers()
             }
             preparingConnection = true
             defer { preparingConnection = false }
             localPlayer.stop(); audiencePlayer.stop(); audiencePreviewPlaying = false
             if !changingSource {
                 gateway.stop(); gatewayPort = nil; viewerURL = nil; viewers = []; sharingPower.hold(false)
-                localAddressPublisher.stop()
+                retireLocalAddress()
                 currentRuntime = nil
             }
             preview = nil; nativePreviewPlaying = false; sourceHasAudio = false; audienceHasAudio = false; testSoundConfirmed = false
@@ -533,7 +745,9 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
                     snapshot = try await runtime.prepare(source: chosen, viewerAddress: viewerAddress, inputAddress: inputAddress)
                 }
                 guard !shuttingDown else { return }
-                apply(snapshot); publishGatewayState()
+                apply(snapshot)
+                if state.sharing { audienceControl.complete(snapshot.session) }
+                publishGatewayState()
                 if let destination = await runtime.incomingDestination() { incomingServer = destination.server; incomingStreamKey = destination.streamKey }
                 let localURL = await runtime.localRTSP()
                 let audienceURL = state.sharing ? await runtime.localRTSP("live") : nil
@@ -542,7 +756,7 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
                 if let audienceURL { try audiencePlayer.start(url: audienceURL) }
                 if restoreFloating { floating.show() }
                 busy = false
-                if candidate.kind == .incoming && candidate.confirmedAt == nil { sheet = .incoming }
+                if candidate.kind == .incoming && candidate.confirmedAt == nil { present(.incoming) }
                 if integration && !changingSource { await startSharingNow(); writeIntegrationSession() }
             } catch {
                 guard !shuttingDown else { busy = false; return }
@@ -556,13 +770,20 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
                         setupConfirmed = originalSelection.confirmed
                     }
                     apply(actual)
+                    if actual.session.sharing {
+                        if actual.session.holding && actual.session.audienceAvailable { audienceControl.complete(actual.session) }
+                        else { audienceControl.fail(.hold, session: actual.session); outgoingTransition.reset() }
+                    }
                     if actual.session.monitoring {
                         let localURL = await runtime.localRTSP()
                         guard !shuttingDown else { return }
                         try? localPlayer.start(url: localURL)
                     }
                 }
-                self.error = state.sharing ? "The new input could not start. Viewers remain on Hold. Retry or return to the previous source." : "The connection could not start. Retry, or return to the previous source."
+                self.error = state.sharing
+                    ? (audiencePresentation.confirmedHold ? "The new input could not start. Viewers remain on Hold. Retry or return to the previous source."
+                       : "The new input could not start and holding output is not confirmed. Retry Hold or stop sharing.")
+                    : "The connection could not start. Retry, or return to the previous source."
                 lastRuntimeProblem = Redaction.text(error.localizedDescription)
                 if !state.monitoring { preview = nil }
                 if state.sharing {
@@ -575,6 +796,7 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
         }
     }
     func returnToPreviousSource() {
+        guard !protectsSourceDraft else { monitorWindow?.makeKeyAndOrderFront(nil); return }
         guard !busy, let previousSource else { return }
         connect(previousSource.setup, address: previousSource.address, remember: previousSource.remember)
     }
@@ -591,7 +813,7 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
         do {
             if setup.kind == .network || setup.kind == .incoming, let activeNetworkURL { try SecureSettings.store(activeNetworkURL, account: setup.credentialAccount) }
             try store.confirm(setup); provenSetup = store.setup; setupConfirmed = true
-        } catch { rememberFailed = true; self.error = "Your picture is working, but Setbeam could not remember this connection. Retry saving in Advanced." }
+        } catch { rememberFailed = true; self.error = "Your picture is working, but Setbeam could not remember this connection. Retry saving in Source Details." }
     }
     func retry() {
         guard !busy else { return }; error = nil
@@ -614,8 +836,10 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
         else { openSources() }
     }
     func forgetSetup() {
+        let current = provenSetup.map { $0.id == setup?.id } ?? false
         if let provenSetup { SecureSettings.remove(provenSetup.credentialAccount) }
-        store.forget(); provenSetup = nil; rememberSetup = false
+        store.forget(); provenSetup = nil
+        if current { rememberSetup = false }
     }
     func prepareAccsoon() {
         let saved = provenSetup?.kind == .incoming ? provenSetup : nil
@@ -630,6 +854,7 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
     func renameSource(_ name: String, remember: Bool) {
         guard var setup else { return }
         if !name.isEmpty && setup.kind != .sample { setup.name = name; self.setup = setup }
+        if !remember && provenSetup?.id == setup.id { forgetSetup() }
         rememberSetup = remember; setupConfirmed = false; readiness = SetupReadiness()
         rememberFailed = false
     }
@@ -644,7 +869,7 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
             await refreshNetworks()
             guard !shuttingDown else { busy = false; return }
             apply(try await runtime.startSharing())
-            appliedReaders = []
+            appliedReaders = []; viewingLink += 1
             guard !shuttingDown else { busy = false; return }
             outgoingTransition.observeReady(outgoingReady)
             publishGatewayState()
@@ -652,22 +877,27 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
             guard !shuttingDown else { busy = false; return }
             if let port = gatewayPort, let snapshot = currentRuntime { viewerURL = URL(string: "http://\(viewerAddress):\(port)/s/\(snapshot.guestToken)/") }
             updateLocalAddress()
+            observeJoinRequests()
             let audienceURL = await runtime.localRTSP("live")
             guard !shuttingDown else { busy = false; return }
             try audiencePlayer.start(url: audienceURL)
             networkChanged = false; sharingPower.hold(true)
         } catch {
             guard !shuttingDown else { busy = false; return }
-            gateway.stop(); gatewayPort = nil; viewerURL = nil; localAddressPublisher.stop(); await runtime.stopSharing(); apply(await runtime.snapshot()); outgoingTransition.reset(); audiencePlayer.stop(); self.error = "Sharing could not start. Check the viewing network and try again."; lastRuntimeProblem = Redaction.text(error.localizedDescription)
+            gateway.stop(); gatewayPort = nil; viewerURL = nil; retireLocalAddress(); await runtime.stopSharing(); apply(await runtime.snapshot()); outgoingTransition.reset(); audiencePlayer.stop(); self.error = "Sharing could not start. Check the viewing network and try again."; lastRuntimeProblem = Redaction.text(error.localizedDescription)
         }
         busy = false; writeIntegrationSession()
     }
-    func toggleHold() {
+    func toggleHold() { performAudienceAction() }
+    func setAudienceHold(_ value: Bool) {
         guard state.sharing, !busy else { return }; busy = true
-        let value = !state.holding
         guard value || localReady else { busy = false; error = "Wait for a fresh local picture before resuming sharing."; return }
+        audienceControl.begin(AudienceTarget(holding: value))
+        gateway.setChatFramePermission(false); clearChatAttachment()
+        updateSourceDisplayPointers()
         outgoingTransition.begin(value ? .hold : .resume)
         testSoundConfirmed = false
+        writeExperienceState()
         Task {
             do {
                 try await runtime.setHold(value)
@@ -675,35 +905,92 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
                 let audienceURL = await runtime.localRTSP("live")
                 guard !shuttingDown else { busy = false; return }
                 apply(snapshot)
+                audienceControl.complete(snapshot.session)
                 audiencePlayer.stop(); audiencePreviewPlaying = false
                 try? audiencePlayer.start(url: audienceURL)
             }
             catch {
                 guard !shuttingDown else { busy = false; return }
-                apply(await runtime.snapshot()); outgoingTransition.reset(); self.error = "The audience change did not finish. Retry the audience control."; lastRuntimeProblem = Redaction.text(error.localizedDescription)
+                apply(await runtime.snapshot()); audienceControl.fail(AudienceTarget(holding: value), session: state); outgoingTransition.reset(); self.error = value ? "Hold did not finish. Retry Hold or stop sharing." : "Resume did not finish. Retry Resume, Hold, or stop sharing."; lastRuntimeProblem = Redaction.text(error.localizedDescription)
             }
             publishGatewayState()
-            busy = false
+            busy = false; writeExperienceState()
         }
     }
     func stopSharing() {
-        guard !busy else { return }; busy = true
-        Task { await endSharing(); busy = false }
+        guard !busy else { return }; busy = true; stoppingSharing = true
+        gateway.setChatFramePermission(false); clearChatAttachment()
+        updateSourceDisplayPointers()
+        Task { await endSharing(); stoppingSharing = false; busy = false }
     }
     private func endSharing() async {
         sharingPower.hold(false)
-        // The name ends with the viewing link. Stop rotates the link, so old links stay expired.
-        localAddressPublisher.stop()
+        // The name and short address end with the viewing link. Stop rotates the link, so old links stay expired.
+        retireLocalAddress()
         outgoingTransition.reset()
         audiencePlayer.stop(); audiencePreviewPlaying = false; audienceHasAudio = false; testSoundConfirmed = false
         await runtime.stopSharing()
-        appliedReaders = []; pointerPresence.clear()
+        appliedReaders = []; pointerPresence.clear(); pointersOnThisMac = false
         apply(await runtime.snapshot()); publishGatewayState()
+        viewers = gateway.viewers
     }
     private func publishGatewayState() {
         guard let snapshot = currentRuntime else { return }
         gateway.update(ViewerSession(token: snapshot.guestToken, title: title, sample: source == .sample, state: state.audience,
             playback: snapshot.audience, revision: snapshot.audienceRevision, wifiSSID: wifiSSID))
+        gateway.setChatFramePermission(canCaptureChatFrame)
+    }
+    var canCaptureChatFrame: Bool { state.audience == .live && outgoingReady && audiencePreviewPlaying && audienceControl.pending == nil && !busy && !shuttingDown }
+    func refreshChat() {
+        let messages = state.sharing ? gateway.chatMessages : []
+        if messages != chatMessages {
+            let imageIDs = Set(messages.filter(\.hasFrame).map(\.id))
+            chatImages = chatImages.filter { imageIDs.contains($0.key) }
+            for id in imageIDs where chatImages[id] == nil { if let data = gateway.chatFrame(id: id), let image = NSImage(data: data) { chatImages[id] = image } }
+            chatMessages = messages
+            if let id = chatReplyTo, !messages.contains(where: { $0.id == id }) { chatReplyTo = nil }
+        }
+        if sharingSection == .chat, NSApp.isActive, (sharingInWindow ? sharingWindow : monitorWindow)?.isKeyWindow == true { markChatRead() }
+        if !state.sharing { chatText = ""; chatReplyTo = nil; chatReadThrough = 0; clearChatAttachment() }
+    }
+    func chatFrame(id: Int) -> Data? { gateway.chatFrame(id: id) }
+    func clearChatAttachment() { chatCaptureGeneration = UUID(); chatCapturing = false; chatAttachment = nil; chatAttachmentRevision = nil; chatAttachmentLink = nil }
+    func captureChatFrame() {
+        guard !chatCapturing, canCaptureChatFrame, let picture = audiencePlayer.picture, let snapshot = currentRuntime else { return }
+        let generation = UUID(), link = viewingLink, revision = snapshot.audienceRevision
+        chatCaptureGeneration = generation; chatCapturing = true
+        Task {
+            let data = await Task.detached(priority: .userInitiated) { ChatFrameEncoder.encode(picture) }.value
+            guard chatCaptureGeneration == generation else { return }
+            chatCapturing = false
+            guard link == viewingLink, currentRuntime?.audienceRevision == revision, canCaptureChatFrame else { return }
+            guard let data else { chatProblem = "The outgoing frame could not be prepared. Try another frame."; return }
+            chatAttachment = data; chatAttachmentRevision = revision; chatAttachmentLink = link; chatProblem = nil
+        }
+    }
+    func sendChat() {
+        guard state.sharing, let snapshot = currentRuntime else { return }
+        do {
+            if chatAttachment != nil, chatAttachmentLink != viewingLink || chatAttachmentRevision != snapshot.audienceRevision || !canCaptureChatFrame { clearChatAttachment(); throw SetbeamError.unavailable("The feed changed. Capture a new frame before sending.") }
+            try gateway.postChat(text: chatText, replyTo: chatReplyTo, frame: chatAttachment, revision: snapshot.audienceRevision,
+                                 token: snapshot.guestToken, name: chatOperatorName, color: chatOperatorColor, requestID: UUID().uuidString)
+            chatText = ""; chatReplyTo = nil; clearChatAttachment(); chatProblem = nil; refreshChat()
+        } catch { chatProblem = error.localizedDescription }
+    }
+    func likeChat(_ message: ChatMessage) {
+        guard let snapshot = currentRuntime else { return }
+        do { try gateway.likeChat(id: message.id, liked: !message.liked, token: snapshot.guestToken); chatProblem = nil; refreshChat() }
+        catch { chatProblem = error.localizedDescription }
+    }
+    func reactChat(_ message: ChatMessage, reaction: ChatReaction) {
+        guard let snapshot = currentRuntime else { return }
+        let selected = message.reactions.contains { $0.reaction == reaction && $0.selected }
+        do { try gateway.reactChat(id: message.id, reaction: selected ? nil : reaction, token: snapshot.guestToken); chatProblem = nil; refreshChat() }
+        catch { chatProblem = error.localizedDescription }
+    }
+    func removeChat(_ message: ChatMessage) {
+        guard let snapshot = currentRuntime else { return }
+        gateway.removeChat(id: message.id, token: snapshot.guestToken); refreshChat()
     }
     func refreshNetworks() async {
         guard !shuttingDown else { return }
@@ -736,21 +1023,30 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
                 updateLocalAddress()
                 guard !shuttingDown else { return }
                 _ = try await gateway.start(address: address, port: port)
-            } else { gateway.stop(); gatewayPort = nil; viewerURL = nil; viewers = []; localAddressPublisher.stop() }
+            } else { gateway.stop(); gatewayPort = nil; viewerURL = nil; viewers = []; retireLocalAddress() }
             viewerNetworkNeedsUpdate = false
         }
         catch { lastRuntimeProblem = Redaction.text(error.localizedDescription) }
     }
-    func saveViewingSettings(network: String, ssid: String, password: String) {
-        let selectionChanged = network != networkChoice
-        networkChoice = network; wifiSSID = ssid; wifiPassword = password
-        if !integration {
-            defaults.set(network, forKey: "viewerInterface"); defaults.set(ssid, forKey: "wifiSSID")
-            do { if password.isEmpty { SecureSettings.remove("viewing-wifi-\(ssid)") } else { try SecureSettings.store(password, account: "viewing-wifi-\(ssid)") } }
-            catch { self.error = "The viewing Wi-Fi password could not be saved." }
+    @discardableResult func saveViewingSettings(network: String, ssid: String, password: String) -> Bool {
+        let secret = ssid.isEmpty ? "" : password
+        if !integration && !ssid.isEmpty {
+            do { if secret.isEmpty { SecureSettings.remove("viewing-wifi-\(ssid)") } else { try SecureSettings.store(secret, account: "viewing-wifi-\(ssid)") } }
+            catch { self.error = "The viewing Wi-Fi password could not be saved."; return false }
         }
+        wifiSSID = ssid; wifiPassword = secret; loadedWiFiSSID = ssid
+        viewingWiFiPasswordAvailable = true
+        if error == "The viewing Wi-Fi password could not be saved." { error = nil }
+        if !integration { defaults.set(ssid, forKey: "wifiSSID"); defaults.set(!secret.isEmpty, forKey: "viewingWiFiProtected-\(ssid)") }
         publishGatewayState()
-        if selectionChanged { Task { if state.sharing { await endSharing(); networkChanged = true }; await refreshNetworks() } }
+        changeViewingNetwork(network)
+        return true
+    }
+    func changeViewingNetwork(_ network: String) {
+        guard network != networkChoice else { return }
+        networkChoice = network
+        if !integration { defaults.set(network, forKey: "viewerInterface") }
+        Task { if state.sharing { await endSharing(); networkChanged = true }; await refreshNetworks() }
     }
     func setAudienceQuality(_ quality: AudienceQuality) {
         setVideoSettings(quality: quality, frameRate: audienceFrameRate, screenRate: screenFrameRate)
@@ -766,17 +1062,24 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
         Task { await runtime.setVideoSettings(quality: quality, frameRate: frameRate, screenFrameRate: screenRate) }
     }
     /// Opt-in. Joining another Wi-Fi network is never automatic unless the operator enables it here.
-    func setTransmitterRejoin(_ enabled: Bool, password: String) {
-        guard let ssid = setup?.sourceWiFi, !ssid.isEmpty else { return }
-        transmitterRejoin = enabled; rejoinPolicy = TransmitterRejoinPolicy(); rejoinProblem = nil
-        rejoinAttempt?.permit.revoke()
-        if !integration { defaults.set(enabled, forKey: "transmitterWiFiRejoin") }
-        do { if password.isEmpty { SecureSettings.remove("source-wifi-\(ssid)") } else { try SecureSettings.store(password, account: "source-wifi-\(ssid)") } }
-        catch { self.error = "The transmitter Wi-Fi password could not be saved." }
-        transmitterWiFiPassword = password
+    @discardableResult func setTransmitterRejoin(_ enabled: Bool, password: String, openNetwork: Bool = false) -> Bool {
+        guard let ssid = setup?.sourceWiFi, !ssid.isEmpty else { return false }
+        guard !enabled || !password.isEmpty || openNetwork else {
+            rejoinProblem = "Enter the transmitter's Wi-Fi password or choose an open network before enabling automatic rejoin."
+            return false
+        }
+        if !password.isEmpty || openNetwork {
+            do { if openNetwork { SecureSettings.remove("source-wifi-\(ssid)") } else { try SecureSettings.store(password, account: "source-wifi-\(ssid)") } }
+            catch { rejoinProblem = "The transmitter Wi-Fi password could not be saved."; return false }
+            transmitterWiFiPassword = openNetwork ? "" : password
+        }
+        transmitterRejoin = enabled; transmitterOpenNetwork = openNetwork
+        rejoinPolicy = TransmitterRejoinPolicy(); rejoinProblem = nil; rejoinAttempt?.permit.revoke()
+        if !integration { defaults.set(enabled, forKey: "transmitterWiFiRejoin"); defaults.set(openNetwork, forKey: "sourceWiFiOpen-\(ssid)") }
         if enabled { transmitterWiFi.requestLocation() }
         if enabled && transmitterWiFi.locationDenied { rejoinProblem = TransmitterWiFiResult.needsLocation.message }
         SessionLog.shared.record("wifi.rejoin.setting", ["enabled": enabled])
+        return true
     }
     private func rejoinTransmitterIfNeeded() {
         // Sharing over Wi-Fi depends on the current network; switching it would end viewing.
@@ -804,6 +1107,7 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
         }
     }
     func togglePiP() { pipVisible ? floating.close() : floating.show() }
+    func focusFloatingPreview() { floating.focusForKeyboard() }
     func toggleLocalSound() {
         localMuted.toggle()
         if !integration { defaults.set(localMuted, forKey: "localMuted") }
@@ -844,13 +1148,77 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
     }
     /// Publishes only while sharing on a network viewers can join, on that viewing interface and address.
     private func updateLocalAddress() {
+        defer { updateShortAddress() }
         guard !shuttingDown, state.sharing, gatewayPort != nil, localAddressEnabled, canInviteOtherDevices, viewerInterface != "lo0" else {
             localAddressPublisher.stop(); return
         }
         localAddressPublisher.publish(label: localAddressLabel, scope: .interface(viewerInterface), address: viewerAddress)
     }
+    /// Removes the name and stops answering the short address at once. Every caller also ends or rotates
+    /// the viewing link, which retires the short-address path, so waiting pages see sharing end, not a refusal.
+    private func retireLocalAddress() {
+        localAddressPublisher.stop(); shortAddressListener.stop()
+    }
+    func setShortAddress(enabled: Bool) {
+        guard enabled != shortAddressEnabled else { return }
+        shortAddressEnabled = enabled
+        if !integration { defaults.set(enabled, forKey: "shortAddressEnabled") }
+        SessionLog.shared.record("short.address.setting", ["enabled": enabled])
+        updateShortAddress()
+        viewers = gateway.viewers
+    }
+    /// Viewers may ask from the short address only while the operator allows it, approval is on, and the
+    /// local address is offered for a shared link on a network others can join.
+    var shortAddressOpen: Bool {
+        shortAddressEnabled && viewerApproval && localAddressEnabled && state.sharing && gatewayPort != nil
+            && canInviteOtherDevices && viewerInterface != "lo0" && !shuttingDown
+    }
+    /// The gateway accepts new short-address requests while it is open. Port 80 answers only once the
+    /// name is active, and only connections to the viewing address.
+    private func updateShortAddress() {
+        let open = shortAddressOpen
+        gateway.setShortAddress(open: open)
+        guard open, let label = localAddress.activeLabel, let port = gatewayPort, let path = gateway.shortAddressPath else {
+            shortAddressListener.stop(); return
+        }
+        shortAddressListener.serve(.init(address: viewerAddress, hosts: [LocalAddressName.host(label)], port: port, path: path))
+    }
+    func shortAddressChanged(_ value: ShortAddressListener.State) {
+        shortAddress = value
+        let detail: [String: Any]
+        switch value {
+        case .stopped: detail = ["state": "stopped"]
+        case .starting: detail = ["state": "starting"]
+        case .active: detail = ["state": "active"]
+        case .unavailable(let problem): detail = ["state": "unavailable", "problem": problem.rawValue]
+        }
+        SessionLog.shared.record("short.address", detail)
+    }
+    /// The typed name that opens the short address now, if any.
+    var shortAddressHost: String? {
+        guard shortAddressOpen, shortAddress == .active, let label = localAddress.activeLabel else { return nil }
+        return LocalAddressName.host(label)
+    }
+    /// What typing the name does now, in the operator's words. Shown in Settings and invitations.
+    var shortAddressStatus: (text: String, attention: Bool) {
+        let host = LocalAddressName.host(localAddress.activeLabel ?? localAddressLabel)
+        if !shortAddressEnabled { return ("Off. Viewers need the whole link or QR code.", false) }
+        if !localAddressEnabled { return ("Turn on Offer a local address to use this.", true) }
+        if !viewerApproval { return ("Turn on Ask before viewers join. Until then, typing \(host) doesn't open anything.", true) }
+        if !canInviteOtherDevices || viewerInterface == "lo0" { return ("Choose a viewing network to use \(host).", false) }
+        if !state.sharing || gatewayPort == nil { return ("Viewers can type \(host) and ask to join while you share.", false) }
+        guard localAddress.activeLabel != nil else { return ("Waiting for the local address. Send the link or QR code for now.", false) }
+        switch shortAddress {
+        case .active: return ("Viewers on this network can type \(host) and ask to join.", false)
+        case .stopped, .starting: return ("Starting \(host)…", false)
+        case .unavailable(.inUse): return ("Another app is using this Mac's web port (80), so typing \(host) doesn't reach Setbeam. Send the link or QR code. Setbeam keeps trying.", true)
+        case .unavailable(.denied): return ("macOS didn't let Setbeam answer on port 80, so typing \(host) doesn't reach Setbeam. Send the link or QR code. Setbeam keeps trying.", true)
+        case .unavailable(.unavailable): return ("Typing \(host) isn't available right now. Send the link or QR code. Setbeam keeps trying.", true)
+        }
+    }
     func localAddressChanged(_ value: LocalAddressState) {
         localAddress = value
+        updateShortAddress()
         let detail: [String: Any]
         switch value {
         case .stopped: detail = ["state": "stopped"]
@@ -877,11 +1245,18 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
         case .unavailable(.service): return ("\(requested) isn't available right now. Invitations use the IP address while Setbeam retries.", true)
         }
     }
-    func loadPrivateSettings() {
-        savedNetworkURL = activeNetworkURL ?? provenSetup.flatMap { $0.kind == .network ? SecureSettings.read($0.credentialAccount) : nil } ?? ""
-        if !integration && !wifiSSID.isEmpty { wifiPassword = SecureSettings.read("viewing-wifi-\(wifiSSID)") ?? "" }
-        if !integration, let ssid = setup?.sourceWiFi, !ssid.isEmpty { transmitterWiFiPassword = SecureSettings.read("source-wifi-\(ssid)") ?? "" }
-        refreshCaptureDevices()
+    func loadViewingWiFi() {
+        guard loadedWiFiSSID != wifiSSID || !viewingWiFiPasswordAvailable else { return }
+        if !integration && !wifiSSID.isEmpty {
+            switch SecureSettings.readOutcome("viewing-wifi-\(wifiSSID)") {
+            case .value(let value): wifiPassword = value; viewingWiFiPasswordAvailable = true
+            case .missing:
+                wifiPassword = ""
+                viewingWiFiPasswordAvailable = defaults.object(forKey: "viewingWiFiProtected-\(wifiSSID)") != nil && !defaults.bool(forKey: "viewingWiFiProtected-\(wifiSSID)")
+            case .unavailable: wifiPassword = ""; viewingWiFiPasswordAvailable = false
+            }
+        } else { viewingWiFiPasswordAvailable = true }
+        loadedWiFiSSID = wifiSSID
     }
     func openWiFiSettings() { NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.wifi-settings-extension")!) }
     func openPrivacySettings() { NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_\(screenPermissionDenied || setup?.kind.isMacCapture == true ? "ScreenCapture" : "Camera")")!) }
@@ -904,6 +1279,7 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
             data["lastRuntimeProblem"] = Redaction.text(lastRuntimeProblem); data["setupConfirmed"] = setupConfirmed
             data["connectionStage"] = connectionStage?.rawValue ?? ""
             data["localAddress"] = localAddressStatus.text
+            data["shortAddress"] = shortAddressStatus.text
             guard let encoded = try? JSONSerialization.data(withJSONObject: data, options: [.prettyPrinted, .sortedKeys]), let text = String(data: encoded, encoding: .utf8) else { return }
             NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string); diagnosticCopied = true
         }
@@ -918,9 +1294,9 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
     }
     /// A visible live picture keeps the display awake; a missing picture or hidden monitor lets it sleep.
     private func updateDisplayWake() {
-        let previewVisible = pipVisible || NSApp.windows.contains {
-            $0.canBecomeMain && $0.isVisible && !$0.isMiniaturized && $0.occlusionState.contains(.visible)
-        }
+        let previewVisible = pipVisible || (monitorWindow.map {
+            $0.isVisible && !$0.isMiniaturized && $0.occlusionState.contains(.visible)
+        } ?? false)
         let wanted = !shuttingDown && localReady && previewVisible
         if displayPower.hold(wanted) { SessionLog.shared.record(wanted ? "display.awake.on" : "display.awake.off") }
     }
@@ -932,7 +1308,8 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
     }
     func shutdown() async {
         shuttingDown = true; pollTask?.cancel(); runtimeUpdates?.cancel(); sourceBrowser.stop(); observers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
-        floating.close(); localPlayer.stop(); audiencePlayer.stop(); gateway.stop(); localAddressPublisher.stop(); sharingPower.hold(false); displayPower.hold(false)
+        if let displayObserver { NotificationCenter.default.removeObserver(displayObserver) }
+        floating.close(); sourceDisplayPointers.close(); joinCodeWindow.close(); joinRequests.close(); localPlayer.stop(); audiencePlayer.stop(); gateway.stop(); retireLocalAddress(); sharingPower.hold(false); displayPower.hold(false)
         SessionLog.shared.record("app.quit", ["sharing": state.sharing])
         await runtime.shutdown(); apply(await runtime.snapshot())
     }
@@ -942,18 +1319,28 @@ enum AdvancedSection: Hashable { case workspace, connection, network, diagnostic
             "pid": ProcessInfo.processInfo.processIdentifier])
     }
     private func writeExperienceState() {
+        guard CommandLine.arguments.contains("--experience-file") else { return }
         writeFile(option: "--experience-file", value: ["monitoring": state.monitoring, "sharing": state.sharing, "holding": state.holding,
-            "sourceAvailable": state.sourceAvailable, "nativePreviewPlaying": nativePreviewPlaying, "setupConfirmed": setupConfirmed,
+            "pid": ProcessInfo.processInfo.processIdentifier,
+            "fullKeyboardAccess": NSApp.isFullKeyboardAccessEnabled,
+            "pointersOnSourceDisplay": pointersOnSourceDisplay, "sourcePointerWindow": sourceDisplayPointers.windowNumber ?? 0,
+            "chatCount": chatMessages.count, "chatCapturing": chatCapturing,
+            "sourceAvailable": state.sourceAvailable, "nativePreviewPlaying": nativePreviewPlaying, "busy": busy, "canShare": canShare, "setupConfirmed": setupConfirmed,
             "sourceName": sourceLabel, "kind": setup?.kind.rawValue ?? "none", "savedSetupID": provenSetup?.id.uuidString ?? "",
-            "floatingVisible": pipVisible, "localMuted": localMuted, "viewersOpened": openedViewers, "viewersPlaying": verifiedViewers,
+            "floatingVisible": pipVisible, "floatingKey": floating.keyboardActive, "floatingWash": floatingPresentation.washed, "floatingControl": String(describing: floatingPresentation.center), "audienceControlPending": audienceControl.pending.map { $0.holding ? "hold" : "resume" } ?? "", "localMuted": localMuted, "viewersOpened": openedViewers, "viewersPlaying": verifiedViewers,
             "status": statusLabel, "audience": state.audience.rawValue, "connectionStage": connectionStage?.rawValue ?? "",
             "viewerFPS": audienceFrameRate.rawValue, "screenFPS": screenFrameRate.rawValue,
             "audiencePreviewPlaying": audiencePreviewPlaying, "sourceHasAudio": sourceHasAudio, "audienceHasAudio": audienceHasAudio,
             "otherDeviceViewers": otherDeviceViewers, "setupCheckPassed": setupCheck.passed, "previousSource": previousSourceName ?? "",
             "viewerApproval": viewerApproval, "sharedPointers": sharedPointers, "viewersPending": pendingViewers.count,
-            "viewersPointing": pointingViewers, "nativePointers": pointerPresence.items.count,
+            "viewersPointing": pointingViewers, "nativePointers": pointerPresence.items.count, "pointersOnThisMac": pointersOnThisMac,
+            "nativePointersShown": showsPointers ? pointerPresence.items.count : 0,
             "localAddressEnabled": localAddressEnabled, "localAddressName": localAddressLabel,
-            "localAddressActive": localAddress.activeLabel ?? "", "localAddressStatus": localAddressStatus.text])
+            "localAddressActive": localAddress.activeLabel ?? "", "localAddressStatus": localAddressStatus.text,
+            "shortAddressEnabled": shortAddressEnabled, "shortAddressOpen": shortAddressOpen, "shortAddressActive": shortAddressHost ?? "",
+            "shortAddressStatus": shortAddressStatus.text, "sharingPanel": sharingSection?.rawValue ?? "",
+            "sharingInWindow": sharingInWindow, "sharingFocusRequest": sharingFocusRequest, "sheet": sheet?.rawValue ?? "", "joinRequestCard": joinRequests.isShowing,
+            "joinRequestsShown": joinRequests.requests.count, "joinRequestAlerts": joinRequests.alerts])
     }
     private func writeFile(option: String, value: [String: Any]) {
         let args = CommandLine.arguments

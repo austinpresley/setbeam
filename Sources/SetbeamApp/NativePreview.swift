@@ -18,6 +18,8 @@ import SetbeamCore
     private var soundFailureReported = false
     private var sourceReady = false
     private var watchdog: Task<Void, Never>?
+    /// Decoder recovery must not reset the budget while old renderers retain buffers.
+    private let pictureAllocations = PreviewBufferAllocations(limit: PreviewPicturePool.maximumBuffers)
     private let audioEnabled: Bool
     private let width: Int
     private let frameRate: Int
@@ -55,7 +57,7 @@ import SetbeamCore
         lastFrameAt = .distantPast; decoderStartedAt = Date()
         soundRequestedAt = muted ? nil : Date(); soundFailureReported = false
         let current = generation
-        let output = PreviewPlayback(audioEnabled: audioEnabled, muted: muted) { [weak self] frame in
+        let output = PreviewPlayback(audioEnabled: audioEnabled, muted: muted, allocations: pictureAllocations) { [weak self] frame in
             Task { @MainActor in
                 guard let self, self.generation == current else { return }
                 self.picture = frame; self.lastFrameAt = Date()
@@ -144,7 +146,7 @@ private final class PreviewPlayback: @unchecked Sendable {
     private var stats = PreviewPlaybackStats()
     private var stopped = false, muted: Bool, audioBusy = false, audioReset = false
     private var latestImage: PreviewPicture?, deliveryPending = false
-    private var pool: CVPixelBufferPool?, poolFormat = (width: 0, height: 0, format: OSType(0))
+    private let pictures: PreviewPicturePool
     private var latestPTS = 0.0
     private var latestWidth = 0, latestHeight = 0
     private let audioEnabled: Bool
@@ -156,8 +158,9 @@ private final class PreviewPlayback: @unchecked Sendable {
     private var anchored = false
     private let onFrame: @Sendable (PreviewPicture) -> Void
 
-    init(audioEnabled: Bool, muted: Bool, onFrame: @escaping @Sendable (PreviewPicture) -> Void) {
+    init(audioEnabled: Bool, muted: Bool, allocations: PreviewBufferAllocations, onFrame: @escaping @Sendable (PreviewPicture) -> Void) {
         self.audioEnabled = audioEnabled; self.muted = muted; self.onFrame = onFrame
+        pictures = PreviewPicturePool(allocations: allocations)
         synchronizer.delaysRateChangeUntilHasSufficientMediaData = false
         let timer = DispatchSource.makeTimerSource(queue: videoQueue)
         timer.schedule(deadline: .now(), repeating: .milliseconds(8), leeway: .milliseconds(1))
@@ -204,7 +207,7 @@ private final class PreviewPlayback: @unchecked Sendable {
         if shouldAudio { audioBusy = true }
         stats.clockPTS = now
         lock.unlock()
-        if let frame, let image = makePicture(frame) {
+        if let frame, let image = pictures.makePicture(frame) {
             lock.lock()
             if latestImage != nil { stats.droppedPresentationFrames += 1 }
             latestImage = image; latestPTS = frame.seconds
@@ -223,6 +226,8 @@ private final class PreviewPlayback: @unchecked Sendable {
                     if let latest { self.onFrame(latest) }
                 }
             }
+        } else if frame != nil {
+            lock.lock(); stats.droppedPresentationFrames += 1; lock.unlock()
         }
         if shouldAudio { audioQueue.async { [weak self] in self?.renderAudio() } }
     }
@@ -261,35 +266,6 @@ private final class PreviewPlayback: @unchecked Sendable {
         lock.lock(); stats.audioRendering = renderer.status == .rendering
         if renderer.status == .failed { stats.audioError = "Local sound could not start. Check the Mac's sound output and try again. Video monitoring continues." }
         lock.unlock()
-    }
-    /// Runs on the picture queue only. Pooled IOSurfaces avoid mapping a new 12 MB surface per 4K frame.
-    private func makePicture(_ frame: PreviewPacket) -> PreviewPicture? {
-        let format = frame.flags & 1 != 0 ? kCVPixelFormatType_420YpCbCr8BiPlanarFullRange : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
-        if pool == nil || poolFormat != (frame.width, frame.height, format) {
-            let attributes: [CFString: Any] = [kCVPixelBufferPixelFormatTypeKey: format, kCVPixelBufferWidthKey: frame.width,
-                                               kCVPixelBufferHeightKey: frame.height, kCVPixelBufferIOSurfacePropertiesKey: [:]]
-            pool = nil; CVPixelBufferPoolCreate(kCFAllocatorDefault, nil, attributes as CFDictionary, &pool)
-            poolFormat = (frame.width, frame.height, format)
-        }
-        var pixelBuffer: CVPixelBuffer?
-        guard let pool, CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &pixelBuffer) == kCVReturnSuccess, let pixelBuffer else { return nil }
-        CVPixelBufferLockBaseAddress(pixelBuffer, [])
-        frame.payload.withUnsafeBytes { bytes in
-            guard let source = bytes.baseAddress else { return }
-            for plane in 0..<2 {
-                let rows = plane == 0 ? frame.height : frame.height / 2
-                let start = plane == 0 ? 0 : frame.width * frame.height
-                guard let destination = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, plane) else { continue }
-                let stride = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, plane)
-                if stride == frame.width { memcpy(destination, source.advanced(by: start), rows * frame.width); continue }
-                for row in 0..<rows { memcpy(destination.advanced(by: row * stride), source.advanced(by: start + row * frame.width), frame.width) }
-            }
-        }
-        CVPixelBufferUnlockBaseAddress(pixelBuffer, [])
-        let matrix = frame.matrix == 1 ? kCVImageBufferYCbCrMatrix_ITU_R_709_2 : frame.matrix == 9 ? kCVImageBufferYCbCrMatrix_ITU_R_2020 : kCVImageBufferYCbCrMatrix_ITU_R_601_4
-        CVBufferSetAttachment(pixelBuffer, kCVImageBufferYCbCrMatrixKey, matrix, .shouldPropagate)
-        let size = NSSize(width: Double(frame.width) * Double(frame.aspectNumerator) / Double(frame.aspectDenominator), height: Double(frame.height))
-        return PreviewPicture(pixelBuffer: pixelBuffer, size: size)
     }
     private func makeAudioBuffer(_ packet: PreviewPacket) -> CMSampleBuffer? {
         var description = AudioStreamBasicDescription(mSampleRate: 48_000, mFormatID: kAudioFormatLinearPCM,

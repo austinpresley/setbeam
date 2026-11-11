@@ -4,6 +4,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 mkdir -p build/logs
 git diff --check
+python3 -m unittest discover -s Tests/SetbeamPreviewBridgeTests > build/logs/preview-timing-tests.log 2>&1 || { cat build/logs/preview-timing-tests.log; exit 1; }
+cat build/logs/preview-timing-tests.log
 scripts/build-preview-bridge.sh
 python3 scripts/check-preview-bridge.py --tools "${SETBEAM_TEST_TOOLS:-$ROOT/Vendor/bin}" > build/logs/preview-bridge-integration.log 2>&1 || { cat build/logs/preview-bridge-integration.log; exit 1; }
 cat build/logs/preview-bridge-integration.log
@@ -21,6 +23,8 @@ if [[ -x Vendor/bin/ffmpeg && -x Vendor/bin/mediamtx ]]; then
   cat build/logs/viewer-access.log
   swift run --skip-build SetbeamProbe --local-address-test --tools "${SETBEAM_TEST_TOOLS:-$ROOT/Vendor/bin}" --fixtures "${SETBEAM_TEST_FIXTURES:-$ROOT/Fixtures}" > build/logs/local-address.log 2>&1 || { cat build/logs/local-address.log; exit 1; }
   cat build/logs/local-address.log
+  swift run --skip-build SetbeamProbe --short-address-test --tools "${SETBEAM_TEST_TOOLS:-$ROOT/Vendor/bin}" --fixtures "${SETBEAM_TEST_FIXTURES:-$ROOT/Fixtures}" > build/logs/short-address.log 2>&1 || { cat build/logs/short-address.log; exit 1; }
+  cat build/logs/short-address.log
   swift run --skip-build SetbeamProbe --safety-test --tools "${SETBEAM_TEST_TOOLS:-$ROOT/Vendor/bin}" --fixtures "${SETBEAM_TEST_FIXTURES:-$ROOT/Fixtures}" > build/logs/source-switching.log 2>&1 || { cat build/logs/source-switching.log; exit 1; }
   cat build/logs/source-switching.log
   swift run --skip-build SetbeamProbe --format-test --tools "${SETBEAM_TEST_TOOLS:-$ROOT/Vendor/bin}" --fixtures "${SETBEAM_TEST_FIXTURES:-$ROOT/Fixtures}" > build/logs/media-formats.log 2>&1 || { cat build/logs/media-formats.log; exit 1; }

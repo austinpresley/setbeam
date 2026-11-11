@@ -28,6 +28,8 @@ public struct ViewerActivity: Sendable, Identifiable {
     public var admission: ViewerAdmission = .admitted
     public var color: PointerColor = .blue
     public var joinedAt: Date = .distantPast
+    /// Asked to join from the short address rather than the viewing link.
+    public var shortAddress = false
     /// Shares a named pointer with other participants.
     public var pointing = false
 
@@ -65,8 +67,13 @@ public final class ViewerGateway: @unchecked Sendable {
     private var stoppedListener: NWListener?
     var session: ViewerSession?
     var ledger = ViewerAccessLedger()
+    /// The ask-only short-address path code. It is never the viewing link's code, which is also the
+    /// shared media read credential, and it changes with every new link and at Stop.
+    private var shortAddressCode = ViewerAccessLedger.randomSecret(bytes: 32)
     var presence = PointerPresence(revision: 0)
     var pointersEnabled = false
+    var chat = SessionChat()
+    var chatFramesAllowed = false
     /// Open presence channels, at most one per participant once identified.
     var presenceClients: [ObjectIdentifier: PresenceClient] = [:]
     var presenceFlushScheduled = false
@@ -119,7 +126,8 @@ public final class ViewerGateway: @unchecked Sendable {
             self.session = session
             // A new token is a new viewing link. Readers of the old link must reconnect and get 404.
             if previous?.token != session.token {
-                ledger.reset()
+                chat.reset(); chatFramesAllowed = false
+                ledger.reset(); shortAddressCode = ViewerAccessLedger.randomSecret(bytes: 32)
                 presence.removeAll(revision: session.revision)
                 let closed = Array(streams.values) + presenceClients.values.map(\.connection)
                 streams.removeAll(); presenceClients.removeAll()
@@ -127,6 +135,8 @@ public final class ViewerGateway: @unchecked Sendable {
             }
             // Positions belong to one live picture. Hold, Stop, and every publisher revision clear them.
             if previous?.revision != session.revision || previous?.state != session.state { presence.reset(revision: session.revision) }
+            if previous?.revision != session.revision || session.state != .live { chatFramesAllowed = false }
+            if session.state == .stopped { chat.reset() }
             return ([], previous.map { stateLocked($0) as NSDictionary != stateLocked(session) as NSDictionary } ?? true)
         }
         closed.forEach { $0.cancel() }
@@ -151,6 +161,14 @@ public final class ViewerGateway: @unchecked Sendable {
         if changed, let current { broadcast(current) }
     }
     public var approvalRequired: Bool { lock.withLock { ledger.approvalRequired } }
+
+    /// Opens the short address for new requests while approval is on. Closing it declines its waiting
+    /// requests; admitted sessions continue. It never opens without approval.
+    public func setShortAddress(open: Bool) { lock.withLock { ledger.setShortAddress(open: open) } }
+    /// The ask-only path the short address sends viewers to, while it is open for the current link.
+    public var shortAddressPath: String? {
+        lock.withLock { ledger.shortAddressOpen && session != nil ? "/s/\(shortAddressCode)/" : nil }
+    }
 
     /// Readers the media server must accept for admitted sessions under approval.
     public var desiredReaders: Set<ViewerReader> { lock.withLock { ledger.readers } }
@@ -212,7 +230,8 @@ public final class ViewerGateway: @unchecked Sendable {
             let previous = (listener, retry, startup, Array(streams.values))
             generation = UUID(); listenerAttempt = UUID(); desiredListener = nil
             stoppedListener = listener; listener = nil; retry = nil; startup = nil
-            running = false; ledger.reset(); streams.removeAll()
+            running = false; ledger.reset(); streams.removeAll(); chat.reset(); chatFramesAllowed = false
+            shortAddressCode = ViewerAccessLedger.randomSecret(bytes: 32)
             presence.removeAll(revision: session?.revision ?? 0)
             let channels = presenceClients.values.map(\.connection); presenceClients.removeAll()
             return (previous.0, previous.1, previous.2, previous.3 + channels)
@@ -357,12 +376,14 @@ public final class ViewerGateway: @unchecked Sendable {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { [weak self] data, _, complete, error in
             guard let self else { connection.cancel(); return }
             var combined = buffer; if let data { combined.append(data) }
-            guard combined.count <= 65_536 else { self.send(connection, code: 413, mime: "text/plain", body: Data("Request too large".utf8)); return }
+            guard combined.count <= 204_800 else { self.send(connection, code: 413, mime: "text/plain", body: Data("Request too large".utf8)); return }
             guard let split = combined.range(of: Data("\r\n\r\n".utf8)) else {
+                guard combined.count <= 8192 else { self.send(connection, code: 413, mime: "text/plain", body: Data()); return }
                 if !complete && error == nil { self.receive(connection, buffer: combined) } else { connection.cancel() }
                 return
             }
             let header = String(decoding: combined[..<split.lowerBound], as: UTF8.self)
+            guard header.utf8.count <= 8192 else { self.send(connection, code: 413, mime: "text/plain", body: Data()); return }
             let lines = header.components(separatedBy: "\r\n")
             guard let first = lines.first else { connection.cancel(); return }
             let request = first.split(separator: " ")
@@ -374,27 +395,34 @@ public final class ViewerGateway: @unchecked Sendable {
             }
             guard headers["transfer-encoding"] == nil else { self.send(connection, code: 400, mime: "text/plain", body: Data()); return }
             let length = Int(headers["content-length"] ?? "0") ?? -1
-            guard (0...2048).contains(length) else { self.send(connection, code: 413, mime: "text/plain", body: Data()); return }
+            let rawPath = String(request[1]).components(separatedBy: "?")[0]
+            let limit = rawPath.hasSuffix("/chat") ? 196_608 : 2048
+            guard (0...limit).contains(length) else { self.send(connection, code: 413, mime: "text/plain", body: Data()); return }
             let body = combined[split.upperBound...]
             if body.count < length && !complete && error == nil { self.receive(connection, buffer: combined); return }
             guard body.count >= length else { self.send(connection, code: 400, mime: "text/plain", body: Data()); return }
-            let rawPath = String(request[1]).components(separatedBy: "?")[0]
             let extra = Data(body.dropFirst(length))
             self.respond(connection, method: String(request[0]), path: rawPath, headers: headers, body: Data(body.prefix(length)), extra: extra)
         }
     }
     private func respond(_ connection: NWConnection, method: String, path: String, headers: [String: String], body: Data, extra: Data) {
-        lock.lock(); let current = session; lock.unlock()
+        let (current, shortPrefix) = lock.withLock { (session, "/s/\(shortAddressCode)/") }
         guard let current else { unavailable(connection, method: method, path: path); return }
+        // The viewing link, or the short address's ask-only path. Both reach the same pass-based
+        // admission; only the link's code is a media credential.
         let prefix = "/s/\(current.token)/"
-        guard path.hasPrefix(prefix) else { unavailable(connection, method: method, path: path); return }
-        let suffix = String(path.dropFirst(prefix.count))
+        let shortAddress = !path.hasPrefix(prefix) && path.hasPrefix(shortPrefix)
+        guard path.hasPrefix(prefix) || shortAddress else { unavailable(connection, method: method, path: path); return }
+        let suffix = String(path.dropFirst(shortAddress ? shortPrefix.count : prefix.count))
+        if suffix == "chat" || suffix.hasPrefix("chat/frame/") {
+            respondChat(connection, method: method, suffix: suffix, headers: headers, body: body, token: current.token); return
+        }
         if method == "POST", suffix == "join" || suffix == "heartbeat" {
             guard let data = try? JSONSerialization.jsonObject(with: body) as? [String: Any] else {
                 send(connection, code: 400, mime: "text/plain", body: Data()); return
             }
             let local = isLocal(connection), mobile = data["mobile"] as? Bool ?? false
-            if suffix == "join" { join(connection, data, token: current.token, local: local, mobile: mobile); return }
+            if suffix == "join" { join(connection, data, token: current.token, local: local, mobile: mobile, shortAddress: shortAddress); return }
             // Only a gateway-issued pass identifies a session. Unknown passes must join again.
             guard let pass = ViewerAccessLedger.validPass(data["pass"]) else { sendJSON(connection, ["ok": false, "admission": "unknown"]); return }
             let name: String?? = data.keys.contains("name") ? .some(ViewerHealth.viewerName(data["name"] as? String)) : .none
@@ -402,9 +430,14 @@ public final class ViewerGateway: @unchecked Sendable {
                 guard session?.token == current.token else { return nil }
                 return ledger.heartbeat(pass, playing: data["playing"] as? Bool ?? false,
                     health: (data["health"] as? String).flatMap(ViewerHealth.init(rawValue:)) ?? .playing,
-                    revision: data["revision"] as? Int ?? -1, name: name, mobile: mobile, local: local, now: Date())
+                    revision: data["revision"] as? Int ?? -1, name: name, color: PointerColor.validated(data["color"]),
+                    mobile: mobile, local: local, now: Date())
             }
-            sendJSON(connection, ["ok": record != nil, "admission": record?.admission.rawValue ?? "unknown"]); return
+            var response: [String: Any] = ["ok": record != nil, "admission": record?.admission.rawValue ?? "unknown"]
+            response["chatLastID"] = lock.withLock {
+                session?.token == current.token && ledger.record(pass)?.admission == .admitted ? chat.lastMessageID : nil
+            }
+            sendJSON(connection, response); return
         }
         if suffix == "presence", method == "GET" { openPresence(connection, headers: headers, token: current.token, extra: extra); return }
         guard method == "GET" else { send(connection, code: 405, mime: "text/plain", body: Data()); return }
@@ -427,7 +460,7 @@ public final class ViewerGateway: @unchecked Sendable {
         let mime = file.hasSuffix(".html") ? "text/html; charset=utf-8" : file.hasSuffix(".css") ? "text/css; charset=utf-8" : "text/javascript; charset=utf-8"
         send(connection, code: 200, mime: mime, body: data)
     }
-    static let publicAssets: Set<String> = ["viewer.html", "viewer.js", "viewer.css", "reader.js", "keepawake.js", "pointers.js"]
+    static let publicAssets: Set<String> = ["viewer.html", "viewer.js", "viewer.css", "reader.js", "keepawake.js", "pointers.js", "chat.js"]
 
     private func isLocal(_ connection: NWConnection) -> Bool {
         let host: String
@@ -436,11 +469,12 @@ public final class ViewerGateway: @unchecked Sendable {
     }
 
     /// Issues or resumes a browser session. The response carries only that session's own status.
-    private func join(_ connection: NWConnection, _ data: [String: Any], token: String, local: Bool, mobile: Bool) {
+    private func join(_ connection: NWConnection, _ data: [String: Any], token: String, local: Bool, mobile: Bool, shortAddress: Bool) {
         let outcome = lock.withLock { () -> ViewerAccessLedger.JoinOutcome? in
             guard session?.token == token else { return nil }
             return ledger.join(pass: ViewerAccessLedger.validPass(data["pass"]), name: ViewerHealth.viewerName(data["name"] as? String),
-                               asking: data["ask"] as? Bool == true, color: PointerColor.validated(data["color"]), mobile: mobile, local: local, now: Date())
+                               asking: data["ask"] as? Bool == true, color: PointerColor.validated(data["color"]), mobile: mobile, local: local,
+                               shortAddress: shortAddress, now: Date())
         }
         switch outcome {
         case .joined(let record)?:
@@ -450,7 +484,8 @@ public final class ViewerGateway: @unchecked Sendable {
             sendJSON(connection, value)
         case .nameRequired?: send(connection, code: 400, mime: "application/json", body: Data(#"{"error":"name"}"#.utf8))
         case .full?: send(connection, code: 503, mime: "application/json", body: Data(#"{"error":"full"}"#.utf8))
-        case nil: unavailable(connection, method: "POST", path: "")
+        // A closed short address takes no new requests; the page shows the link as no longer active.
+        case .closed?, nil: unavailable(connection, method: "POST", path: "")
         }
     }
     private func unavailable(_ connection: NWConnection, method: String, path: String) {

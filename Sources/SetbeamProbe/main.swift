@@ -24,6 +24,9 @@ import SetbeamCore
             if values.contains("--frame-rate-test") {
                 try await testFrameRates(tools: tools, fixtures: fixtures, output: output); return
             }
+            if values.contains("--short-address-test") {
+                try await testShortAddress(tools: tools, fixtures: fixtures, output: output); return
+            }
             if values.contains("--local-address-test") {
                 try await testLocalAddress(tools: tools, fixtures: fixtures, output: output); return
             }
@@ -356,7 +359,7 @@ import SetbeamCore
             throw SetbeamError.runtime("Codec/format transition timed out. \(await runtime.diagnosticStatus())")
         }
         /// `passthrough` names the source codec the private relay must keep; nil requires the browser contract.
-        func verifyOutput(_ path: String, width: Int, height: Int, rate: String, audio: Bool, passthrough: String? = nil, loopAudioPadding: Double = 0) async throws {
+        func verifyOutput(_ path: String, width: Int, height: Int, rate: String, audio: Bool, passthrough: String? = nil, loopAudioPadding: Double = 0, sourceJitter: Double) async throws {
             let data = try await run(tools: tools, args: ["-v", "error", "-analyzeduration", "2000000", "-fpsprobesize", "0", "-max_ts_probe", "0",
                 "-rtsp_transport", "tcp", "-show_streams", "-of", "json", await runtime.localRTSP(path)], directory: fixtureDirectory, executable: "ffprobe")
             guard let value = try JSONSerialization.jsonObject(with: data) as? [String: Any], let streams = value["streams"] as? [[String: Any]],
@@ -385,17 +388,16 @@ import SetbeamCore
             let packets = Int(ceil(expected * 5)) + 4
             let timingData = try await run(tools: tools, args: ["-v", "error", "-analyzeduration", "2000000", "-fpsprobesize", "0", "-max_ts_probe", "0",
                 "-threads:v", "2", "-thread_type:v", "slice", "-rtsp_transport", "tcp", "-select_streams", "v:0",
-                "-read_intervals", "%+#\(packets)", "-show_frames", "-show_entries", "frame=best_effort_timestamp_time", "-of", "json", await runtime.localRTSP(path)], directory: fixtureDirectory, executable: "ffprobe")
+                "-read_intervals", "%+#\(packets)", "-show_frames", "-show_streams", "-show_entries", "frame=best_effort_timestamp_time:stream=has_b_frames", "-of", "json", await runtime.localRTSP(path)], directory: fixtureDirectory, executable: "ffprobe")
             try timingData.write(to: output.appendingPathComponent("format-\(path)-\(width)-\(height)-timing.json"), options: .atomic)
             let timing = try JSONSerialization.jsonObject(with: timingData) as? [String: Any]
             // Closing a finite read can leave trailing B pictures without their future
             // reference packets. Judge the interior timeline, outside the codec's reorder tail.
-            let reorderTail = max(1, (video["has_b_frames"] as? Int ?? 0) + 1)
+            let reorderDepth = (timing?["streams"] as? [[String: Any]])?.first?["has_b_frames"] as? Int ?? 0
             let timed = (timing?["frames"] as? [[String: Any]] ?? []).compactMap { ($0["best_effort_timestamp_time"] as? String).flatMap(Double.init) }
             // A sender report can align the initial RTP/NTP clocks after playback has
             // started. Measure steady cadence after that startup mapping settles.
-            let steadyStart = (timed.first ?? 0) + 2
-            let frames = Array(timed.drop(while: { $0 < steadyStart }).dropLast(reorderTail))
+            let frames = MediaCadence.steadyFrames(timed, reorderDepth: reorderDepth)
             guard let first = frames.first, let last = frames.last, last - first >= 1, frames.count > 1 else {
                 throw SetbeamError.runtime("Not enough decoded video presentation time for the \(path) cadence check.")
             }
@@ -403,10 +405,10 @@ import SetbeamCore
             let measured = Double(frames.count - 1) / (last - first)
             // Demo.mp4 repeats AAC's 1024-sample priming packet at its eight-second
             // loop boundary. Stream copy must preserve that extra source interval.
-            let maximumGap = loopAudioPadding > 0 ? max(1.5 / expected, 1 / expected + loopAudioPadding + 0.001) : 1.5 / expected
+            let maximumGap = MediaCadence.maximumGap(rate: expected, sourceJitter: sourceJitter, loopAudioPadding: loopAudioPadding)
             guard abs(measured - expected) / expected < 0.02,
                   intervals.allSatisfy({ $0 > 0 && $0 < maximumGap }) else {
-                throw SetbeamError.runtime("The \(path) relay changed decoded cadence: expected \(expected) fps, measured \(measured), largest frame interval \(intervals.max() ?? 0) seconds.")
+                throw SetbeamError.runtime("The \(path) relay changed decoded cadence: expected \(expected) fps, measured \(measured), largest frame interval \(intervals.max() ?? 0) seconds (limit \(maximumGap), measured fixture jitter \(sourceJitter)).")
             }
         }
         do {
@@ -422,6 +424,13 @@ import SetbeamCore
                 ("Compatibility-H264.mp4", "H.264 High with B frames", 960, 540, "60/1", false, "h264"),
                 ("Demo.mp4", "H.264 with AAC audio", 1280, 720, "24/1", true, "h264")]
             for (index, format) in formats.enumerated() {
+                let sourceTiming = try await run(tools: tools, args: ["-v", "error", "-select_streams", "v:0", "-show_frames",
+                    "-show_entries", "frame=best_effort_timestamp_time", "-of", "json", fixtures.appendingPathComponent(format.0).path], directory: fixtureDirectory, executable: "ffprobe")
+                try sourceTiming.write(to: output.appendingPathComponent("format-fixture-\(index)-timing.json"), options: .atomic)
+                let sourceFrames = try JSONSerialization.jsonObject(with: sourceTiming) as? [String: Any]
+                let sourceTimes = (sourceFrames?["frames"] as? [[String: Any]] ?? []).compactMap { ($0["best_effort_timestamp_time"] as? String).flatMap(Double.init) }
+                let ratio = format.4.split(separator: "/").compactMap { Double($0) }
+                let sourceJitter = try MediaCadence.fixtureJitter(sourceTimes, rate: ratio[0] / ratio[1])
                 sender = try ManagedChild(name: "Codec fixture sender", executable: tools.appendingPathComponent("ffmpeg"),
                     arguments: ["-nostdin", "-hide_banner", "-loglevel", "error", "-re", "-stream_loop", "-1", "-i", fixtures.appendingPathComponent(format.0).path,
                         "-c", "copy", "-f", "rtsp", "-rtsp_transport", "tcp", upstream], directory: fixtureDirectory)
@@ -436,12 +445,12 @@ import SetbeamCore
                     }
                 }
                 try await verifyOutput("local", width: format.2, height: format.3, rate: format.4, audio: format.5, passthrough: format.6,
-                                       loopAudioPadding: format.0 == "Demo.mp4" ? 1024.0 / 48000 : 0)
+                                       loopAudioPadding: format.0 == "Demo.mp4" ? 1024.0 / 48000 : 0, sourceJitter: sourceJitter)
                 if index < 2 {
                     // Each received encoding reaches browsers through the audience's own Baseline encode.
                     if index == 0 { _ = try await runtime.startSharing() } else { try await runtime.setHold(false) }
                     _ = try await waitFor { $0.audienceAvailable && !$0.session.holding }
-                    try await verifyOutput("live", width: format.2, height: format.3, rate: format.4, audio: false)
+                    try await verifyOutput("live", width: format.2, height: format.3, rate: format.4, audio: false, sourceJitter: sourceJitter)
                     if index == 0 {
                         // A lighter viewer bitrate replaces only the audience encode, at the same identity.
                         let before = await runtime.snapshot(), server = await runtime.processIDs().first
@@ -451,7 +460,7 @@ import SetbeamCore
                         guard lighter.guestToken == before.guestToken, serverAfter == server else {
                             throw SetbeamError.runtime("Changing viewer quality replaced the viewing credential.")
                         }
-                        try await verifyOutput("live", width: format.2, height: format.3, rate: format.4, audio: false)
+                        try await verifyOutput("live", width: format.2, height: format.3, rate: format.4, audio: false, sourceJitter: sourceJitter)
                         print("PASS: viewer quality changes restart only the audience encode and keep the viewing credential")
                     }
                     try await runtime.setHold(true)

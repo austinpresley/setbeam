@@ -62,11 +62,22 @@ final class MacWindowTests: XCTestCase {
         XCTAssertEqual(window.title.count, 120)
         XCTAssertTrue(window.sourceName.hasPrefix("Capture One · Client proof"))
         let untitled = MacWindow(identity: identity, applicationName: " ", bundleIdentifier: nil, title: "  ", width: 1, height: 1)
-        XCTAssertEqual(untitled.label, "Untitled window")
+        XCTAssertEqual(untitled.label, "Application")
         XCTAssertEqual(untitled.applicationName, "Application")
         XCTAssertEqual(VideoSource.macWindow(identity).label, "Application window")
         XCTAssertTrue(InputKind.macWindow.isMacCapture && VideoSource.macWindow(identity).isMacCapture)
         XCTAssertFalse(VideoSource.macWindow(identity).isCapture)
+    }
+
+    func testUntitledWindowsUseTheApplicationName() {
+        for title in ["", " ", "Untitled", " untitled window ", "UNTITLED"] {
+            let window = MacWindow(identity: identity, applicationName: "Capture One", bundleIdentifier: nil, title: title, width: 800, height: 600)
+            XCTAssertEqual(window.label, "Capture One")
+            XCTAssertEqual(window.sourceName, "Capture One")
+            XCTAssertEqual(window.identity, identity)
+        }
+        XCTAssertEqual(MacWindow.sourceName(application: "Capture One", title: "Session 12"), "Capture One · Session 12")
+        XCTAssertEqual(MacWindow.label("Untitled 2", application: "TextEdit"), "Untitled 2")
     }
 
     func testEligibilityExcludesSetbeamAndNonDocumentWindows() {

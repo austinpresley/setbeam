@@ -1,5 +1,25 @@
 import Foundation
 
+/// Fit source-aspect changes to the current display. Extreme shapes keep the minimum practical
+/// control area and aspect-fit their whole picture instead of putting most of the window offscreen.
+struct PreviewWindowLayout {
+    let frame: CGRect
+    let minimum: CGSize
+    let aspect: CGSize
+    init?(source: CGSize, frame current: CGRect, screen: CGRect) {
+        guard [source.width, source.height, screen.width, screen.height].allSatisfy({ $0.isFinite && $0 > 0 }) else { return nil }
+        let minimumWidth = min(220, screen.width), minimumHeight = min(80, screen.height)
+        let ratio = min(screen.height / minimumWidth, max(minimumHeight / minimumWidth, source.height / source.width))
+        let width = max(minimumWidth, min(current.width, screen.width, screen.height / ratio))
+        let height = width * ratio
+        let x = max(screen.minX, min(current.minX, screen.maxX - width))
+        let y = max(screen.minY, min(current.maxY - height, screen.maxY - height))
+        frame = CGRect(x: x, y: y, width: width, height: height)
+        minimum = CGSize(width: minimumWidth, height: minimumWidth * ratio)
+        aspect = CGSize(width: 1, height: ratio)
+    }
+}
+
 /// Picture-only inspection. The decoded feed and audience media are unchanged.
 struct PreviewViewport {
     private(set) var scale: CGFloat = 1

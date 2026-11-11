@@ -2,7 +2,8 @@ import Foundation
 
 /// The validated preset pointer colors. Only these identifiers cross the network.
 public enum PointerColor: String, CaseIterable, Sendable {
-    case blue, green, orange, pink, purple, yellow
+    // The first six keep their order so earlier sessions' default colors are unchanged.
+    case blue, green, orange, pink, purple, yellow, red, teal, cyan, lime, indigo, brown
 
     public var label: String { rawValue.capitalized }
     /// sRGB fill for the pointer and its name label.
@@ -14,10 +15,16 @@ public enum PointerColor: String, CaseIterable, Sendable {
         case .pink: return (0.80, 0.16, 0.50)
         case .purple: return (0.46, 0.25, 0.80)
         case .yellow: return (0.98, 0.82, 0.12)
+        case .red: return (0.77, 0.17, 0.17)
+        case .teal: return (0.04, 0.45, 0.50)
+        case .cyan: return (0.24, 0.78, 0.90)
+        case .lime: return (0.65, 0.85, 0.23)
+        case .indigo: return (0.26, 0.22, 0.79)
+        case .brown: return (0.54, 0.33, 0.15)
         }
     }
     /// Name text uses whichever of white or near-black keeps at least 4.5:1 contrast.
-    public var darkText: Bool { self == .orange || self == .yellow }
+    public var darkText: Bool { [.orange, .yellow, .cyan, .lime].contains(self) }
 
     /// A stable default that spreads session numbers across the palette.
     public static func fallback(for number: Int) -> PointerColor { allCases[(max(1, number) - 1) % allCases.count] }

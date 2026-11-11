@@ -15,6 +15,7 @@ final class PreviewPicture: @unchecked Sendable {
 @MainActor final class PictureLayerView: NSView {
     private let display = AVSampleBufferDisplayLayer()
     private weak var shown: PreviewPicture?
+    private var windowObservers: [NSObjectProtocol] = []
 
     init(gravity: AVLayerVideoGravity = .resizeAspect) {
         super.init(frame: .zero)
@@ -27,10 +28,15 @@ final class PreviewPicture: @unchecked Sendable {
 
     func show(_ picture: PreviewPicture?) {
         guard picture !== shown || picture == nil else { return }
-        shown = picture
         let renderer = display.sampleBufferRenderer
-        guard let picture else { renderer.flush(removingDisplayedImage: true, completionHandler: nil); return }
+        guard let picture else { shown = nil; renderer.flush(removingDisplayedImage: true, completionHandler: nil); return }
+        // A closed/minimized monitor can remain subscribed to the shared feed. It must release
+        // its queued surfaces instead of consuming the other monitor's allocation budget.
+        guard let window, window.isVisible, !window.isMiniaturized, !isHiddenOrHasHiddenAncestor else {
+            shown = nil; renderer.flush(removingDisplayedImage: true, completionHandler: nil); return
+        }
         if renderer.status == .failed { renderer.flush() }
+        guard renderer.isReadyForMoreMediaData else { return }
         var format: CMVideoFormatDescription?
         guard CMVideoFormatDescriptionCreateForImageBuffer(allocator: nil, imageBuffer: picture.pixelBuffer, formatDescriptionOut: &format) == noErr,
               let format else { return }
@@ -44,7 +50,22 @@ final class PreviewPicture: @unchecked Sendable {
                                  Unmanaged.passUnretained(kCFBooleanTrue).toOpaque())
         }
         renderer.enqueue(sample)
+        shown = picture
     }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        windowObservers.forEach(NotificationCenter.default.removeObserver); windowObservers.removeAll()
+        guard let window else { show(nil); return }
+        for name in [NSWindow.didMiniaturizeNotification, NSWindow.didChangeOcclusionStateNotification, NSWindow.willCloseNotification] {
+            windowObservers.append(NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
+                // Also flush on returning to view: a stalled renderer may already own all
+                // available surfaces, so it cannot rely on a newly allocated frame to reset it.
+                MainActor.assumeIsolated { self?.show(nil) }
+            })
+        }
+    }
+    deinit { windowObservers.forEach(NotificationCenter.default.removeObserver) }
 }
 
 /// The aspect-fit picture for SwiftUI windows and sheets.
@@ -52,4 +73,5 @@ struct PictureView: NSViewRepresentable {
     let picture: PreviewPicture
     func makeNSView(context: Context) -> PictureLayerView { PictureLayerView() }
     func updateNSView(_ view: PictureLayerView, context: Context) { view.show(picture) }
+    static func dismantleNSView(_ view: PictureLayerView, coordinator: ()) { view.show(nil) }
 }

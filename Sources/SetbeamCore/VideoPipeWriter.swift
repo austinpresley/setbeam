@@ -9,6 +9,7 @@ final class VideoPipeWriter {
     private let maximumPendingBytes: Int
     private let onFailure: () -> Void
     private var pending = Data()
+    private var consumed = 0
     private var writable: DispatchSourceWrite?
     private var closed = false
 
@@ -21,14 +22,22 @@ final class VideoPipeWriter {
     }
     func append(_ bytes: Data) {
         guard !closed else { return }
-        guard bytes.count <= maximumPendingBytes - pending.count else { fail(); return }
+        let remaining = pending.count - consumed
+        guard bytes.count <= maximumPendingBytes - remaining else { fail(); return }
+        if consumed > 0 {
+            // Data.removeFirst advances its start index while keeping the consumed allocation.
+            // Appending after every write then retains the shoot's cumulative encoded bytes,
+            // even when pending.count is zero. Copy only the unsent tail before appending.
+            pending = pending.withUnsafeBytes { Data(bytes: $0.baseAddress!.advanced(by: consumed), count: remaining) }
+            consumed = 0
+        }
         pending.append(bytes); drain()
     }
     private func drain() {
         guard !closed else { return }
-        while !pending.isEmpty {
-            let count = pending.withUnsafeBytes { Darwin.write(output.fileDescriptor, $0.baseAddress!, $0.count) }
-            if count > 0 { pending.removeFirst(count) }
+        while consumed < pending.count {
+            let count = pending.withUnsafeBytes { Darwin.write(output.fileDescriptor, $0.baseAddress!.advanced(by: consumed), $0.count - consumed) }
+            if count > 0 { consumed += count }
             else if count < 0 && errno == EINTR { continue }
             else if count < 0 && errno == EAGAIN {
                 if writable == nil {
@@ -39,13 +48,14 @@ final class VideoPipeWriter {
                 return
             } else { fail(); return }
         }
+        pending = Data(); consumed = 0
         // A permanently writable empty pipe must not spin the capture queue.
         writable?.cancel(); writable = nil
     }
     private func fail() { close(); onFailure() }
     func close() {
         guard !closed else { return }
-        closed = true; writable?.cancel(); writable = nil; pending.removeAll()
+        closed = true; writable?.cancel(); writable = nil; pending = Data(); consumed = 0
         try? output.close()
     }
     deinit { writable?.cancel(); try? output.close() }

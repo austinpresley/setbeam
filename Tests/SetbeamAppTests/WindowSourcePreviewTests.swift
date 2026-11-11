@@ -57,7 +57,7 @@ import ScreenCaptureKit
         await previews.refresh(permitted: true, monitored: nil)
         XCTAssertNotNil(previews.images[windows[0].identity])
         XCTAssertTrue(previews.unavailable.contains(windows[1].identity))
-        XCTAssertEqual(previews.windows[1].label, "Untitled window")
+        XCTAssertEqual(previews.windows[1].label, "Fixture")
         windows.removeFirst()
         await previews.refresh(permitted: true, monitored: nil)
         XCTAssertEqual(previews.windows.map(\.identity.windowID), [2])
@@ -99,6 +99,20 @@ import ScreenCaptureKit
         XCTAssertNotNil(model.error)
         await model.shutdown()
     }
+    func testInactiveCategoryListsSourcesWithoutCapturingHiddenPreviews() async {
+        let candidate = window(1)
+        var captured = 0
+        let previews = WindowSourcePreviews(list: { [(candidate, nil)] }, capture: { _, _ in captured += 1; return self.image() })
+        await previews.refresh(permitted: true, monitored: nil, captureVisible: false)
+        XCTAssertEqual(previews.windows, [candidate])
+        XCTAssertTrue(previews.loaded)
+        XCTAssertTrue(previews.images.isEmpty)
+        XCTAssertEqual(captured, 0)
+        await previews.refresh(permitted: true, monitored: nil)
+        XCTAssertEqual(captured, 1)
+        XCTAssertNotNil(previews.images[candidate.identity])
+    }
+
 }
 
 private actor CaptureGate {

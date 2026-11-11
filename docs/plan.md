@@ -4,9 +4,28 @@ Date: 2026-10-20. Austin authorized a fork of `titleunknown/holly-share`, the na
 
 ## Product goal
 
+Austin's approved visual direction is recorded in [design-standard.md](design-standard.md).
+Use that restrained, picture-first standard for future implementation. The
+2026-11-06 minimal floating-preview concept supersedes the earlier two-row
+preview proposal.
+
 Build a self-contained, native Mac app for receiving, monitoring, and sharing video feeds. Computer displays sent through wireless transmission systems are a primary DigiTech workflow, alongside camera feeds. The main window has a live feed preview, sharing status, and audience controls; invitations and detailed status open from their controls. A separate resizable floating preview remains available while other applications are in use. Viewers open a clean browser page without installing an app or creating an account.
 
 Preserve a quiet, native macOS interface, clear first-run guidance, saved working settings, visible failure states, and recovery during an active session. Software dependencies ship with the app. A physical transmitter and appropriate network or capture connection remain necessary for an external source.
+
+## Future backlog
+
+[STORIES.md](STORIES.md) records Austin's 2026-10-31 requests for optional
+application-window sharing, viewer admission and basic session details, a
+candidate session password, a friendly local address, presenter cursor
+highlighting, and shared named viewer pointers. Pointer refinements include idle
+fading, viewer-selected colors, and updates independent of video FPS. Temporary
+arrows/circles are deferred until after cursor sharing. S-001 is implemented in
+Build 21, with [window-source evidence](verification-window-source-2026-11-01.md);
+S-008 is implemented in Build 22 with [shared-pointer evidence](verification-shared-pointers-2026-11-01.md).
+S-002 is implemented in Build 24 with [viewer-join evidence](verification-viewer-join-2026-11-02.md). Its necessary S-003/S-005 foundations are partial; the backlog records what
+remains. S-006 is implemented in Build 23 with [local-address evidence](verification-friendly-address-2026-11-02.md). The other stories remain future work. The implementation and verification
+checkpoints below describe separate work.
 
 ## Initial hardware targets and evidence
 
@@ -220,3 +239,66 @@ checks proven to fail before the fix. The final full local suite passes. Physica
 phone/tablet/second-computer, real on-screen keyboard, and spoken accessibility
 qualification remain open. See [viewer join verification](verification-viewer-join-2026-11-02.md)
 for the review ledger, exact failures, local evidence, and packaged handoff.
+
+## Short address and join request card
+
+Austin authorized the opt-in, approval-only short address from the [viewer setup diagnosis](verification-viewer-setup-2026-11-03.md) on 2026-11-03, implemented by Claude Opus 5.5 on high with an independent GPT-6.1 Sol review. He also asked for approval requests that arrive like a notification, native or custom. Viewers on the same network type the effective local name, choose a name and color, and ask. The operator admits each one.
+
+On the tested macOS build, port 80 binds unprivileged only on the wildcard address, so it answers only the viewing address, only while sharing with approval, the local address, and the option on. It sends viewers to an ask-only code, never the link's media credential, and falls back to the link with a named reason. Requests arrive as Setbeam's own non-activating card, which needs no notification permission, and stay discoverable elsewhere until answered. Stop, approval off, and a new link retire the short address; local monitoring, Hold, per-session readers, single receive, bundled runtime, and owned-process cleanup are unchanged. Physical multi-device and network qualification remain open. Sol round 1 withheld approval for a destination recheck on open requests, plus five card and listener findings. All six are fixed with regression evidence. Both round 2 passes approved with no actionable findings. Build 26 is installed locally, with the previous app preserved; packaged access, local-address and short-address probes all pass. See [short address verification](verification-short-address-2026-11-03.md) for checks and delivery evidence.
+
+## Organization and sharing panel, build 29
+
+Austin approved the three organization mockups, requested implementation, and asked for a harsh Claude Opus 5.5 critique followed by fixes and a demonstration. Preserve the separately approved build-28 source chooser. Replace the catch-all Advanced sheet with contextual Source Details, Sharing Options, direct stream entry, and diagnostics. Invitations and viewer management share an optional panel with a separate-window fallback. Keep local monitoring, Hold, Stop, source identity, read-only viewers, and bundled runtime invariants. Verify locally in both appearances and record the review findings and responses before packaging.
+
+## Suite reliability, build 30
+
+Austin requested fixes for the timing and port-reuse failures reported after build 29. Reproduce each failure, distinguish asynchronous socket teardown from a real port owner, preserve source media timestamps, and correct cadence measurement using decoded reorder depth and measured fixture jitter. Acceptance requires new regressions, the complete local `scripts/check.sh` without stage retries or skips, and verification of the packaged helpers. Evidence belongs in [suite reliability verification](verification-suite-reliability-2026-11-04.md).
+
+## Approved design refinement, build 31
+
+On 2026-11-05 Austin approved the combined Sol and Claude Opus 5.5 high design
+proposal and its three ImageGen concepts. This approval supersedes build 18's
+earlier icon-only audience controls and blue Hold treatment. Use labeled
+Hold/Resume and Stop Sharing controls above the local picture, an intentionally
+dark monitor stage in both appearances, and a permanent outgoing preview above
+the Sharing tabs. Hold has an amber symbol and an explicit text state. Keep
+individual admission, the optional Sharing panel/window, source categories,
+full-frame previews and existing media behavior. Refine invitation hierarchy
+and chooser thumbnail scale without adding new capture sessions or hardware
+claims. Viewer-page polish is a later pass.
+
+Acceptance requires local light/dark native interaction and layout checks,
+actual browser playback through admission/Hold/Resume/Stop, unchanged source
+identity and media ownership, the complete packaged-runtime check, and private
+delivery. Evidence belongs in
+[design refinement verification](verification-design-refinement-2026-11-05.md).
+
+
+## Collaboration and entry points, build 35
+
+Implement S-011 through S-017 from Austin's 2026-11-10 request: source-display pointers where possible, viewing Wi-Fi selection and honest password checks, phone/tablet viewer layouts, admitted session chat with frames, independent printable join codes, reliable app reopening and a focused menu bar. Preserve the existing uncommitted work. Use Claude Opus 5.5 with High effort to review each item. Run all builds and checks locally, distinguish software evidence from physical Wi-Fi/mobile/display qualification, and deliver the verified app privately.
+
+
+## Single picture and chat polish, build 36
+
+Austin rejected repeated media views and the cluttered native chat. Remove the
+Sharing live thumbnail in both presentations. Keep sent images compact and
+open them on request. Use aligned author/message rows, contextual message
+actions and one quiet composer. Verify native light/dark and compact layouts,
+chat interactions, Hold/Stop and the complete local check. Get Opus 5.5 High
+sign-off and deliver the installed developer build.
+
+## Messages-style chat in every view, build 37
+
+Austin requested compact, Apple-like bubbles and press-and-hold reactions/replies
+across native Mac, desktop viewer, iPhone orientations and iPad. Remove action
+rows at rest, group consecutive authors, keep names/cursor colors clear and
+retain compact images. Add six bounded per-participant reactions, contextual
+keyboard and accessibility paths, and plain-HTTP copying. Preserve the media,
+admission, Hold and Stop invariants. Verify all layouts locally and obtain
+Opus 5.5 High sign-off before private delivery.
+
+
+Build 37 is implemented, locally verified, installed privately and delivered.
+[Implementation and final Opus approval](verification-bubble-chat-2026-11-11.md)
+record the exact software evidence and remaining physical/manual qualification.

@@ -11,7 +11,7 @@ Treat computer-display and camera feeds as peer use cases. Read `CONTEXT.md` whe
 - Stop Sharing leaves local monitoring available.
 - Hold suppresses source video and audio in the outgoing media, while local monitoring continues.
 - Label sample media explicitly. Mark hardware compatibility only with recorded physical evidence in `docs/hardware-tests.md`.
-- Viewer access is read-only. Publishing and administration stay private.
+- Viewer media access is read-only. Admitted viewers may write session chat and pointers; publishing and administration stay private.
 - Supervise owned processes and clean up their process groups. Match no processes by global command-line patterns.
 - Bundle runtime dependencies. The finished app must not depend on a developer's Homebrew installation.
 

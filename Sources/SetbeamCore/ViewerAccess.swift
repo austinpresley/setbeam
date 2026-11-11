@@ -19,8 +19,14 @@ public struct ViewerReader: Hashable, Sendable {
 /// shared read credential, as before. With approval, a pending request must be admitted by the
 /// operator and then plays only with its own reader, which removal revokes individually.
 /// Names are bounded labels, not verified identities.
+///
+/// The short address is a second, ask-only way in. Requests arriving through it are always pending,
+/// whatever the link alone would allow, and only while it is open under approval. Closing it, or
+/// turning approval off, declines the requests still waiting; sessions the operator admitted continue.
 struct ViewerAccessLedger {
     static let maxRecords = 128, maxPending = 16
+    /// Short-address requests leave room in the pending queue for holders of the link.
+    static let maxShortAddressPending = 8
     /// Rows disappear from operator details after this long without contact.
     static let visibleFor: TimeInterval = 12
     /// An unanswered request lapses after this long without its page asking again.
@@ -42,20 +48,25 @@ struct ViewerAccessLedger {
         var playing = false
         var revision = -1
         var health = ViewerHealth.connecting
+        /// Asked through the short address rather than the viewing link.
+        var shortAddress = false
     }
-    enum JoinOutcome { case joined(Record), nameRequired, full }
+    enum JoinOutcome { case joined(Record), nameRequired, full, closed }
 
     private(set) var approvalRequired = false
+    /// New requests may arrive through the short address. Never true without approval.
+    private(set) var shortAddressOpen = false
     private var records: [String: Record] = [:]
     private var nextNumber = 1
     private let secret: () -> String
 
     init(secret: @escaping () -> String = ViewerAccessLedger.randomSecret) { self.secret = secret }
 
-    static func randomSecret() -> String {
-        var bytes = [UInt8](repeating: 0, count: 24)
+    static func randomSecret() -> String { randomSecret(bytes: 24) }
+    static func randomSecret(bytes count: Int) -> String {
+        var bytes = [UInt8](repeating: 0, count: count)
         if SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) != errSecSuccess {
-            bytes = Array((UUID().uuidString + UUID().uuidString).utf8.prefix(24))
+            bytes = Array((UUID().uuidString + UUID().uuidString + UUID().uuidString).utf8.prefix(count))
         }
         return bytes.map { String(format: "%02x", $0) }.joined()
     }
@@ -70,7 +81,9 @@ struct ViewerAccessLedger {
     /// Resumes a known pass or creates one. A known declined or removed pass stays refused;
     /// a new request under approval needs a name, the viewer's explicit request, and the
     /// operator's decision. A saved name sent without `asking` never starts a request.
-    mutating func join(pass: String?, name: String?, asking: Bool = false, color: PointerColor?, mobile: Bool, local: Bool, now: Date) -> JoinOutcome {
+    /// A new request through the short address also needs it open, and has its own pending bound.
+    mutating func join(pass: String?, name: String?, asking: Bool = false, color: PointerColor?, mobile: Bool, local: Bool,
+                       shortAddress: Bool = false, now: Date) -> JoinOutcome {
         prune(now: now)
         if let pass, var record = records[pass] {
             record.lastSeen = now; record.mobile = mobile; record.local = local
@@ -79,8 +92,10 @@ struct ViewerAccessLedger {
             records[pass] = record
             return .joined(record)
         }
+        if shortAddress, !shortAddressOpen || !approvalRequired { return .closed }
         if approvalRequired, name == nil || !asking { return .nameRequired }
         if approvalRequired, records.values.filter({ $0.admission == .pending }).count >= Self.maxPending { return .full }
+        if shortAddress, records.values.filter({ $0.shortAddress && $0.admission == .pending }).count >= Self.maxShortAddressPending { return .full }
         if records.count >= Self.maxRecords {
             // Make room only from sessions that have stopped contacting the gateway.
             guard let oldest = records.values.filter({ now.timeIntervalSince($0.lastSeen) >= Self.visibleFor })
@@ -90,7 +105,7 @@ struct ViewerAccessLedger {
         let number = nextNumber; nextNumber += 1
         let record = Record(pass: secret(), number: number, name: name, color: color ?? .fallback(for: number), mobile: mobile, local: local,
                             admission: approvalRequired ? .pending : .admitted, joinedAt: now, lastSeen: now,
-                            reader: nil, mediaReady: !approvalRequired)
+                            reader: nil, mediaReady: !approvalRequired, shortAddress: shortAddress)
         records[record.pass] = record
         return .joined(record)
     }
@@ -98,9 +113,12 @@ struct ViewerAccessLedger {
     /// Records playback observations for a known pass. Names change only without approval,
     /// so an admitted request cannot rename itself after the operator's decision. Under approval,
     /// a session admitted unnamed before approval may set its first label, as with `setName`.
-    mutating func heartbeat(_ pass: String, playing: Bool, health: ViewerHealth, revision: Int, name: String??, mobile: Bool, local: Bool, now: Date) -> Record? {
+    /// A color is a label too, so a session may change it at any time, including under approval.
+    mutating func heartbeat(_ pass: String, playing: Bool, health: ViewerHealth, revision: Int, name: String??, color: PointerColor? = nil,
+                            mobile: Bool, local: Bool, now: Date) -> Record? {
         guard var record = records[pass] else { return nil }
         record.lastSeen = now; record.mobile = mobile; record.local = local
+        if let color { record.color = color }
         if record.admission == .admitted {
             record.playing = playing; record.health = health; record.revision = revision
         }
@@ -134,15 +152,23 @@ struct ViewerAccessLedger {
     }
 
     /// Turning approval on moves already-admitted sessions to their own readers; turning it off
-    /// admits waiting requests with the link's shared credential. Refusals stay refused.
+    /// admits waiting requests with the link's shared credential. Refusals stay refused. Requests
+    /// from the short address never had the link, so turning approval off declines them instead.
     mutating func setApproval(_ required: Bool) {
         guard required != approvalRequired else { return }
+        if !required { setShortAddress(open: false) }
         approvalRequired = required
         for pass in Array(records.keys) {
             guard let record = records[pass] else { continue }
             if required, record.admission == .admitted, record.reader == nil { assignReader(pass) }
             if !required, record.admission == .pending { records[pass]?.admission = .admitted; records[pass]?.mediaReady = true }
         }
+    }
+    /// Opens or closes the short address for new requests. Closing declines its waiting requests.
+    mutating func setShortAddress(open: Bool) {
+        shortAddressOpen = open && approvalRequired
+        guard !shortAddressOpen else { return }
+        for (pass, record) in records where record.shortAddress && record.admission == .pending { records[pass]?.admission = .declined }
     }
     private mutating func assignReader(_ pass: String) {
         guard approvalRequired, let number = records[pass]?.number else { records[pass]?.mediaReady = true; return }
@@ -172,13 +198,14 @@ struct ViewerAccessLedger {
                     playing: admitted && record.playing && record.revision == session?.revision && session?.state == .live && age < 8,
                     onThisMac: record.local, revision: record.revision, lastSeen: record.lastSeen, number: record.number, name: record.name,
                     health: admitted ? ViewerHealth.observed(record.health, playing: record.playing, revision: record.revision, session: session, age: age) : .connecting,
-                    admission: record.admission, color: record.color, joinedAt: record.joinedAt)
+                    admission: record.admission, color: record.color, joinedAt: record.joinedAt, shortAddress: record.shortAddress)
             }.sorted { $0.number < $1.number }
     }
 
     private mutating func prune(now: Date) {
         records = records.filter { $0.value.admission != .pending || now.timeIntervalSince($0.value.lastSeen) < Self.pendingFor }
     }
-    /// A new viewing link starts a new numbering; the approval choice stays.
-    mutating func reset() { records.removeAll(); nextNumber = 1 }
+    /// A new viewing link starts a new numbering; the approval choice stays. The short address
+    /// closes with the link, and its owner opens it again for the new one.
+    mutating func reset() { records.removeAll(); nextNumber = 1; shortAddressOpen = false }
 }

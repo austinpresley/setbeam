@@ -55,11 +55,11 @@ function page(options = {}) {
   };
   context.globalThis = context;
   vm.runInNewContext(source, context);
-  const state = {name: options.name ?? 'Sam', locked: !!options.locked, live: true, pass: 'f'.repeat(48)};
-  const controller = context.SetbeamPointers.attach({pass: () => state.pass, name: () => state.name, nameLocked: () => state.locked,
-    setName: value => (state.name = value.trim()), live: () => state.live});
+  const state = {name: options.name ?? 'Sam', color: options.color ?? 'blue', locked: !!options.locked, live: true, pass: 'f'.repeat(48), edits: 0};
+  const controller = context.SetbeamPointers.attach({pass: () => state.pass, name: () => state.name, color: () => state.color,
+    nameLocked: () => state.locked, editIdentity: () => { state.edits++; }, live: () => state.live});
   return {
-    api: context.SetbeamPointers, controller, get, sockets, state, listeners,
+    api: context.SetbeamPointers, controller, get, sockets, state, listeners, elements,
     advance(ms) {
       const end = now + ms;
       while (true) {
@@ -95,20 +95,22 @@ test('mapping uses the visible source picture, not the page or letterbox', () =>
   assert.equal(full.top, (1000 - 1000 * 1080 / 2560) / 2);
 });
 
-test('pointing needs the host option and a name, then announces only name, color, and pass', () => {
-  const p = page({name: ''});
+test('pointing needs the host option and the viewer\'s name, then announces only name, color, and pass', () => {
+  const p = page({name: '', color: 'teal'});
   p.controller.update({enabled: false, live: true, revision: 7});
   assert.equal(p.get('pointer').hidden, true, 'No control until the operator enables shared pointers');
   p.controller.update({enabled: true, live: true, revision: 7});
   assert.equal(p.get('pointer').hidden, false);
   p.get('pointer-form').dispatch('submit');
   assert.equal(p.sockets.length, 0, 'A name is required');
-  p.get('pointer-name').value = '  Sam  ';
+  assert.equal(p.state.edits, 1, 'Without a name the viewer is sent to the one join card');
+  assert.equal(p.get('pointer-status').textContent, 'Choose a name before pointing.');
+  p.state.name = 'Sam';
   p.get('pointer-form').dispatch('submit');
   const socket = p.sockets[0];
   assert.equal(socket.url, 'ws://192.168.1.5:8080/s/token/presence');
   socket.open();
-  assert.deepEqual(socket.sent[0], {t: 'hello', pass: 'f'.repeat(48), name: 'Sam', color: 'blue'});
+  assert.deepEqual(socket.sent[0], {t: 'hello', pass: 'f'.repeat(48), name: 'Sam', color: 'teal'});
 });
 
 test('moves are picture fractions, coalesced, never repeated, and hidden outside the picture', () => {
@@ -206,12 +208,18 @@ test('a refusal stops reconnecting and a dropped channel retries with backoff', 
   assert.equal(p.sockets.length, 2, 'A refused page does not keep asking');
 });
 
-test('a locked admitted name cannot be edited for pointing', () => {
+test('pointing has no name or color field of its own, and a changed identity is announced again', () => {
   const p = page({locked: true, name: 'Approved Sam'});
   p.controller.update({enabled: true, live: true, revision: 7});
   p.get('pointer').dispatch('click');
-  assert.equal(p.get('pointer-name').disabled, true);
-  assert.equal(p.get('pointer-name').value, 'Approved Sam');
+  assert.ok(!p.elements.has('pointer-name') && !p.elements.has('pointer-colors'), 'The panel reuses the viewer\'s identity');
+  const first = p.start();
+  assert.equal(p.get('pointer-status').textContent, 'Pointing as Approved Sam. Move over the picture or tap it.');
+  p.state.color = 'brown'; p.controller.identityChanged();
+  assert.equal(first.closed, true);
+  const next = p.sockets.at(-1); next.open();
+  assert.deepEqual(next.sent[0], {t: 'hello', pass: 'f'.repeat(48), name: 'Approved Sam', color: 'brown'});
+  assert.equal(Object.keys(p.api.COLORS).length, 12, 'Twelve preset colors');
 });
 
 test('late snapshots from an earlier picture or during Hold are ignored (A2, B1)', () => {

@@ -114,9 +114,12 @@ final class PointerPresenceTests: XCTestCase {
             let ratio = (max(fill, text) + 0.05) / (min(fill, text) + 0.05)
             XCTAssertGreaterThanOrEqual(ratio, 4.5, color.rawValue)
         }
-        XCTAssertNil(PointerColor.validated("red")); XCTAssertNil(PointerColor.validated("<b>")); XCTAssertNil(PointerColor.validated(3))
-        XCTAssertEqual(PointerColor.validated("pink"), .pink)
-        XCTAssertEqual(Set((1...6).map(PointerColor.fallback(for:))).count, 6)
+        XCTAssertNil(PointerColor.validated("magenta")); XCTAssertNil(PointerColor.validated("<b>")); XCTAssertNil(PointerColor.validated(3))
+        XCTAssertEqual(PointerColor.validated("pink"), .pink); XCTAssertEqual(PointerColor.validated("teal"), .teal)
+        XCTAssertEqual(PointerColor.allCases.count, 12)
+        // Sessions 1-6 keep the defaults they had before the palette grew.
+        XCTAssertEqual((1...6).map(PointerColor.fallback(for:)), [.blue, .green, .orange, .pink, .purple, .yellow])
+        XCTAssertEqual(Set((1...12).map(PointerColor.fallback(for:))).count, 12)
     }
 }
 

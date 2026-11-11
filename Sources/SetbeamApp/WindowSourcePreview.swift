@@ -26,7 +26,7 @@ import SetbeamCore
         self.list = list; self.capture = capture
     }
 
-    func refresh(permitted: Bool, monitored: MacWindowIdentity?) async {
+    func refresh(permitted: Bool, monitored: MacWindowIdentity?, captureVisible: Bool = true) async {
         guard permitted else { clear(); return }
         let token = generation
         let found: [(window: MacWindow, handle: SCWindow?)]
@@ -44,6 +44,8 @@ import SetbeamCore
             icons[window.identity.processID] = NSRunningApplication(processIdentifier: window.identity.processID)?.icon
         }
         icons = icons.filter { pid, _ in windows.contains { $0.identity.processID == pid } }
+        // Other categories still list identities for Last connected, without taking hidden previews.
+        guard captureVisible else { images = [:]; unavailable = []; return }
         // Before rows report their visibility, the first rows are the ones on screen.
         let wanted = windows.filter { $0.identity != monitored && (visible.isEmpty || visible.contains($0.identity)) }.prefix(Self.picturesPerPass)
         for window in wanted {
@@ -84,8 +86,38 @@ import SetbeamCore
     }
 }
 
+/// Group by application identity, including windows owned by its helper processes.
+struct WindowApplicationGroup: Identifiable {
+    let id: String
+    let name: String
+    let windows: [MacWindow]
+
+    func matching(_ query: String) -> [MacWindow] {
+        let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        return query.isEmpty || name.localizedStandardContains(query) ? windows : windows.filter { $0.label.localizedStandardContains(query) }
+    }
+
+    /// Derive numbers from the complete group so searching never renumbers duplicate titles.
+    func detail(for window: MacWindow) -> String? {
+        guard window.label == window.applicationName || windows.filter({ $0.label == window.label }).count > 1,
+              let index = windows.firstIndex(where: { $0.id == window.id }) else { return nil }
+        return "Window \(index + 1)"
+    }
+
+    static func grouping(_ windows: [MacWindow]) -> [Self] {
+        Dictionary(grouping: windows) { window in
+            window.bundleIdentifier.map { "bundle:\($0)" } ?? "name:\(window.applicationName)"
+        }.map { id, windows in
+            Self(id: id, name: windows[0].applicationName, windows: windows.sorted(by: MacWindow.precedes))
+        }.sorted {
+            let order = $0.name.localizedStandardCompare($1.name)
+            return order == .orderedSame ? $0.id < $1.id : order == .orderedAscending
+        }
+    }
+}
+
 struct WindowSourceThumbnail: View {
-    static let size = CGSize(width: 140, height: 84)
+    static let size = CGSize(width: 288, height: 160)
     @ObservedObject var previews: WindowSourcePreviews
     @ObservedObject var player: NativePreview
     let window: MacWindow
@@ -94,7 +126,7 @@ struct WindowSourceThumbnail: View {
 
     var body: some View {
         ZStack {
-            Color(nsColor: .textBackgroundColor)
+            MonitorStyle.stage
             if monitored, pictureReady, let picture = player.picture {
                 PictureView(picture: picture)
             } else if !monitored, let image = previews.images[window.identity] {
@@ -106,14 +138,10 @@ struct WindowSourceThumbnail: View {
                 }.foregroundStyle(.secondary)
             }
         }
-        .frame(width: Self.size.width, height: Self.size.height)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(.primary.opacity(0.1), lineWidth: 1) }
-        .overlay(alignment: .bottomTrailing) {
-            if let icon = previews.icons[window.identity.processID] {
-                Image(nsImage: icon).resizable().frame(width: 20, height: 20).shadow(radius: 1).padding(4)
-            }
-        }
+        .frame(maxWidth: .infinity)
+        .frame(height: Self.size.height)
+        .environment(\.colorScheme, .dark)
+        .clipped()
         .accessibilityHidden(true)
     }
 }

@@ -9,6 +9,7 @@ import tempfile
 import socket
 import time
 import threading
+from preview_timing import validate_live_timing
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--tools", type=Path, default=Path("Vendor/bin"))
@@ -94,12 +95,10 @@ with tempfile.TemporaryDirectory(prefix="Setbeam-preview-check-") as temporary:
         live_video = [record for record in live if record["kind"] == 1]
         live_audio = [record for record in live if record["kind"] == 2]
         assert len(live_video) == 90 and live_audio
-        intervals = [right["pts"] - left["pts"] for left, right in zip(live_video, live_video[1:])]
-        assert all(right["duration"] == delta for right, delta in zip(live_video[1:], intervals)), live_video[:3]
-        # The one-second MP4 loop can contain one longer interval at its audio-tail
-        # boundary. Preserve that real PTS delta rather than inventing constant fps.
-        assert sum(abs(delta / 1e6 - 1 / 60) < 0.00001 for delta in intervals) >= 85, intervals
-        assert all(0 < delta < 100_000 for delta in intervals)
+        # The first RTCP report can align the separate audio/video RTP clocks after
+        # decoding has begun. Preserve that source PTS adjustment, rather than
+        # demanding a negative frame duration or rewriting synchronized timestamps.
+        validate_live_timing(live_video)
         print("PASS: actual MediaMTX loopback RTSP retains 1080p60 decoded frame duration and video/audio PTS")
     finally:
         for child in [sender, server]:

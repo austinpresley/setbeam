@@ -2,8 +2,10 @@
 // Positions are fractions of the visible source picture, never of the page or window.
 // The channel carries presence only; it cannot control the Mac, media, or the session.
 (() => {
-  const COLORS = {blue: ['#1a5ed9', '#fff'], green: ['#17783a', '#fff'], orange: ['#fa941a', '#141414'],
-    pink: ['#cc2980', '#fff'], purple: ['#7540cc', '#fff'], yellow: ['#fad11f', '#141414']};
+  // The validated preset colors, in the order the join card offers them. Fill, then name text with at least 4.5:1 contrast.
+  const COLORS = {red: ['#c42b2b', '#fff'], orange: ['#fa941a', '#141414'], yellow: ['#fad11f', '#141414'], lime: ['#a6d93b', '#141414'],
+    green: ['#17783a', '#fff'], teal: ['#0b7480', '#fff'], cyan: ['#3cc8e6', '#141414'], blue: ['#1a5ed9', '#fff'],
+    indigo: ['#4338ca', '#fff'], purple: ['#7540cc', '#fff'], pink: ['#cc2980', '#fff'], brown: ['#8a5526', '#fff']};
   const SEND_INTERVAL = 33, PING_INTERVAL = 5000, FADE = 600, IDLE = 4000;
 
   // The picture inside an element showing it with object-fit: contain.
@@ -28,46 +30,29 @@
   function attach(viewer) {
     const $ = id => document.getElementById(id);
     const picture = $('picture'), video = $('video'), layer = $('pointer-layer'), button = $('pointer'), panel = $('pointer-panel');
-    const nameInput = $('pointer-name'), share = $('pointer-share'), showOthers = $('pointer-show'), status = $('pointer-status');
-    let color = 'blue';
-    try { if (Object.hasOwn(COLORS, sessionStorage.getItem('setbeam-pointer-color'))) color = sessionStorage.getItem('setbeam-pointer-color'); } catch {}
+    const share = $('pointer-share'), showOthers = $('pointer-show'), status = $('pointer-status');
+    // The viewer's one name and color, chosen on the join card, label this pointer.
+    const color = () => Object.hasOwn(COLORS, viewer.color?.()) ? viewer.color() : 'blue';
     let enabled = false, live = false, wanted = false, joined = false, socket, retryAt = 0, retryDelay = 1000, denied = '';
     let serverRevision = -1, lastSent, pending, sendTimer, pingTimer, sweepTimer, sharing = true, ownExpires = 0, ownPoint;
     const marks = new Map();
     let lastRevision, lastInputs = '';
 
-    const swatches = $('pointer-colors');
-    for (const name of Object.keys(COLORS)) {
-      const label = document.createElement('label'); label.className = 'swatch'; label.title = name[0].toUpperCase() + name.slice(1);
-      const input = document.createElement('input'); input.type = 'radio'; input.name = 'pointer-color'; input.value = name;
-      input.setAttribute('aria-label', label.title); input.checked = name === color;
-      const dot = document.createElement('span'); dot.style.setProperty('--c', COLORS[name][0]);
-      input.addEventListener('change', () => { if (input.checked) chooseColor(name); });
-      label.append(input, dot); swatches.append(label);
-    }
-    function chooseColor(name) {
-      color = name;
-      try { sessionStorage.setItem('setbeam-pointer-color', name); } catch {}
-      // The channel announces a color once; rejoin to change it.
-      if (joined) { reconnect(); }
-    }
     function say(value) { if (status.textContent !== value) status.textContent = value; }
     function refresh() {
       button.hidden = !enabled;
       button.setAttribute('aria-pressed', String(joined && wanted));
       $('pointer-join').textContent = wanted ? 'Stop pointing' : 'Start pointing';
       $('pointer-share-row').hidden = !wanted; $('pointer-show-row').hidden = !wanted;
-      nameInput.disabled = viewer.nameLocked();
-      if (document.activeElement !== nameInput) nameInput.value = viewer.name();
       picture.classList.toggle('pointing', joined && wanted && sharing && live);
       layer.hidden = !showOthers.checked;
       if (!enabled) { panel.hidden = true; button.setAttribute('aria-expanded', 'false'); }
-      if (denied === 'name') say('Enter a name to point.');
+      if (denied === 'name') say('Choose a name before pointing.');
       else if (denied === 'full') say('Too many people are pointing right now.');
       else if (denied) say('Pointing is unavailable for this page.');
       else if (wanted && !joined) say('Connecting…');
       else if (wanted && !live) say('Pointers return when the picture is live.');
-      else if (wanted) say(viewer.nameLocked() ? 'Pointing as ' + viewer.name() + '.' : 'Pointing. Move over the picture or tap it.');
+      else if (wanted) say('Pointing as ' + viewer.name() + '. Move over the picture or tap it.');
       else say('');
     }
 
@@ -79,7 +64,7 @@
       let next;
       try { next = socket = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + path); }
       catch { socket = undefined; retryAt = Date.now() + retryDelay; return; }
-      next.onopen = () => { if (next === socket) next.send(JSON.stringify({t: 'hello', pass, name: viewer.name(), color})); };
+      next.onopen = () => { if (next === socket) next.send(JSON.stringify({t: 'hello', pass, name: viewer.name(), color: color()})); };
       next.onmessage = event => {
         if (next !== socket) return;
         let message; try { message = JSON.parse(event.data); } catch { return; }
@@ -198,7 +183,7 @@
     let own;
     function renderOwn() {
       if (!ownPoint) { own?.classList.add('fading'); return; }
-      if (!own || own.dataset.color !== color) { own?.remove(); own = mark(color, 'You'); own.dataset.color = color; }
+      if (!own || own.dataset.color !== color()) { own?.remove(); own = mark(color(), 'You'); own.dataset.color = color(); }
       own.classList.remove('fading'); place(own, ownPoint.x, ownPoint.y); sweep();
     }
     function clearMarks() {
@@ -218,7 +203,7 @@
 
     button.addEventListener('click', () => {
       panel.hidden = !panel.hidden; button.setAttribute('aria-expanded', String(!panel.hidden));
-      if (!panel.hidden) { refresh(); (nameInput.disabled ? $('pointer-join') : nameInput).focus(); }
+      if (!panel.hidden) { refresh(); $('pointer-join').focus(); }
     });
     document.addEventListener('click', event => {
       if (!panel.hidden && !panel.contains(event.target) && !button.contains(event.target)) { panel.hidden = true; button.setAttribute('aria-expanded', 'false'); }
@@ -229,8 +214,8 @@
     $('pointer-form').addEventListener('submit', event => {
       event.preventDefault();
       if (wanted) { wanted = false; denied = ''; hide(); close(); refresh(); return; }
-      const name = viewer.nameLocked() ? viewer.name() : viewer.setName(nameInput.value);
-      if (!name) { denied = 'name'; refresh(); nameInput.focus(); return; }
+      // A session without a name chooses one on the join card first; pointing never asks for a second name.
+      if (!viewer.name()) { denied = 'name'; refresh(); panel.hidden = true; button.setAttribute('aria-expanded', 'false'); viewer.editIdentity?.(); return; }
       wanted = true; denied = ''; retryAt = 0; retryDelay = 1000; open(); refresh();
     });
     share.addEventListener('change', () => {
@@ -240,7 +225,9 @@
     showOthers.addEventListener('change', refresh);
 
     return {
-      color: () => color,
+      color,
+      // The channel announces a name and color once; a changed identity reconnects to announce it again.
+      identityChanged() { if (socket) reconnect(); },
       // Called on every viewer update; it acts only when the session's inputs change.
       update(next) {
         const inputs = [next.enabled, next.live, next.revision].join();

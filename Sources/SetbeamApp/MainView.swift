@@ -5,38 +5,41 @@ import SetbeamCore
 struct MainView: View {
     @ObservedObject var model: SessionModel
     @State private var popover: MonitorPopover?
-    @State private var showingJoinCodes = false
+    @State private var sharingExpanded = false
+    @State private var lastSharingSection = SharingSection.invite
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.dismissWindow) private var dismissWindow
     @StateObject private var windowPresentation = MainWindowPresentation()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private enum MonitorPopover { case source, sound, sharing }
+    private enum MonitorPopover { case source, sound }
+    private var inlineSharing: Bool { model.sharingSection != nil && !model.sharingInWindow }
     private var outgoingNeedsAttention: Bool {
         model.outgoingNeedsAttention
     }
-    private var sharingTitle: String {
-        model.sharingTitle
-    }
 
     var body: some View {
-        VStack(spacing: 0) {
-            GeometryReader { geometry in
-                let extraWidth = showingJoinCodes ? MonitorJoinCodesPanel.extraWidth : 0
-                let width = min(max(0, geometry.size.width - extraWidth), geometry.size.height * 16 / 9)
-                HStack(spacing: MonitorJoinCodesPanel.spacing) {
-                    picture.frame(width: width, height: width * 9 / 16)
-                    if showingJoinCodes {
-                        MonitorJoinCodesPanel(model: model) { showSheet(.viewingWiFi) }
-                            .frame(width: MonitorJoinCodesPanel.width, height: width * 9 / 16)
+        HStack(spacing: 0) {
+            VStack(spacing: 0) {
+                MonitorCommandBar(model: model)
+                VStack(alignment: .leading, spacing: 0) {
+                    GeometryReader { geometry in
+                        picture.frame(width: geometry.size.width, height: geometry.size.height)
+                            .onAppear { if !inlineSharing { windowPresentation.monitorWidth = geometry.size.width } }
+                            .onChange(of: geometry.size) { _, size in if !inlineSharing { windowPresentation.monitorWidth = size.width } }
                     }
-                }.frame(width: geometry.size.width, height: geometry.size.height)
-            }.padding(.horizontal, 16).padding(.top, 8)
-            feedback
-            audienceBar
-        }
-        .frame(minWidth: showingJoinCodes ? 640 + MonitorJoinCodesPanel.extraWidth : 640,
-            idealWidth: showingJoinCodes ? 900 + MonitorJoinCodesPanel.extraWidth : 900, minHeight: 420)
+                }.background(MonitorStyle.stage).environment(\.colorScheme, .dark)
+                feedback
+            }.frame(maxWidth: .infinity, maxHeight: .infinity)
+            if inlineSharing {
+                Divider()
+                SharingPanel(model: model).frame(width: SharingPanelLayout.width)
+            }
+        }.frame(maxHeight: .infinity)
+        .frame(minWidth: inlineSharing ? 640 + SharingPanelLayout.extraWidth : 640,
+            idealWidth: inlineSharing ? 900 + SharingPanelLayout.extraWidth : 900, minHeight: 420)
         .background(Color(nsColor: .windowBackgroundColor))
-        .background(WindowPersistence(presentation: windowPresentation))
+        .background(WindowPersistence(presentation: windowPresentation, model: model))
         .toolbar {
             ToolbarItem(placement: .navigation) { sourceButton }
             ToolbarItem(placement: .principal) { Spacer() }
@@ -50,60 +53,59 @@ struct MainView: View {
                     Label(model.pipVisible ? "Hide floating preview" : "Show floating preview", systemImage: model.pipVisible ? "pip.exit" : "pip.enter")
                 }.disabled(model.preview == nil)
                     .help(model.pipVisible ? "Hide floating preview" : "Show floating preview")
-                settingsMenu
+                Toggle(isOn: Binding(get: { model.sharingSection != nil }, set: { shown in
+                    if shown { model.showSharing(lastSharingSection) } else { model.closeSharing() }
+                })) {
+                    Label("Sharing", systemImage: "sidebar.trailing")
+                }.toggleStyle(.button)
+                    .help(model.sharingSection == nil ? "Show Sharing panel" : "Hide Sharing panel")
+                    .accessibilityLabel(model.sharingSection == nil ? "Show Sharing panel" : "Hide Sharing panel")
             }
         }
         .sheet(item: $model.sheet) { sheet in
             switch sheet {
             case .connection: ConnectionView(model: model)
-            case .picture: PictureSettingsView(model: model)
-            case .advanced: AdvancedView(model: model)
+            case .sourceDetails: SourceDetailsView(model: model).id(model.setup?.id)
+            case .networkSource: NetworkSourceView(model: model)
             case .incoming: IncomingSetupView(model: model)
             case .join: JoinCodesView(model: model)
-            case .viewingWiFi: ViewingWiFiView(model: model, returnsToJoinCodes: !showingJoinCodes)
-            case .viewers: ViewerStatusView(model: model)
             case .setupCheck: SetupCheckView(model: model)
             case .rename: SessionNameView(model: model)
             case .about: AboutView(model: model)
+            case .permissions: PermissionsView(model: model)
             }
         }
-        .onChange(of: model.sheet) { _, sheet in if sheet != nil { popover = nil } }
-        .onAppear { model.launch() }
+        .onChange(of: model.sheet) { _, sheet in
+            if sheet != nil { popover = nil }
+            model.sharingCanDock = windowPresentation.canEmbedSharing && sheet == nil
+        }
+        .onChange(of: model.sharingSection) { _, section in
+            if let section { lastSharingSection = section }
+            updateSharingPresentation()
+        }
+        .onChange(of: model.sharingFocusRequest) { _, _ in updateSharingPresentation() }
+        .onChange(of: model.sharingInWindow) { _, _ in updateSharingPresentation() }
+        .onAppear {
+            model.launch(); updateSharingPresentation()
+        }
     }
 
     private var sourceButton: some View {
         Button { togglePopover(.source) } label: {
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: 4) {
                 Text(model.title).font(.system(size: 13, weight: .semibold)).foregroundStyle(.primary)
-                HStack(spacing: 5) {
+                HStack(spacing: 4) {
+                    Image(systemName: model.setup?.kind == .sample ? "play.rectangle" : model.setup == nil ? "rectangle.on.rectangle" : SourceCategory.initial(for: model.setup).symbol)
                     Text(model.sourceLabel)
                     Image(systemName: "chevron.down").font(.system(size: 8, weight: .medium))
                 }.font(.system(size: 11)).foregroundStyle(.secondary)
             }.lineLimit(1).frame(minWidth: 120, idealWidth: 200, maxWidth: 320, alignment: .leading)
                 .padding(.vertical, 4).contentShape(Rectangle())
-        }.buttonStyle(.plain).help("Source and session")
+        }.buttonStyle(.plain).help("\(model.title)\n\(model.sourceLabel)\nChoose a source or open its details")
             .accessibilityLabel("Source and session. \(model.title). \(model.sourceLabel)")
             .popover(isPresented: presentation(.source), arrowEdge: .bottom) {
                 MonitorSourcePopover(model: model, show: showSheet)
             }
-    }
-
-    private var settingsMenu: some View {
-        Menu {
-            Button("Picture settings…", systemImage: "slider.horizontal.3") { showSheet(.picture) }
-            Button("Test my setup…", systemImage: "checkmark.circle") { showSheet(.setupCheck) }
-            Button("Viewing network…", systemImage: "wifi") { model.openAdvanced(section: .network) }
-            if model.setup?.kind == .capture {
-                Button("Audio routing…", systemImage: "waveform") { model.openAdvanced(section: .connection) }
-            }
-            Divider()
-            Button("Save frame", systemImage: "photo") { model.saveFrame() }.disabled(!model.localReady)
-            Button("Diagnostics…", systemImage: "info.circle") { model.openAdvanced(section: .diagnostics) }
-            Button("Advanced…") { model.openAdvanced() }
-            Divider()
-            Button("About Setbeam") { showSheet(.about) }
-        } label: { Image(systemName: "gearshape").accessibilityLabel("Settings and actions") }
-        .help("Settings and actions").accessibilityLabel("Settings and actions")
     }
 
     private var picture: some View {
@@ -115,7 +117,7 @@ struct MainView: View {
                     lastPicture: model.lastFrameAt == nil ? nil : model.frameAgeLabel,
                     pointers: model.showsPointers ? model.pointerPresence : nil)
             } else {
-                Color(nsColor: .underPageBackgroundColor)
+                MonitorStyle.stage
                 VStack(spacing: 13) {
                     Image(systemName: "rectangle.on.rectangle").font(.system(size: 38, weight: .light)).foregroundStyle(.secondary)
                     Text("Your picture starts here").font(.title3.weight(.medium))
@@ -123,7 +125,13 @@ struct MainView: View {
                     Button("Choose a source") { model.openSources() }.buttonStyle(.borderedProminent).padding(.top, 3)
                 }.padding(20)
             }
-        }.background(.black).clipShape(RoundedRectangle(cornerRadius: 8))
+        }.background(MonitorStyle.stage)
+            .overlay(alignment: .topLeading) {
+                if model.setup?.kind == .sample {
+                    Text("Sample media").font(.caption).foregroundStyle(.white)
+                        .padding(8).background(.black.opacity(0.75), in: RoundedRectangle(cornerRadius: 4)).padding(12)
+                }
+            }
     }
 
     private var feedback: some View {
@@ -134,84 +142,20 @@ struct MainView: View {
                 issue(model.state.sharing ? "The viewing address changed. Invite viewers with the current code. Sharing and Hold are preserved." : "The viewing network changed. Your monitor continues. Start sharing to invite viewers again.") { model.networkChanged = false }
             }
             if outgoingNeedsAttention && model.localReady {
-                Label(model.state.holding ? "Restoring the holding picture. Source picture and sound stay hidden." : "The outgoing picture is reconnecting. Your monitor continues.", systemImage: "exclamationmark.circle")
-                    .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                Label { Text(model.audiencePresentation.recoveryDetail ?? "Outgoing media is not confirmed.").foregroundStyle(.primary) }
+                    icon: { Image(systemName: "exclamationmark.circle").foregroundStyle(.orange) }
+                    .font(.caption).fixedSize(horizontal: false, vertical: true)
             }
             if !model.localReady, let previous = model.previousSourceName {
                 Button("Return to previous source: \(previous)") { model.returnToPreviousSource() }
-                    .buttonStyle(.link).font(.caption).disabled(model.busy)
+                    .buttonStyle(.link).font(.caption).disabled(model.busy || model.protectsSourceDraft)
             }
-        }.padding(.horizontal, 16).padding(.top, 8)
+        }.padding(.horizontal, 20).padding(.vertical, hasFeedback ? 8 : 0)
     }
-
-    private var audienceBar: some View {
-        HStack(spacing: 12) {
-            Button { togglePopover(.sharing) } label: {
-                HStack(spacing: 8) {
-                    if !model.state.sharing { Image(systemName: "lock").foregroundStyle(.secondary) }
-                    else if outgoingNeedsAttention { Image(systemName: "exclamationmark.circle").foregroundStyle(.orange) }
-                    else { Circle().fill(model.state.holding ? Color.blue : Color.green).frame(width: 6, height: 6) }
-                    Text(sharingTitle)
-                }.font(.caption).padding(.vertical, 7).contentShape(Rectangle())
-            }.buttonStyle(.plain)
-                .foregroundStyle(outgoingNeedsAttention ? Color.orange : model.state.holding ? Color.blue : Color.primary)
-                .help("Sharing status and outgoing picture")
-                .accessibilityLabel("\(sharingTitle). Sharing status and outgoing picture")
-                .popover(isPresented: presentation(.sharing), arrowEdge: .top) {
-                    MonitorSharingPopover(model: model, show: showSheet)
-                }
-            if model.state.sharing && !model.state.holding {
-                if !model.strugglingViewers.isEmpty {
-                    let count = model.strugglingViewers.count
-                    Button { showSheet(.viewers) } label: {
-                        Label("\(count) \(count == 1 ? "viewer" : "viewers") struggling", systemImage: "exclamationmark.circle")
-                            .font(.caption).foregroundStyle(.orange)
-                    }.buttonStyle(.plain).help("Show viewers with playback problems")
-                } else {
-                    Button { togglePopover(.sharing) } label: {
-                        Label("\(model.verifiedViewers)", systemImage: "person.2").font(.caption).foregroundStyle(.secondary)
-                    }.buttonStyle(.plain).help("\(model.verifiedViewers) viewers playing")
-                        .accessibilityLabel("\(model.verifiedViewers) viewers playing. Show sharing status")
-                }
-            }
-            if model.state.sharing && !model.pendingViewers.isEmpty {
-                let count = model.pendingViewers.count
-                Button { showSheet(.viewers) } label: {
-                    Label("\(count) asking to join", systemImage: "person.badge.clock").font(.caption).foregroundStyle(Color.accentColor)
-                }.buttonStyle(.plain).help("Review viewers asking to join")
-            }
-            if model.state.holding && model.localReady {
-                Text("Your monitor continues").font(.caption).foregroundStyle(.secondary).lineLimit(1)
-            }
-            Spacer(minLength: 12)
-            if model.busy || model.outgoingIsChanging { ProgressView().controlSize(.mini).accessibilityLabel("Updating session") }
-            if model.state.sharing || showingJoinCodes {
-                Button(action: toggleJoinCodes) {
-                    Label(showingJoinCodes ? "Hide QR codes" : "Show QR codes", systemImage: "qrcode")
-                }.buttonStyle(.bordered).controlSize(.regular)
-                    .help(showingJoinCodes ? "Hide Wi-Fi and viewing codes" : "Show Wi-Fi and viewing codes beside the picture")
-                    .accessibilityIdentifier("joinCodesToggle")
-            }
-            if model.state.sharing {
-                HStack(spacing: 10) {
-                    if model.state.holding { holdButton.tint(.blue).buttonStyle(.borderedProminent) }
-                    else { holdButton.buttonStyle(.bordered) }
-                    Button { model.stopSharing() } label: { Image(systemName: "stop.fill").frame(width: 24, height: 22) }
-                        .disabled(model.busy).help("Stop sharing").accessibilityLabel("Stop sharing")
-                }.buttonStyle(.bordered).controlSize(.regular)
-            } else {
-                Button("Start sharing") { model.startSharing() }
-                    .buttonStyle(.borderedProminent).disabled(!model.canShare).keyboardShortcut(.return, modifiers: .command)
-            }
-        }.padding(.horizontal, 20).padding(.vertical, 12).frame(minHeight: 64)
-    }
-
-    private var holdButton: some View {
-        Button { model.toggleHold() } label: {
-            Image(systemName: model.state.holding ? "play.fill" : "pause.fill").frame(width: 24, height: 22)
-        }.disabled(model.busy || model.state.holding && !model.localReady)
-            .help(model.state.holding ? "Resume sharing" : "Hold audience")
-            .accessibilityLabel(model.state.holding ? "Resume sharing" : "Hold audience")
+    private var hasFeedback: Bool {
+        model.permissionDenied || model.setup != nil && !model.localReady && !model.preparingPicture ||
+            model.error != nil || model.networkChanged || outgoingNeedsAttention && model.localReady ||
+            !model.localReady && model.previousSourceName != nil
     }
 
     private var recovery: some View {
@@ -222,7 +166,10 @@ struct MainView: View {
                 HStack {
                     if model.permissionDenied { Button("Open Privacy Settings") { model.openPrivacySettings() } }
                     else if model.setup?.kind == .incoming { Button("Accsoon setup") { showSheet(.incoming) } }
-                    else if model.setup?.kind == .network || model.setup?.kind == .accsoon { Button("Open Wi-Fi Settings") { model.openWiFiSettings() } }
+                    else if model.setup?.kind == .network {
+                        Button("Edit Stream Address…") { model.openNetworkSource() }
+                        Button("Open Wi-Fi Settings") { model.openWiFiSettings() }
+                    } else if model.setup?.kind == .accsoon { Button("Open Wi-Fi Settings") { model.openWiFiSettings() } }
                     else if model.setup?.kind == .macWindow { Button("Choose a window") { model.openSources() } }
                     Button("Retry now") { model.retry() }.disabled(model.busy)
                     if let saved = model.provenSetup, saved.id != model.setup?.id { Button("Use last working setup") { model.restore(saved) } }
@@ -247,29 +194,52 @@ struct MainView: View {
         })
     }
     private func togglePopover(_ item: MonitorPopover) { popover = popover == item ? nil : item }
-    private func showSheet(_ sheet: AppSheet) { popover = nil; model.sheet = sheet }
-    private func toggleJoinCodes() {
-        let showing = !showingJoinCodes
-        if showing { model.loadPrivateSettings() }
+    private func showSheet(_ sheet: AppSheet) { popover = nil; model.present(sheet) }
+    private func updateSharingPresentation() {
         popover = nil
-        windowPresentation.resizeForJoinCodes(showing: showing, animate: !reduceMotion)
-        showingJoinCodes = showing
+        model.sharingCanDock = windowPresentation.canEmbedSharing && model.sheet == nil
+        let destination = SharingDestination.resolve(section: model.sharingSection, preferWindow: model.sharingInWindow,
+            hasSheet: model.sheet != nil, screenWidth: windowPresentation.screenWidth)
+        switch destination {
+        case .hidden:
+            if sharingExpanded { windowPresentation.resizeForSharing(showing: false, animate: !reduceMotion) }
+            sharingExpanded = false
+            model.sharingInWindow = false
+            dismissWindow(id: "sharing")
+        case .window:
+            model.sharingInWindow = true
+            if sharingExpanded { windowPresentation.resizeForSharing(showing: false, animate: !reduceMotion) }
+            sharingExpanded = false
+            openWindow(id: "sharing")
+        case .inline:
+            if !sharingExpanded {
+                windowPresentation.resizeForSharing(showing: true, animate: !reduceMotion)
+                sharingExpanded = true
+            }
+            dismissWindow(id: "sharing")
+        }
     }
+
 }
 
 private struct WindowPersistence: NSViewRepresentable {
     let presentation: MainWindowPresentation
-    func makeNSView(context: Context) -> NSView { MainWindowAnchor(presentation: presentation) }
+    let model: SessionModel
+    func makeNSView(context: Context) -> NSView { MainWindowAnchor(presentation: presentation, model: model) }
     func updateNSView(_ nsView: NSView, context: Context) {}
     private final class MainWindowAnchor: NSView {
         private let presentation: MainWindowPresentation
         private var configured = false
-        init(presentation: MainWindowPresentation) { self.presentation = presentation; super.init(frame: .zero) }
+        private weak var model: SessionModel?
+        init(presentation: MainWindowPresentation, model: SessionModel) { self.presentation = presentation; self.model = model; super.init(frame: .zero) }
         required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
             guard let window, !configured else { return }; configured = true
             presentation.window = window
+            model?.monitorWindow = window
+            DispatchQueue.main.async { [weak self] in self?.screenChanged() }
+            NotificationCenter.default.addObserver(self, selector: #selector(screenChanged), name: NSWindow.didChangeScreenNotification, object: window)
             window.titleVisibility = .hidden
             window.toolbarStyle = .unified
             let name = CommandLine.arguments.contains("--integration-demo") ? "SetbeamIntegrationMain" : "SetbeamMain"
@@ -277,19 +247,28 @@ private struct WindowPersistence: NSViewRepresentable {
             window.setFrameAutosaveName(name)
             if !NSScreen.screens.contains(where: { $0.visibleFrame.intersects(window.frame) }) { window.center() }
         }
+        @objc private func screenChanged() {
+            model?.sharingCanDock = presentation.canEmbedSharing && model?.sheet == nil
+        }
+        deinit { NotificationCenter.default.removeObserver(self) }
     }
 }
 
 private final class MainWindowPresentation: ObservableObject {
     weak var window: NSWindow?
     private var addedWidth: CGFloat = 0
+    var monitorWidth: CGFloat = 0
 
-    func resizeForJoinCodes(showing: Bool, animate: Bool) {
+    var screenWidth: CGFloat { window?.screen?.visibleFrame.width ?? NSScreen.main?.visibleFrame.width ?? 0 }
+    var canEmbedSharing: Bool { SharingPanelLayout.fits(on: screenWidth) }
+
+    func resizeForSharing(showing: Bool, animate: Bool) {
         guard let window, !window.styleMask.contains(.fullScreen) else { return }
         var frame = window.frame
         if showing {
             let screen = window.screen?.visibleFrame ?? frame
-            let width = min(frame.width + MonitorJoinCodesPanel.extraWidth, screen.width)
+            let required = monitorWidth > 0 ? monitorWidth + SharingPanelLayout.extraWidth : frame.width + SharingPanelLayout.extraWidth
+            let width = min(max(frame.width, required), screen.width)
             addedWidth = max(0, width - frame.width)
             frame.size.width = width
             frame.origin.x = max(screen.minX, min(frame.minX, screen.maxX - width))

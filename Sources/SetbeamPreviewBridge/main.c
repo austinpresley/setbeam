@@ -84,7 +84,7 @@ int main(int argc,char **argv) {
     Decoder video={.index=-1},audio={.index=-1};
     struct SwsContext *scale=NULL;SwrContext *resample=NULL;
     AVFrame *frame=av_frame_alloc();AVPacket *packet=av_packet_alloc();
-    uint8_t *pixels=NULL;int pixels_size=0;int64_t last_video=INT64_MIN,previous_video_pts=AV_NOPTS_VALUE;
+    uint8_t *pixels=NULL;int pixels_size=0;int64_t last_video=INT64_MIN,previous_video_pts=AV_NOPTS_VALUE,previous_video_duration=33333;
     AVChannelLayout audio_layout={0};int audio_rate=0,audio_format=-1,draining=0;
     if(!frame||!packet){result=AVERROR(ENOMEM);goto finish;}
     if(result<0)goto finish;
@@ -117,10 +117,14 @@ int main(int argc,char **argv) {
                 AVRational cadence=av_guess_frame_rate(input,video.stream,frame);
                 /* Decoder frame.duration is not necessarily in the RTSP packet
                  * time base. Actual presentation deltas are the reliable cadence. */
-                int64_t duration=cadence.num>0?av_rescale_q(1,av_inv_q(cadence),AV_TIME_BASE_Q):33333;
+                int64_t duration=cadence.num>0?av_rescale_q(1,av_inv_q(cadence),AV_TIME_BASE_Q):previous_video_duration;
+                /* Before the first RTCP sender report, RTSP can report its 90 kHz
+                 * packet clock as the frame rate. Keep a sane estimate until actual
+                 * PTS deltas establish cadence; never rewrite those source PTS. */
+                if(duration<1000||duration>2000000)duration=previous_video_duration;
                 int64_t pts=timestamp(decoder,frame,duration);
                 if(previous_video_pts!=AV_NOPTS_VALUE&&pts>previous_video_pts&&pts-previous_video_pts<=2000000)duration=pts-previous_video_pts;
-                previous_video_pts=pts;decoder->next_pts=pts+duration;
+                previous_video_pts=pts;previous_video_duration=duration;decoder->next_pts=pts+duration;
                 if(max_fps>0&&last_video!=INT64_MIN&&pts>=last_video&&pts-last_video<1000000/max_fps){av_frame_unref(frame);continue;}
                 last_video=pts;
                 int width=frame->width,height=frame->height;

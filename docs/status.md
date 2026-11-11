@@ -1,6 +1,449 @@
 # Setbeam status
 
-Updated: 2026-11-02. Version 0.2.0, build 24. The viewer name and approval join flow is complete. Customizable local viewing addresses are available. Detailed 4K screen sharing keeps the native picture advancing, native windows display frames on the GPU, encodes stay at or below 30 fps, and 4K viewers at 1 fps receive a picture. Viewer details retain optional names and observational playback health. See [screen-sharing stability verification](verification-keyframe-bursts-2026-10-27.md) and [viewer health verification](verification-viewer-health-2026-10-27.md).
+## Design audit and mockups, 2026-11-11
+
+The [current design audit](../design/audits/2026-11-11-current/Setbeam-design-audit.html)
+records six findings and five interactive HTML proposals. Highest priority is
+one actionable recovery block and visible physical-test limits on wireless
+cards. Medium priorities are content-sized source selection, visible outgoing
+picture/audio facts, clearer Sharing Options, and a compact phone composer.
+The approved picture-first and minimal floating-preview direction is retained.
+
+Evidence combines installed build 38 observation, current UI source, build 37
+native/browser captures, and explicitly labeled older source-chooser history.
+Nine proposal images cover light/dark Mac appearances and the phone. Local HTML
+checks confirm source-category switching, admission/playback separation,
+options disclosures and staged drafts, a 54 px phone composer with 44 px capture
+target, and all five report tabs, embedded images and themes at 390 px without
+horizontal overflow. T3 browser snapshots timed out twice; visual/prototype
+verification used its HTML renderer. These are design checks, not native UI or
+physical-device qualification. No build or scripts/check.sh was run for
+this design-only work. All 172 source, test and script baseline hashes are
+unchanged. Implementation remains future work. Verification details are in
+`design/audits/2026-11-11-current/verification.json`.
+The [report, five preview images and complete mockup bundle](https://drive.google.com/drive/folders/11bIWF9VMWJCEEndRURwtudxI8Uu-SDZN)
+are delivered privately with remote verification.
+
+## Memory fix, build 38, 2026-11-11
+
+Austin reported about 75 GB of RAM during whole-monitor sharing to an iPad and
+phone on the GitHub version. VideoPipeWriter retained consumed Data backing
+storage across append/drain cycles despite an empty pending count. The same
+implementation is in public build 20. The writer now releases drained storage
+and copies only unsent tails. Accsoon control output receives the same storage
+correction. Native preview buffers have an eight-buffer ceiling across formats
+and decoder recovery; hidden/closed monitor layers release queued pictures.
+
+The focused writer regression fails before the fix at 193 MiB growth. Afterward
+it sends 79.35 GiB with less than 1 MiB growth. Five preview regressions pass.
+Two ten-minute runs pass with real display capture and a generated 4K relay,
+each with simultaneous decoded phone/tablet Chrome viewers and Hold/Resume,
+hidden/restored previews and Stop preserving monitoring. Display memory peaks
+at 57.2 MiB instead of growing to 182.2 MiB; 4K peaks at 842.3 MiB and ends
+below its early mean. Initial 4K warm-up measurement failures are retained in
+[the investigation record](verification-memory-2026-11-11.md).
+
+Build 38 is installed; all 38 app files match the verified package. Six arm64
+executables pass strict signatures and system-library-only audits. The complete
+local check passes 290 Swift tests, with one opt-in soak skipped by default,
+five Python cases, 59 Node checks and all media integration stages. Its large
+keyframe stage decodes 500 frames in seven seconds without errors. Native
+light/dark main and floating pictures, Hold/Resume, floating close/reopen and
+Stop preserving monitoring pass; normal Quit removes all 11 owned processes.
+The [app and investigation report](https://drive.google.com/drive/folders/1DpS5rIvEQgU8NewqaGs0x2E9VDRKklPW)
+are delivered privately with remote verification. Normal installed startup is
+confirmed Private with the saved CineView setup. Build 37 is preserved at
+`~/Applications/.Setbeam-before-memory-build38.app`. No hosted CI or GitHub
+publication ran. Physical iOS and transmitter endurance
+remain separate qualification; no hardware compatibility claim changed.
+
+## Messages-style chat, build 37, 2026-11-11
+
+Austin requested compact Apple-like bubbles and contextual reactions in every
+view. Native Mac and browser phone/tablet/desktop chat now use grouped bubbles,
+compact image attachments and no Like/Reply row at rest. Six reactions support
+add/replace/remove with bounded per-participant state. Auth, media, Hold and Stop
+remain unchanged. Native and browser context menus, touch hold/tap, keyboard and
+accessibility paths remain available.
+
+Opus design and round-2 findings are addressed. Fresh Chrome touch-drift, Copy
+race/fallback, polling, auto-follow and deletion-focus checks pass. Mac WebKit
+passes seven decoded/canvas layouts and a trusted exact Copy on insecure HTTP
+LAN with no Clipboard API. Native default-keyboard hotkeys, colored emoji menu,
+light/dark, dense six-reaction and compact reply/image controls are inspected.
+All sample apps and relays were closed for the complete local check. It passes
+282 Swift tests, 5 Python cases, 59 browser/pointer checks and every media stage,
+including 499 decoded large-keyframe frames in seven seconds without errors.
+Opus round 3 approves code/design with no blockers. Build 37 is installed
+privately with exactly one main window. All 38 built/extracted/installed files
+and 168 source inputs match; strict signatures, ZIP and six arm64/no-Homebrew-link
+audits pass. [Opus 5.5 High final sign-off](reviews/2026-11-11-bubble-chat-opus-signoff.md)
+approves delivery with no blockers. [App and current Mac/phone/tablet/desktop
+screenshots](https://drive.google.com/drive/folders/1noTTii9VoUxeLuRXxkVTZPAAtFyydRCi) are delivered privately with remote verification.
+The installed app opens privately with the saved source; build 36 is preserved
+at ~/Applications/.Setbeam-before-messages-build37.app. Real iOS, Simulator and
+spoken VoiceOver stay separate qualification. See
+[build 37 evidence](verification-bubble-chat-2026-11-11.md).
+
+## Single picture and native chat polish, build 36, 2026-11-10
+
+Austin requested one media picture and cleaner chat. Sharing no longer repeats
+its live thumbnail in either presentation. Native chat uses aligned rows,
+compact images that enlarge on request, quiet message actions and one composer.
+Outgoing picture/audio facts remain in status help and accessibility. Disabled
+capture explains its reason, and the draft has a subtle keyboard-focus border.
+Light/dark, compact reply/image drafts, separate-window initial focus, Hold and
+Stop are inspected. Chat stays bounded and media ownership is unchanged.
+
+[Opus 5.5 High round 3](reviews/2026-11-10-chat-polish-opus-signoff.md) approves
+delivery with no blockers. The complete isolated check exits
+0 with 279 Swift tests, 5 Python cases, 59 browser/pointer checks and all media
+stages passing. Its 1,749 KB keyframe stage decodes 505 frames in seven seconds
+without errors. The first run passed recovery then failed viewer-access startup
+with `The video service could not start` while QA media was also running. The
+isolated pass does not diagnose that first failure. No expectation or timeout
+was changed. All six executables pass arm64/no-Homebrew-link/signature audits;
+all 165 source inputs and 38 staged app files match. Build 36 is installed and freshly confirmed private with exactly one visible
+main window. [App, light/dark screenshots and Opus sign-off](https://drive.google.com/drive/folders/1XWm0Wm_Aifdrx28gsbKjbuVeYckYEjdm) are delivered privately with remote verification.
+Build 35 is preserved at ~/Applications/.Setbeam-before-chat-polish-build36.app.
+Hardware, real iOS and spoken VoiceOver remain separate qualification. See
+[build 36 evidence](verification-chat-polish-2026-11-10.md).
+
+Current viewer-link phone/desktop captures are [delivered separately](https://drive.google.com/drive/folders/1NelaNCelwAnVxnqvbPEmrbTF2S53fMIj).
+They show the existing browser chat; the build-36 polish above is native Mac
+presentation only. These are Chrome viewport captures, not physical iOS tests.
+
+## Collaboration and entry points, build 35, 2026-11-10
+
+Version 0.2.0 build 35 is installed. S-011 through S-017 add shared-display
+pointers for This Mac's screen, viewing Wi-Fi selection with honest password
+checks, phone/tablet layouts, admitted session chat with replies/likes/images and
+DigiTech moderation, independent floating/printable join codes, app reopening and
+a focused menu bar. Viewer media access stays read-only; chat and images are
+bounded in memory. Hold closes frame attachments immediately and Stop clears
+collaboration while preserving monitoring. Physical password tests use a phone;
+the editor never joins a network.
+
+Opus 5.5 High round 3 found no code blockers and approved five items, requesting
+extra viewport and cold-launch evidence for the remaining two. The additional
+checks now pass. [Opus round 4](reviews/2026-11-10-opus-r4-signoff.md) approves all seven implementations for this developer build, with the recorded manual qualifications. The complete local scripts/check.sh
+passes 279 Swift tests, 5 Python cases, 59 browser/pointer checks and all media
+stages. Its 1,749 KB keyframe stage decodes 497 frames in seven seconds without
+errors. Final Swift and focused UI/PDF/reopen checks pass, as does the release
+probe using the packaged helpers and fixtures. The manually run engine checks
+pass 8 Chrome and 7 macOS WKWebView sizes with real sample decoding, canvas
+capture, draft retention and compact attachment/reply controls.
+
+Controlled display checks show a named pointer on screen, no red pointer pixels
+in the corresponding actual outgoing frame, click-through and typing, Hold
+removal and Stop cleanup. PDF decoding recovers both exact QR payloads. Native
+Print preview contains the codes. Reopen checks cover a closed/minimized main,
+floating preview, detached Sharing and cold launch after quitting with the main
+closed. Exactly one main window opens and sharing stays off. Literal Dock and
+Spotlight UI are unavailable to this environment's automation; the common
+Launch Services reopen callback is tested.
+
+All 38 built, extracted and installed app files match. Strict signatures, ZIP
+integrity and six arm64/no-Homebrew-link executable audits pass. The previous
+installed app is preserved at ~/Applications/.Setbeam-before-collaboration-build35.app.
+Final light/dark native chat and QR reference captures are inspected and readable. Opus sign-off is complete. [The app, screenshots and sign-off report](https://drive.google.com/drive/folders/10FqDt1tRmt67KqbS6QJcHBbwA2H0Usr0) are delivered privately with remote verification. The installed app is freshly confirmed private with exactly one visible main window.
+No hosted CI, Git commit, push or PR ran. Real iOS/Safari/keyboard, phone Wi-Fi
+association, paper scans, additional display configurations and spoken VoiceOver
+remain separate qualification. Simulator interaction is unavailable because the
+GUI is absent and T3 device access is disabled. See
+[build 35 evidence](verification-collaboration-2026-11-10.md).
+
+Previous installed checkpoint follows.
+
+Updated: 2026-11-08. Version 0.2.0 build 34 is installed and open privately.
+The reviewed design refinements keep native control sizes, use viewer-selected
+circle colors, and make both QR codes clickable with a clear Enlarge Codes action.
+
+## Design refinement, build 34
+
+Main commands, menus and outgoing summaries use observed output plus pending or
+failed Hold/Resume targets. Failures retry the intended change without claiming
+confirmed picture suppression or silence. One Sharing detail home retains its
+last tab and actual outgoing preview. The permanent monitor heading, duplicate
+docked Start action and broad gear are removed. The independent Sharing window
+has essential commands. Incoming guidance uses audience state and the input
+binding. The approved floating geometry and all 39 media/probe/supervisor source
+files remain unchanged.
+
+Pending and joined circles follow each viewer's chosen color, including an
+admitted color change; tooltip/AX names the color. All twelve choices pass the
+ledger projection check. Actual Chrome/native checks retain the same media peer
+while teal becomes lime, with a pink pending request beside it. The circles are
+labels, not verified identities or playback proof.
+
+Click either small QR or Enlarge Codes to open codes up to 320 points. Native
+light/dark code payloads decode identically at both sizes. Browser sound stays
+in the header, while secondary controls disclose without reserving picture
+height or hiding focused controls. A first-click focus/click regression is
+reproduced and fixed before final verification.
+
+The complete packaged scripts/check.sh passes in 661.136 seconds with unchanged
+inputs: 270 Swift tests, 5 Python cases, 58 browser/pointer checks and all media
+stages. The 1,749 KB keyframe stage decodes 499 frames in seven seconds without
+decoder errors. Native and actual Chrome flows pass in both appearances for
+individual colors, QR enlargement, target-specific failed Hold/Resume, detached
+commands, Resume and Stop preserving monitoring. Incoming ready-state UI is
+covered by regression tests; its extra saved-key native fixture reaches macOS
+Keychain authorization and is not a native pass. Required incoming waiting
+steps are visually inspected in both appearances. Physical/manual qualification
+remains separate.
+
+All 37 built, extracted and installed app files match. Strict signatures, ZIP
+integrity and six arm64/system-library-only executable audits pass. Build 33 is
+preserved at `~/Applications/.Setbeam-before-design-build34.app`. The installed
+build 34 is freshly confirmed private with no sheet. No hosted CI, commit,
+push or PR ran. See [build 34 evidence](verification-design-implementation-2026-11-08.md)
+and [download the app and screenshots](https://drive.google.com/drive/folders/1LrrJ6zCsSfImFJLplRC5Jz78xL334jSQ).
+Private delivery completed with remote verification.
+
+## Three-round design audit, 2026-11-07
+
+Three sequential GPT-6.1 Sol xhigh critics reviewed the current UI, then each
+preceding critique and ImageGen proposal against the approved design standard.
+The [cumulative findings](../design/audits/2026-11-07-three-rounds/final-findings.md)
+retain seven findings: one High, five Medium and one Low. Ten design judgments
+and eight untested obligations remain separate. Audience Hold/Resume intent can
+be presented as confirmed output; incoming setup has two source-derived copy
+conditions to correct. Repeated commands and permanent secondary chrome are
+lower priorities. No outgoing source leak or new hardware result is established.
+
+All three reports, exact prompts, generated concepts and a comparison are in
+`design/audits/2026-11-07-three-rounds/`. Final read-only verification matches
+all 84 source entries in the retained build-33 manifest. No app code, build,
+runtime test or live session changed. Concepts still approximate frame aspect
+and floating geometry; native constants remain authoritative. Implementation
+and the recorded behavioral/manual checks remain future work.
+[Reports and all three concept images](https://drive.google.com/drive/folders/1WWFDpjXK8z3qda_HE-RcwNWnFFj8FLfC)
+are delivered privately with remote verification.
+
+## Floating preview refinement, build 33
+
+The on-picture sample caption is removed. Sample identification stays in the
+main window, floating accessibility label and tooltip. Confirmed Hold uses a
+22% black veil with restrained desaturation and a dark centered Play control.
+Recovery messages use the same placement for sample and other sources. The
+design standard, guide and native reference images now describe this direction.
+
+The dark interaction matrix passes all 16 checks. Light appearance passes Hold,
+Resume, Stop, private monitoring, viewer actions and the sample AX label. Scoped
+source loss/return confirms recovery layout at 220 and 340 points. Opus round 2
+approves after fixing recovery spacing and updating the references.
+
+The complete packaged `scripts/check.sh` rerun passes in 647.685 seconds with
+unchanged inputs: 262 Swift tests, 5 Python cases, 55 viewer/pointer checks and
+all media stages. The 1,749 KB keyframe check decoded 497 frames in seven seconds
+without decoder errors. The first attempt failed on a generated live-frame
+duration of 116,411 microseconds, over the existing 100,000 limit. That evidence
+remains for follow-up; no test or threshold was changed. The successful rerun
+does not establish the cause of the initial timing result.
+
+All 37 built, extracted and installed app files match. Strict signatures and
+six arm64/system-library-only executable audits pass. Receive, bridge, encode,
+probe and supervisor source is unchanged. Build 32 is preserved at
+`~/Applications/.Setbeam-before-preview-build33.app`. Private delivery completed
+with remote verification. No hosted CI, commit, push or PR ran. Physical hardware,
+real Capture One, audible output, spoken VoiceOver, trackpad pinch and older
+macOS remain separate qualification. See
+[build 33 evidence](verification-preview-refinement-build33-2026-11-06.md).
+
+## Minimal floating preview, build 32
+
+The floating picture has centered Hold/Resume, a confirmed-state light wash,
+hover Close, and a small viewer/request shortcut. It has no footer, source name,
+More, sound or Fit controls. The durable standard is
+[design-standard.md](design-standard.md), with safe native reference images.
+
+Actual outgoing readiness confirms the wash. Failures retry their intended
+Hold/Resume target. Guarded pointer Resume cannot be released by a second click,
+a boundary-crossing picture gesture or Close. Native key-view navigation works
+without pointer operations taking the working app's keystrokes. Individual
+viewer decisions revalidate viewing link, session, join time and admission.
+
+Dark and light native checks cover rest/hover, pending transitions, real encoder
+failure/retry, keyboard entry and return, gesture guards, minimum size and
+private monitoring. A generated portrait source passes loss/return with Hold
+and the viewing identity preserved. A real browser decodes actual video/audio,
+follows Hold/Resume and the portrait format change, and ends its media on
+individual removal. Stop leaves local monitoring live. White-document viewer
+control contrast passes at 5.94:1. These are local software/runtime results.
+
+Both Opus 5.5 high round-2 reviews approve, with no blocking findings. The full
+`scripts/check.sh` run passes with packaged helpers/fixtures and unchanged source
+inputs. Its 1,749 KB keyframe probe decoded 489 frames in seven seconds without
+decoder errors. No runtime/bridge/probe/supervisor source changed for this task.
+
+All 37 built, extracted and installed app files match. Strict signatures pass;
+six executables are arm64 and link only system libraries. The ZIP includes
+build notes, app hashes and a 161-input source manifest. Build 31 is preserved at
+`~/Applications/.Setbeam-before-minimal-build32.app`. No hosted CI, commit, push
+or PR ran. Physical hardware, real Capture One, audible output, spoken VoiceOver,
+trackpad pinch and older macOS remain separate qualification. See
+[implementation evidence](verification-minimal-preview-build32-2026-11-06.md).
+
+## Minimal floating preview revision, 2026-11-06
+
+Austin requested a simpler picture-first design. This revision removes both
+bottom rows, source names, text status, separate Resume, More, sound and Fit.
+Hover offers Hold and Close. A confirmed Hold adds a light wash and a persistent
+centered play button to resume; a small viewer/request shortcut remains useful.
+Opus 5.5 high endorsed this direction with refinements. No numerical rating was
+assigned to the revision.
+
+Twenty-one simulated interaction/geometry checks and rest/hover/compact HTML
+renders pass. The app is unchanged; native implementation and qualification
+remain. See [minimal preview design evidence](verification-floating-preview-minimal-2026-11-06.md).
+The rest/hover images, interactive prototype and design notes are
+[delivered privately](https://drive.google.com/drive/folders/1l8JngDCpIxhlXSx-oNuGuFjM4hpaBzh-).
+
+## Floating preview design study, 2026-11-06
+
+Superseded by Austin's minimal revision above. The earlier proposal and review
+history remain as evidence, not the current design direction.
+
+Austin requested a back-and-forth design debate with Claude Opus 5.5 at high
+effort and a comparison with the current preview. Four review rounds reached
+an explicit 10/10 design approval, shared by Sol. One attached 48-point bar
+separates local picture/zoom/sound from audience state/requests/Hold, retaining
+the 220-point minimum. No controls cover the picture or move on hover. Pending
+or failed commands retain confirmed audience truth; pointer interactions must
+leave the working app's keyboard focus alone.
+
+The study passes 48 browser geometry combinations and standalone SwiftUI font
+and layout renders at 1×/2×, including a synthetic dark source. These are design
+checks. Native focus, accessibility, runtime commands and real-source behavior
+remain unimplemented and unqualified for the proposal. Production app source
+and the installed build are unchanged. The comparison, interactive prototype and
+design notes are [delivered privately](https://drive.google.com/drive/folders/1gFCl1L81Yv2_ePZvJeDNg10rZ2Ztz_JH).
+See [floating preview design evidence](verification-floating-preview-design-2026-11-06.md).
+
+## Approved design refinement, build 31, 2026-11-05
+
+Austin approved the combined Sol/Opus 5.5 high design proposal and three ImageGen
+concepts, then requested implementation. Local monitoring has a dark surround
+in both appearances. Labeled sharing controls sit above the picture. Sharing
+keeps its outgoing preview above Invite, Viewers and Options, including in its
+separate window. Invitations have an inline Wi-Fi editor, nearby link copying
+and an IP fallback disclosure. The source chooser has larger complete window
+previews, one card outline, a pinned last connection and a source-switch Hold
+explanation. Source categories, individual admission and media behavior remain.
+
+Both appearances pass native and real-browser checks for private restoration,
+draft retention, admission, persistent outgoing status, compact controls,
+source identity, automatic source-switch Hold, Resume, Stop, QR decoding and
+floating monitoring. Selecting the current source preserves owned media
+process IDs. All 29 added spatial values pass the grid check. The full packaged
+check passed in 645.493 seconds with unchanged implementation inputs. It
+decoded 503 frames in seven seconds from 1,749 KB keyframes without errors.
+Its first attempt failed the unchanged startup duration bound at 116.778 ms;
+both results are recorded. No runtime code or check limit changed.
+
+Build 31 is installed and open at `~/Applications/Setbeam.app`, with the previous
+installed build 29 preserved at `~/Applications/.Setbeam-before-design-build31.app`.
+All 37 built, installed and extracted app files match, strict signatures pass,
+and six arm64 executables link only system libraries. The app ZIP and three
+native screenshots are delivered privately. No hosted CI, commit, push or PR
+ran. Physical hardware, audible output, spoken VoiceOver and older macOS remain
+separate qualification. See [design refinement verification](verification-design-refinement-2026-11-05.md).
+
+## Suite reliability, build 30, 2026-11-04
+
+Austin requested fixes for the complete-run timing and port-reuse failures. A repeated-handoff regression reproduced an asynchronous Network.framework socket-release race. The listener now gives that release a bounded one-second grace, keeps endpoint reuse disabled, and cancels stale retries by attempt. Two hundred immediate handoffs with real HTTP requests pass; an occupied port still belongs exclusively to its other owner.
+
+The preview helper no longer mistakes the 90 kHz RTP clock for a frame rate and emits a reasonable initial duration. Tests preserve real RTCP clock alignment in either direction and require later positive durations to match source PTS. Cadence checks read completed-decode reorder depth, exclude the finite B-frame flush tail and account for measured fixture jitter; missing interior frames still fail. No source timestamps or encoder cadence settings were rewritten.
+
+The first full local check passed in 645.4 seconds. A packaged check then caught an overly strict new assertion on a valid 322-microsecond positive alignment interval; five deterministic cases now cover that distinction. The final complete check passed in 643.967 seconds against the build-30 bundled helpers and fixtures, with no stage retries or skips. It decoded 498 frames in seven seconds from 1,749 KB keyframes without errors. Strict signatures, six arm64/system-only executables, all 37 app files and 155 source inputs are verified. Build 30 is delivered as a developer ZIP; the existing installed instance was left running. Physical qualification remains separate. See [suite reliability verification](verification-suite-reliability-2026-11-04.md).
+
+
+## Organization and sharing panel, build 29, 2026-11-04
+
+Austin approved the organization mockups and requested implementation, harsh Opus 5.5 critique, fixes, and a demonstration. The optional Sharing panel has Invite, Viewers, and Options; it can detach into a separate window while the source form remains open. Source Details stages its edits for Save/Cancel. Stream entry is direct. Settings owns permissions and diagnostics. Menus use Source, Monitor, Sharing, and Help. Browser identity editing keeps the same media peer and uses page flow on narrow screens. The runtime, source identity and physical hardware evidence are unchanged.
+
+Opus round 1 returned CHANGES with four must and fifteen should findings, plus polish. The revisions include consistent staged source settings, preserved drafts and gated presentations/source return, native close/focus handling, compact outgoing status, clearer dependencies, a full-height inspector, side-by-side large codes, explicit saved-setup status, corrected navigation/accessibility text and natural-flow phone identity editing. Opus approved round 4 and the final caption polish. No core/probe source or test threshold changed.
+
+All 241 Swift tests passed in the round-3 complete run; a later final run again timed out in the existing short-address port-reuse case, while all 88 app tests passed. That focused test passed unchanged afterward. All 55 browser/pointer checks pass. The packaged codec/format transitions, frame-rate and 1,749 KB keyframe probes pass, the latter decoding 509 frames in seven seconds without decoder errors. Earlier whole-script attempts also hit the unchanged preview startup duration assertion and the previously documented 50.067 ms live cadence limit. Those complete runs are failures, not full passes. Native and browser checks cover the actual card Review action, unsaved source retention, title-bar close/reopen, network fallback/recovery, saved setup, and one real browser with three synthetic waiting requests. Physical devices, spoken VoiceOver, audible output and older macOS remain separate qualification. See [organization verification](verification-organization-2026-11-04.md).
+
+Build 29 is installed at `~/Applications/Setbeam.app`; build 28 is preserved at `~/Applications/.Setbeam-before-organization-build29.app`. All 37 installed files match the packaged candidate and strict signatures pass. Six executables are arm64 and link only system libraries. No commit, push, PR or hosted workflow ran.
+
+Earlier dated entries below retain the menu names used by those builds. Current navigation is described above and in getting-started.md.
+
+## Approved source chooser layout, build 28, 2026-11-04
+
+Austin approved the ImageGen concept and requested implementation. Last connected is pinned above a native sidebar with Displays, Cameras & capture, Application windows, and Wireless transmitters. Windows have app/name search, app icons and counts, two equal-height cards, and stable secondary numbers for blank or duplicate labels. Current source closes without restarting. Availability names missing inputs and permissions; a saved capture setup requires its exact video and sound inputs and the relevant Camera/Microphone access. Enter stream address opens the expanded existing form. Wi-Fi Settings is in the wireless category and guides. Hidden categories retain window identities without taking unused previews.
+
+A clean full local run passed 224 Swift tests. Sol found a false Available state when a saved sound input was missing or microphone access denied. The two regressions failed on the old algorithm and all 17 focused tests pass after the fix; Sol approved in round 2 on high, with no remaining findings. Native light/dark checks used two fixture apps and eight windows, covered search, exact private selection/restoration, category keyboard navigation, hidden/ended owners, guides and the stream form. Actual-frame checks confirm four complete equal-height cards and pinned navigation without clipping.
+
+The broad script passed its earlier stages, then failed the unchanged format-cadence assertion; packaged retries also failed at 60 fps with a 33.333 ms maximum interval and 30 fps with a 50.066 ms maximum interval. Those failures are recorded rather than reported as a full pass. All nine packaged frame-rate checks and the large-keyframe probe passed, the latter decoding 506 frames without errors from 1,750 KB keyframes. A separate Swift run exited on SIGPIPE in unchanged core tests; its clean rerun passed. The full failure history and physical/permission/VoiceOver limits are in [approved chooser verification](verification-source-chooser-layout-2026-11-04.md).
+
+The installed, archived and built app match across all 37 files, with strict signatures, ZIP integrity, system-only dependencies and 138 source hashes checked. The previous app is preserved. No commit, push, PR or hosted workflow ran. Private Austin Deliveries upload completed with remote verification. [Open build 28 delivery](https://drive.google.com/drive/folders/1NHFIm00Ek1aRExmtpZyZJ2tBzbgckVch).
+
+## Source chooser, build 27, 2026-11-04
+
+Austin requested the last confirmed source first, a cleaner section name, separate source categories, app groups with larger icons, fewer repeated labels, and application names for untitled windows. The chooser now starts with Recent source, followed by Displays, Cameras, Application windows, and Wireless transmitters. It omits sample choices, including a saved sample. Application groups have a 40 pt icon and one app name, cards retain their own window titles, and only the current window has a status caption. Blank and generic Untitled labels use the application name. Exact source identities, private restore, existing guides, and media flow are preserved.
+
+All 217 Swift tests pass, including new grouping and title cases. Native light/dark fixture checks verified actual selection, picture confirmation, Recent source order, exact private restoration, the transmitter guide, keyboard opening and dismissal, and rendered layout geometry. Two earlier runs stopped at an old label expectation before the actual indexed assertion was corrected. GPT-6.1 Sol on high approved the seven-file task patch in one round with no findings; no behavior changed after approval. The full script stopped at the previously documented 50.067 ms cadence assertion in unchanged media code; the format probe passed unchanged against packaged helpers, followed by the remaining frame-rate and keyframe probes. The latter decoded 509 frames in seven seconds with no errors from 1,750 KB keyframes. The installed app matches all 37 packaged files, with strict signatures and archive integrity verified; the previous app is preserved. Private Austin Deliveries upload completed with remote verification. [Open build 27 delivery](https://drive.google.com/drive/folders/15bC6ys8rOHxqxAj9mMzpSii2TnlpOLsQ). Physical hardware and spoken VoiceOver qualification remain separate. See [source chooser verification](verification-source-chooser-2026-11-04.md).
+
+## Short address and join request card, build 26, 2026-11-03
+
+Viewers on the same network can now type only the local address, such as `setbeam.local`, choose their name and color, and ask to join, when the operator turns on Advanced > Viewer network > Let viewers ask from setbeam.local. The option is off by default. It works only while sharing, with Ask before viewers join, the local address, and a viewing network other devices can join. Each request waits for Admit.
+
+- A wildcard IPv4 port-80 listener answers only connections to the viewing address, and only the active name or that address as `Host`. It redirects `GET /` to a separate ask-only code on the gateway. That code is never the link's code, which is also the shared media password.
+- Port 80 in use, refused, or unavailable is named in Settings and the join sheet with the link or QR code as the fallback, and retried.
+- Turning approval or the option off declines typed requests still waiting and never admits them. Stop retires the typed path with the link, and local monitoring continues.
+- Every new request, from the link or the name, shows Setbeam's own corner card with Admit and Decline. It floats over other apps and the floating preview without taking focus. Requests are announced once and stale actions do nothing. They stay in the sharing bar, Picture and Viewers, the floating preview's controls, the menu bar, Feed > Show Join Requests, and the Dock badge.
+- macOS notifications were not used, because they need a permission that can be denied or silenced. The card needs none.
+
+The final `scripts/check.sh` passed: 214 Swift tests, 43 viewer and 12 pointer checks, and 60 probe PASS lines, including 8 from the new real-media `--short-address-test` on the real port 80. Its first run stopped at the known intermittent preview-bridge assertion in unchanged code; the second passed unchanged. The initial implementation check before review passed 209 Swift tests. An earlier `swift test` run failed only on a unit test that checked the old unavailable-page sentence. The test was updated with the new copy.
+
+Isolated QA on this Mac used Ethernet and `setbeam-qa.local`:
+
+- A real browser typed the name, asked, and played 1280×720 after one real click on Admit while Finder stayed frontmost.
+- Native captures cover four requests, a dismissed card, answers given elsewhere, approval off, port 80 held by another process (recovered within 10 s), and Stop, in dark and light.
+- T3 snapshots timed out again, so headless Chrome took the desktop browser capture.
+
+Not covered: phones, other devices, multicast-blocking networks, or a real port-80 owner on set. A first click on the card's close button once did not reach the card while Calendar became frontmost, which was probably a system banner in the same corner (not confirmed). Evidence, the notification rationale, and limits are in [short address verification](verification-short-address-2026-11-03.md).
+
+GPT-6.1 Sol round 1 (Standards and Spec, xhigh) withheld approval. Both reviewers found that a request already being read when the viewing address moved still got the redirect. Standards also found these problems:
+
+- 3.23:1 white-on-accent buttons
+- headers above 4 KB accepted across packets
+- truncated text without tooltips
+- no hover state
+- duplicated probe helpers
+
+All six are fixed:
+
+- A moved address cancels open requests, and each reply rechecks the destination.
+- Headers are bounded at 4 KB in total and get `431` past it.
+- The card's buttons use an accent-derived palette at 7:1, and hover or press never lowers it.
+- Tooltips show while another app is in front.
+- The probe helpers are shared.
+
+Regression tests failed on the r1 code and pass now. Native QA measured the buttons from captures in light and dark, at rest, on hover, and pressed. Admit is now at least 5.40:1 even read through the display profile; r1 was 3.23:1. Evidence and the review ledger are in [short address verification](verification-short-address-2026-11-03.md#review-round-1).
+
+Both GPT-6.1 Sol round 2 passes approved with no actionable remaining findings. Standards independently passed 20 focused Swift tests and 55 viewer/pointer checks; Spec passed 32 focused Swift tests, the same browser checks, and 40 real-socket lifecycle cases. The only build-input change after approval is `CFBundleVersion` from 25 to 26. With signatures removed, the rebuilt executable is byte-identical to the reviewed candidate. Build 26 is installed at `~/Applications/Setbeam.app`; build 25 is preserved at `~/Applications/.Setbeam-before-short-address-build26.app`. The archive, fresh build, and installation match across all 37 app files, strict signatures pass, and all 140 source-input hashes match this checkout. Final packaged-runtime checks against the installed app passed: 7 access, 10 local-address, and 8 short-address checks. Private Austin Deliveries upload completed with remote verification under Setbeam / Short address. The receipt and link are recorded in [short address verification](verification-short-address-2026-11-03.md). No commit, push, PR or hosted workflow ran.
+
+## Viewer identity, pointer view, transmitter setup, and permissions, build 25, 2026-11-03
+
+A new browser tab now chooses one name and one of twelve colors before it plays, with approval on or off. That identity labels the operator's viewer row and the viewer's shared pointer. Connection help and the pointer panel reuse it through one editor and no longer have their own name fields. Ask to join, restored passes, fixed names under approval, no request on reload, and removed or expired links behave as before. Turning approval off while the form is open now keeps the card until the viewer presses Join. The operator's new Show pointers on this Mac toggle draws pointers on the main and floating monitors. It is off by default, never saved, resets at Stop, and is separate from Viewers can point. Choose a source always shows CineView Master 4K and Pyro H model cards with guided setup. The SEE bridge moved from Advanced into the CineView guide. A first-run Permissions sheet explains access for the chosen sources and asks only from an Allow button. Bare `setbeam.local` cannot open the feed: nothing listens on port 80, an unprivileged bind to port 80 succeeds only on the wildcard address on this macOS 27 build, and the link's private code is required. The UI now says so. An opt-in, approval-only short address is recorded as a decision for Austin.
+
+The final `scripts/check.sh` passed on its first run: 194 Swift tests (5 new), 43 viewer and 12 pointer checks, and 52 probe PASS lines. Isolated native and browser QA ran on this Mac in dark and light, including a simulated loopback Pyro H stream through the new guide. T3 snapshots timed out again, so headless Chrome took the browser screenshots. No phone, second device, physical transmitter, or macOS permission dialog was exercised. A QA relaunch hit an existing Keychain prompt for the rebuilt ad-hoc binary. That QA process and its QA-only Keychain item were removed. Evidence, the port test, and limits are in [viewer setup verification](verification-viewer-setup-2026-11-03.md).
+
+GPT-6.1 Sol (codex, high) approved in one round with no findings, after independently passing 43 viewer checks, 12 pointer checks, and 22 focused Swift tests. The review scope was 24 files, +875/−208, against `df085a5`. That scope is still byte-identical to the reviewed patch. After approval only `CFBundleVersion` moved from 24 to 25, so the code diff is now 25 files, +876/−209. The full check was not repeated; with signatures removed, the executable is byte-identical to the pre-review rebuild.
+
+Build 25 is installed at `~/Applications/Setbeam.app`; build 24 is kept at `~/Applications/.Setbeam-before-viewer-setup-build25.app`. The installed app, the fresh build, and the extracted archive match across all 37 files, and strict recursive signatures pass. Executables are arm64 and link only system libraries; there are no Homebrew paths.
+
+- Executable SHA-256: `6c573a81a28797d203557fd11dacc8fd409ba874252e867d73f8e343d903ceac`.
+- Archive: `dist/Setbeam-0.2.0-build25.zip`, SHA-256 `89ea54ca5a23ac206f5838aa69217aa5a3fc6424a661f2b89dc6da9fad82a212`. It includes `BUILD-NOTES.md`, `APP-SHA256.txt`, and a 134-input `SOURCE-MANIFEST.txt` (SHA-256 `e4af0b0e82abcfdca2d565afb3d577c4bc562a038b9428eb44abeccf1e016d88`).
+- Runtime: the packaged `--access-test` (7 PASS) and `--local-address-test` (10 PASS) passed against the installed app's helpers and fixtures.
+- Screenshots: fresh build 25 captures show the 14 px Connection help gap (desktop and phone) and the Pyro H "Stream found" card and guide (dark and light). T3 snapshots timed out three times, so headless Chrome took the browser captures.
+- Open: an unanswered Setbeam Keychain prompt from the earlier QA incident, and an unrelated diskutil administrator prompt, remain on screen untouched.
+
+Physical transmitter, phone, second-device, and macOS permission-dialog testing remain open. Parent verification confirmed the archive checksum, ZIP integrity, all 37 app files against the build and installation, strict signatures, all 134 source inputs, and the unchanged reviewed behavior patch. Private Austin Deliveries upload completed with remote verification under Setbeam / Viewer setup. The receipt and link are in the verification note. No commit, push, PR, or hosted workflow ran. Computer use refused SecurityAgent access for safety reasons, so the stale QA Keychain prompt remains for Austin to dismiss with Deny.
 
 ## S-002 viewer join page, build 24, 2026-11-02
 
@@ -26,11 +469,80 @@ The necessary S-002, S-003, and S-005 foundations are included. Each tab gets a 
 
 The final `scripts/check.sh` passes: 178 Swift tests, 31 viewer and 12 pointer browser checks, and all media probes, including a new real-media access probe. Two GPT-6.1 Sol reviewers approved in round 3 after fixes for late snapshots, opt-out timing, fade revival, native expiry, approval retry, and first-name naming. The ad-hoc signed build 22 is installed locally and delivered. Evidence, the review ledger, hashes, limits, and an observed intermittent preview-bridge timestamp failure in unchanged code are in [shared pointers verification](verification-shared-pointers-2026-11-01.md).
 
+Reviewed code `c5e5ea6` and the final docs-only commit `926b6e7` are integrated
+into the main checkout. Parent checks confirm all 131 packaged source inputs
+match this checkout, all 37 installed app files match the package, the executable
+and archive SHA-256 values match the handoff, and strict recursive signatures
+pass. The archive, checksum, and seven delivered screenshots are retained under
+ignored `dist/`. Private Austin Deliveries upload is remotely verified. No code
+changed during parent integration, and no hosted CI, push, or PR was used.
+
+The two-reviewer loop took three rounds on GPT-6.1 Sol with high reasoning effort.
+All substantive findings were fixed; none was declined. The final diff is 35
+files, +2966/-97, from +2831/-97 before review. Usage was not reported. S-008 is
+marked implemented; S-002, S-003, and S-005 are explicitly partial in the backlog.
+The sharing popover's growth can overlap underlying status text until reopened;
+its controls remain readable. Physical mobile/multi-laptop checks and native
+non-16:9 QA remain open, as detailed in the verification note.
+
 ## S-001 single application window, build 21, 2026-11-01
 
 Choose a source now lists other applications' windows beside displays, with application, title, icon, and bounded live previews. Choosing one, such as Capture One, captures only that window through the existing in-app ScreenCaptureKit, encoder, and relay path. One capture feeds main and floating monitoring and sharing; Hold, Stop, readiness, recovery, the 3840 by 2160 bound, the 30 fps ceiling, and the saved capture and viewer frame rates are unchanged. Identity is the window number, owner process, and owner start time, never the title. Minimizing, hiding, or closing the window pauses the picture; a quit owner shows that the window closed. Setbeam never substitutes another window or the whole display. Relaunch restores a window privately only while that same window of the same process still exists; otherwise the operator chooses again. The chooser never requests Screen Recording access.
 
 141 Swift tests (14 new), 26 viewer checks, and the complete `scripts/check.sh` pass. An earlier pre-review run hit the existing 50.067 ms format-cadence assertion on sample media; its isolated probes passed. Two GPT-6.1 Sol reviewers approved in round 2 after one retry-timing fix. A new opt-in real-capture probe proves only the selected window reaches local and audience outputs under an overlapping window, Hold replaces it, rename/move/resize keep it, minimize/restore returns it, and close/reopen never substitutes a same-titled window. Isolated native QA covered dark/light chooser and monitoring, browser Live/Hold/Resume/Stop, loss states, exact-window restoration at 1 fps, the permission-denied chooser, and normal Quit cleanup. Single-display only; multi-display, Capture One itself, attached sheets, and VoiceOver remain unverified. See [window source verification](verification-window-source-2026-11-01.md).
+
+Reviewed commit `225fd5e` is integrated into the main checkout. The review diff
+grew from 21 files, +931/-27, to +975/-27 after the retry regression test and final
+evidence/ledger updates. The thumbnail observation nit remains a follow-up,
+accepted by the reviewer; review usage was not reported. Nothing was pushed,
+no PR was opened, and hosted CI stayed disabled.
+
+Build 21 is installed at `~/Applications/Setbeam.app`. Parent verification confirms
+its version, executable hash and strict signature, the archive hash, and all 114
+packaged source/test/resource hashes against this checkout. The verified archive
+and nine reviewed screenshots are also retained under ignored `dist/`; private
+Austin Deliveries upload completed with remote verification. S-001 is marked
+implemented in the backlog, with the remaining manual qualifications linked.
+
+## Screen sharing and viewer collaboration backlog, 2026-10-31
+
+Austin refined S-008 to include automatic fading of stationary pointers and their
+name tags, viewer-selected preset colors, and pointer updates independent of video
+frame rate. Idle expiry must survive a throttled or disconnected sender; repeated
+heartbeats do not count as movement. The exact idle/fade timing remains a UX
+choice. Cursor-shape customization is a later consideration. S-009 records
+temporary arrows/circles for after the cursor-only collaboration feature.
+
+This follow-up changes backlog text only. All 50 local Markdown links, nine unique
+pending story IDs, dependency references, acceptance-check tags, and
+`git diff --check` pass. The full local regression result below belongs to the
+preceding backlog pass on unchanged app code; media tests were not repeated for
+these text refinements. Additional viewer-workflow suggestions remain discussion
+only.
+
+Recorded Austin's future requests in [STORIES.md](STORIES.md), linked from the
+execution plan. S-001 covers application-window sharing; S-002 through S-005
+extend existing optional names and playback health with optional approval,
+individual revocation, a candidate session password, and basic session details.
+S-006 considers a friendly local address; S-007 and S-008 cover presenter
+highlighting and optional shared named pointers over the picture, including the
+Mac's monitor. The backlog preserves one received source, private media/admin
+permissions, Hold/Stop behavior, and separation of annotations from encoded video.
+
+This is planning only. Browser API documentation supports pointer feasibility;
+no collaborative transport, admission control, password feature, or new media
+capture behavior has been implemented. All 50 local Markdown links in the three
+planning/status files, the initial eight unique story IDs, acceptance-check tags, and
+`git diff --check` pass. An illustrative local pointer concept renders without
+horizontal overflow at 728 pixels in dark appearance and 360 pixels in light
+appearance; pointer visibility and matching picture-relative positions update in
+both simulated views. This is a concept check, not a multi-device network test.
+
+The complete local `scripts/check.sh` passes all 127 Swift tests, 26 viewer
+checks, and the preview, simulated Pyro H, media, recovery, source-switching,
+format, FPS, and large-keyframe probes. No hosted workflow ran. Native app UI,
+physical devices, and hardware qualifications were not retested for this
+documentation-only change.
 
 ## GitHub build 20 prerelease, 2026-10-29
 
@@ -51,6 +563,18 @@ Austin confirmed a physical Pyro H was unavailable. The software port is impleme
 Connected displays now have rounded, updating thumbnails in Choose a source. Each preview fits its complete picture into 120 by 72 points beside the display name and resolution. Unselected displays use small, silent screenshots every two seconds while the sheet is open. The monitored display reuses the existing local feed. Opening the chooser never requests recording access; a denied grant shows Preview off and Enable Previews. Closing it cancels refresh and clears its images.
 
 Debug/release builds and the complete local `scripts/check.sh` retry pass all 119 Swift tests, 26 viewer checks, and every preview/media/recovery/source-switching/format/FPS/keyframe probe. The first run failed an existing core test with `The video service could not start.` Its unchanged isolated rerun and the complete retry pass. Active dark/light chooser screenshots, actual thumbnail updates, permission-denied presentation, Escape, private 1920×1200 screen selection, existing-feed preview reuse, and normal Quit cleanup of all six owned helpers pass. Strict signatures, system-only dependencies, resources/notices, source matching, and archive checks pass. See [display-preview verification](verification-display-previews-2026-10-29.md). Build 19 is installed locally; private app/screenshot delivery completed with remote verification. Physical multi-display/portrait, hot-unplug, and VoiceOver speech checks remain open. Transmitter compatibility is unchanged. All checks ran locally, with hosted CI disabled.
+
+## Latest main rebuild, 2026-10-29
+
+Rebuilt the latest fetched `origin/main`, commit `67918577797b8feba902ef3c304449614c52daff`, without changing app code or test assertions. `scripts/build-app.sh` passes. The matching app is installed at `~/Applications/Setbeam.app` and archived at `dist/Setbeam-0.2.0-build18-macOS-arm64-rebuild.zip`. Private delivery completed with remote verification.
+
+All 119 Swift tests and 26 viewer-controller checks pass. Checks using the frozen app's own helpers and fixtures pass sample/RTSP/RTMP media, source/server recovery, source switching, FPS changes, and large keyframes. The keyframe probe decoded 498 frames in seven seconds from 1,749 KB keyframes without decoder errors.
+
+The complete `scripts/check.sh` does **not** pass on this rebuild. Both full attempts stop at `scripts/check-preview-bridge.py:102`, `assert all(0 < delta < 100_000 for delta in intervals)`. An unchanged isolated preview-bridge rerun passes. Running the remaining check commands separately reaches a format failure: `The live relay changed decoded cadence: expected 30.0 fps, measured 30.000913664188868, largest frame interval 0.050066000000000166 seconds.` After closing the native QA sessions, an unchanged isolated format rerun also fails: `The local relay changed decoded cadence: expected 60.0 fps, measured 59.61040509361171, largest frame interval 0.033332999999999835 seconds.` These failures remain unresolved. Exact logs are retained under ignored `build/latest-build-2026-10-29/`.
+
+The frozen app launched from `/tmp` with isolated sample preferences. Native video advanced at 1280×720 and about 24 fps. Actual Chrome Incognito playback followed Hold, Resume, and Stop; local and floating monitoring continued after Stop. The active dark main-window capture is readable and unclipped. A light window was inspected through computer use, but its capture remained inactive and does not qualify as an active light-mode review. Normal Quit removed both QA apps and all recorded remaining descendants, six for the dark session and ten for the light session. The temporary Chrome window and T3 browser tab were closed. T3 snapshot inspection twice returned `Preview automation snapshot timed out after 15000ms.`, so Chrome was inspected through native computer use.
+
+Strict recursive signatures, arm64 executables, system-only linked libraries, all six viewer resources, bundled fixtures/notices/FFmpeg sources, the matching 105-file source/test/build manifest, ZIP integrity, and every extracted file hash pass. The executable SHA256 is `a0ddab37bcd759b181c06f4cb1f14038c5e2c3c8a6e0fb48b7bde2f491e1ffcd`; the archive SHA256 is `1700f87c1bdd5d71661fb1cc7c378480eb73f2ed11b270235c427c82a6bf3a12`. This remains an ad-hoc signed Apple Silicon developer preview for macOS 14 or later, without notarization. All checks ran locally; no hosted workflows ran. No new physical hardware, audible synchronization, phone/Safari, or endurance evidence is claimed.
 
 Build 17 was rebuilt for the main-branch handoff. All 118 Swift tests and 25 viewer checks pass. Packaged preview/media/recovery/source-switching checks pass. The full check stopped at one format-cadence assertion; the unchanged isolated format rerun and subsequent FPS/keyframe probes pass. Native and Chrome Guest sample playback, Hold/Resume/Stop, continued local monitoring, strict signatures, bundled dependencies/resources, archive integrity, and normal Quit cleanup pass. The exact failure, archive hashes, and remaining physical-test limits are recorded in [Build 17 handoff verification](verification-build17-2026-10-28.md).
 

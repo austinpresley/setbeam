@@ -13,8 +13,16 @@ function browser(options = {}) {
   const timers = new Map(), readers = [], listeners = {}, urls = [], sources = [], locks = [], heartbeats = [], joins = [];
   let joinFails = false, stateGone = false;
   // Elements inside the join page, for focus checks.
-  const joinParts = new Set(['join-title', 'join-name', 'join-submit', 'join-retry', 'join-form', 'join-status']);
-  const storage = new Map(Object.entries(options.storage || {}));
+  const joinParts = new Set(['join-title', 'join-name', 'join-submit', 'join-cancel', 'join-retry', 'join-form', 'join-status']);
+  // Most checks describe a tab that already chose its name and color; identity checks pass their own storage.
+  const storage = new Map(Object.entries(options.storage || {'setbeam-viewer-name': 'Test viewer', 'setbeam-pointer-color': 'blue'}));
+  const created = [];
+  function create(tag) {
+    const node = {tag, style: {setProperty(name, value) { this[name] = value; }}, attributes: {}, events: {}, children: [], checked: false,
+      setAttribute(name, value) { this.attributes[name] = value; }, addEventListener(name, fn) { this.events[name] = fn; },
+      append(...items) { this.children.push(...items); }, focus() { context.document.activeElement = this; }};
+    created.push(node); return node;
+  }
   let stats, statsError = false, resolveStats;
   const elements = new Map();
   function element(id) {
@@ -22,6 +30,7 @@ function browser(options = {}) {
       hidden: false, textContent: '', paused: false, readyState: 4, currentTime: 0, muted: true, plays: 0,
       style: {setProperty(name, value) { this[name] = value; }}, parentElement: {attributes: {}, toggleAttribute(name, enabled) { if (enabled) this.attributes[name] = ''; else delete this.attributes[name]; }}, writes: 0,
       attributes: {}, contains(target) { return target === this || (id === 'join' && joinParts.has(target?.id)); }, addEventListener(name, fn) { listeners[id + ':' + name] = fn; },
+      children: [], append(...items) { this.children.push(...items); },
       id, focuses: 0,
       getAttribute(name) { return this.attributes[name]; }, setAttribute(name, value) { this.attributes[name] = value; },
       focus() { context.document.activeElement = this; this.focuses++; },
@@ -45,7 +54,7 @@ function browser(options = {}) {
   const stream = {tracks: options.silent ? [] : [audio], getAudioTracks() { return this.tracks; }, addEventListener(name, fn) { listeners['stream:' + name] = fn; }};
   const state = {state: 'live', title: 'Recovery test', revision: 1};
   const context = {
-    document: {getElementById: element, pictureInPictureEnabled: !!options.pip, hidden: false, addEventListener(name, fn) { listeners[name] = fn; }, body: {id: 'body'}},
+    document: {getElementById: element, createElement: create, pictureInPictureEnabled: !!options.pip, hidden: false, addEventListener(name, fn) { listeners[name] = fn; }, body: {id: 'body'}},
     matchMedia: query => ({matches: query === '(pointer: fine)' && !!options.finePointer}),
     navigator: {userAgent: 'test'}, crypto: {randomUUID: () => 'viewer-test'},
     sessionStorage: {getItem(key) { return storage.get(key); }, setItem(key, value) { storage.set(key, value); }},
@@ -106,7 +115,13 @@ function browser(options = {}) {
   }};
   if (options.keepAwakeVideo) context.SetbeamKeepAwakeVideo = 'data:video/mp4;base64,AAAA';
   const pointerUpdates = [];
-  if (options.pointers) context.SetbeamPointers = {attach(viewer) { pointerUpdates.viewer = viewer; return {color: () => 'blue', update(value) { pointerUpdates.push(value); }}; }};
+  const palette = {blue: ['#1a5ed9', '#fff'], teal: ['#0b7480', '#fff'], brown: ['#8a5526', '#fff']};
+  pointerUpdates.identityChanges = 0;
+  if (options.pointers) context.SetbeamPointers = {COLORS: palette, attach(viewer) {
+    pointerUpdates.viewer = viewer;
+    return {color: () => viewer.color(), identityChanged() { pointerUpdates.identityChanges++; }, update(value) { pointerUpdates.push(value); }};
+  }};
+  else context.SetbeamPointers = {COLORS: palette, attach() { return undefined; }};
   vm.runInNewContext(controller, context);
   const settle = async () => { for (let n = 0; n < 120; n++) await Promise.resolve(); };
   return {
@@ -114,6 +129,9 @@ function browser(options = {}) {
     readers, state, elements, listeners, settle, sources, locks, context, stream, audio, audioListeners, heartbeats, storage, joins, urls,
     set joinFails(value) { joinFails = value; }, set stateGone(value) { stateGone = value; }, el: element,
     async submit(name) { element('join-name').value = name; listeners['join-form:submit']({preventDefault() {}}); await settle(); },
+    // Picks a swatch on the join card, as a click on its radio input would.
+    pick(color) { const input = created.find(node => node.tag === 'input' && node.value === color); input.checked = true; input.events.change(); },
+    swatches() { return created.filter(node => node.tag === 'input').map(node => node.value); },
     set stats(value) { stats = value; }, set statsError(value) { statsError = value; },
     async releaseStats(value) { resolveStats(value); await settle(); },
     get requests() { return requests; }, set hung(value) { hung = value; },
@@ -305,11 +323,11 @@ test('fullscreen keeps the whole player and shortcuts ignore editable fields', a
   key('f'); assert.equal(b.context.document.fullscreenElement, null);
 });
 
-test('Escape from the viewer-name field closes help and returns focus to Help', async () => {
+test('Escape inside Connection help closes it and returns focus to Help', async () => {
   const b = browser(); await b.settle();
   const panel = b.context.document.getElementById('help-panel'); panel.hidden = true;
   b.listeners['help:click']();
-  const input = b.elements.get('viewer-name'); input.focus();
+  const input = b.elements.get('identity-edit'); input.focus();
   let prevented = false;
   b.listeners.keydown({key: 'Escape', target: {closest: () => true}, preventDefault() { prevented = true; }});
   assert.equal(panel.hidden, true);
@@ -374,17 +392,37 @@ async function sample(b, stats) {
   b.stats = stats; b.frame(); await b.tick(3000);
 }
 
-test('viewer names are optional, saved per tab, bounded, and included only in heartbeats', async () => {
-  const b = browser({storage: {'setbeam-viewer-name': "Sam's iPad"}}); await b.settle();
-  assert.equal(b.heartbeats.at(-1).name, "Sam's iPad");
-  b.elements.get('viewer-name').value = '  Alex\n\u202e  ' + 'x'.repeat(70);
-  b.listeners['viewer-name-form:submit']({preventDefault() {}}); await b.settle();
-  const name = b.heartbeats.at(-1).name;
-  assert.equal(name.length, 40); assert.ok(!name.includes('\u202e')); assert.ok(!name.includes('\n'));
-  assert.equal(b.storage.get('setbeam-viewer-name'), name);
-  b.elements.get('viewer-name').value = '   ';
-  b.listeners['viewer-name-form:submit']({preventDefault() {}}); await b.settle();
-  assert.equal(b.heartbeats.at(-1).name, '');
+test('a new tab chooses one name and color before it plays, with approval off', async () => {
+  const b = browser({storage: {}}); await b.settle(); await b.tick();
+  assert.equal(joinVisible(b), true, 'The join card comes first');
+  assert.equal(b.el('join-title').textContent, 'Join this feed'); assert.equal(b.el('join-submit').textContent, 'Join');
+  assert.equal(b.el('state').textContent, 'Joining');
+  assert.equal(b.count('join'), 0, 'Nothing is sent before the viewer chooses');
+  assert.equal(b.count('config.json'), 0); assert.equal(b.readers.length, 0);
+  assert.equal(b.swatches().length, 3, 'Every palette color is offered');
+  assert.match(b.el('join-hint').textContent, /^Shown to the operator\. Names are not verified\.$/);
+  b.pick('teal');
+  await b.submit('  Alex\n\u202e  ' + 'x'.repeat(70));
+  const sent = b.joins.at(-1);
+  assert.equal(sent.name.length, 40); assert.ok(!sent.name.includes('\u202e')); assert.ok(!sent.name.includes('\n'));
+  assert.equal(sent.color, 'teal'); assert.equal(sent.ask, true);
+  assert.equal(b.storage.get('setbeam-viewer-name'), sent.name); assert.equal(b.storage.get('setbeam-pointer-color'), 'teal');
+  assert.equal(joinVisible(b), false); assert.equal(b.readers.length, 1, 'The picture plays after joining');
+  await b.track(); await b.tick(3000);
+  assert.deepEqual({name: b.heartbeats.at(-1).name, color: b.heartbeats.at(-1).color}, {name: sent.name, color: 'teal'});
+  assert.equal(b.el('identity-name').textContent, sent.name, 'Connection help shows the same identity');
+  assert.equal(b.el('identity-dot').style['--c'], '#0b7480');
+  const reload = browser({storage: Object.fromEntries(b.storage)}); await reload.settle();
+  assert.equal(joinVisible(reload), false, 'A reload keeps the identity without asking again');
+  assert.deepEqual({name: reload.joins[0].name, color: reload.joins[0].color}, {name: sent.name, color: 'teal'});
+});
+
+test('an empty name is not sent, and shared pointers are named in the hint', async () => {
+  const b = browser({storage: {}}); await b.settle();
+  b.state.pointers = true; await b.tick();
+  assert.match(b.el('join-hint').textContent, /other viewers when you point/);
+  await b.submit('   ');
+  assert.equal(b.count('join'), 0); assert.equal(b.el('join-status').textContent, 'Enter a name the operator will recognize.');
 });
 
 test('health needs sustained measurements and remains good at one decoded frame per sample', async () => {
@@ -445,7 +483,7 @@ test('late statistics from a replaced peer cannot change the new viewer health',
 
 const pass = 'b'.repeat(48);
 test('approval asks for a name before requesting access and fetches nothing playable', async () => {
-  const b = browser({join: {status: 400}}); await b.settle();
+  const b = browser({join: {status: 400}}); b.state.approval = true; await b.settle();
   assert.equal(b.elements.get('join-form').hidden, false);
   assert.equal(b.elements.get('state').textContent, 'Ask to join');
   assert.equal(b.count('config.json'), 0); assert.equal(b.readers.length, 0);
@@ -500,16 +538,20 @@ test('an unknown pass, such as after a new link, joins again instead of reusing 
 });
 
 test('pointing is offered only while admitted, enabled, and the session continues', async () => {
-  const b = browser({eventSource: true, pointers: true, join: {pass, number: 2, admission: 'admitted', ready: true, color: 'blue'}});
+  const b = browser({eventSource: true, pointers: true, storage: {'setbeam-pass:': pass}, join: {pass, number: 2, admission: 'admitted', ready: true, color: 'blue'}});
   await b.settle();
   await b.push({...b.state, pointers: true}); await b.track();
   assert.deepEqual({...b.pointerUpdates.at(-1)}, {enabled: true, live: true, revision: 1});
   assert.equal(b.pointerUpdates.viewer.nameLocked(), false);
   await b.push({...b.state, approval: true, pointers: true});
   assert.equal(b.pointerUpdates.viewer.nameLocked(), false, 'A session admitted unnamed before approval may name itself once');
-  assert.equal(b.pointerUpdates.viewer.setName(' Ana '), 'Ana');
+  // Pointing without a name opens the one join card rather than a second name field.
+  b.pointerUpdates.viewer.editIdentity(); await b.settle();
+  assert.equal(b.el('join-title').textContent, 'Your name and color'); assert.equal(b.el('join-name').readOnly, false);
+  b.pick('brown'); await b.submit(' Ana ');
+  assert.equal(b.pointerUpdates.viewer.name(), 'Ana'); assert.equal(b.pointerUpdates.viewer.color(), 'brown');
+  assert.equal(b.pointerUpdates.identityChanges, 1, 'An open pointer channel announces the new identity');
   assert.equal(b.pointerUpdates.viewer.nameLocked(), true, 'Under approval the name is then fixed');
-  assert.equal(b.pointerUpdates.viewer.setName('Director'), 'Ana');
   await b.push({...b.state, state: 'holding', pointers: true});
   assert.equal(b.pointerUpdates.at(-1).live, false, 'Hold stops pointing');
   await b.push({...b.state, state: 'stopped', pointers: true});
@@ -535,7 +577,7 @@ function gateway(options = {}) {
   };
   return model;
 }
-const joinVisible = b => b.el('join').hidden === false && b.el('player').className.includes('join-open');
+const joinVisible = b => b.el('join').hidden === false && (b.el('player').className.includes('join-open') || b.el('player').className.includes('identity-open'));
 
 test('a saved name prefills Ask to join, and only the viewer sends a request', async () => {
   const g = gateway();
@@ -606,24 +648,52 @@ test('a lost connection while waiting shows reconnecting, and a lapsed request a
   assert.equal(g.requests, 1, 'The page does not replace a lapsed request by itself');
 });
 
-test('turning approval off while the form is open plays at once without a name', async () => {
+test('turning approval off while the form is open keeps the card and joins only when the viewer does', async () => {
   const g = gateway();
   const b = browser({join: g.join}); b.state.approval = true; await b.settle();
   assert.equal(b.el('state').textContent, 'Ask to join');
   g.approval = false; b.state.approval = false; await b.tick(); await b.tick();
-  assert.equal(joinVisible(b), false);
-  assert.equal(b.readers.length, 1, 'Ordinary link sharing needs no name');
-  assert.ok(b.joins.every(body => !body.ask));
+  assert.equal(joinVisible(b), true, 'A name and color are still chosen first');
+  assert.equal(b.el('join-submit').textContent, 'Join'); assert.equal(b.el('join-name').value, 'Test viewer');
+  assert.equal(g.requests, 0); assert.equal(b.readers.length, 0);
+  await b.submit('Lee');
+  assert.equal(joinVisible(b), false); assert.equal(b.readers.length, 1);
+  assert.equal(b.joins.at(-1).name, 'Lee');
 });
 
-test('ordinary link sharing keeps optional names and never shows the join page', async () => {
+test('with approval off a saved identity plays at once, and Change name or color edits it in place', async () => {
   const g = gateway({approval: false});
-  const b = browser({join: g.join, storage: {'setbeam-viewer-name': 'Sam'}}); await b.settle(); await b.track();
+  const b = browser({join: g.join, eventSource: true, storage: {'setbeam-viewer-name': 'Sam', 'setbeam-pointer-color': 'blue'}});
+  await b.settle(); await b.push(); await b.track();
   assert.equal(joinVisible(b), false); assert.equal(b.el('state').textContent, 'Live feed');
-  assert.equal(b.joins[0].name, 'Sam'); assert.equal(b.joins[0].ask, undefined);
-  b.el('viewer-name').value = 'Sam (iPad)'; b.listeners['viewer-name-form:submit']({preventDefault() {}}); await b.settle();
-  assert.equal(b.heartbeats.at(-1).name, 'Sam (iPad)', 'Connection help still edits the name');
-  assert.notEqual(b.el('viewer-name').readOnly, true);
+  assert.deepEqual({name: b.joins[0].name, ask: b.joins[0].ask, color: b.joins[0].color}, {name: 'Sam', ask: undefined, color: 'blue'});
+  assert.equal(b.el('identity-button').hidden, false);
+  b.listeners['identity-button:click'](); await b.settle();
+  assert.equal(b.el('player').className.includes('join-open'), false, 'An admitted viewer keeps the picture and controls visible while editing');
+  assert.equal(b.el('player').className.includes('identity-open'), true);
+  assert.equal(b.el('identity-button').getAttribute('aria-expanded'), 'true');
+  assert.equal(joinVisible(b), true); assert.equal(b.el('join-title').textContent, 'Your name and color');
+  assert.equal(b.el('join-submit').textContent, 'Save'); assert.equal(b.el('join-cancel').hidden, false);
+  assert.equal(b.context.document.activeElement, b.el('join-name'), 'The editor takes focus');
+  assert.equal(b.el('state').textContent, 'Live feed', 'The badge keeps the feed state');
+  b.pick('brown'); await b.submit('Sam (iPad)');
+  assert.equal(joinVisible(b), false); assert.equal(b.context.document.activeElement, b.el('identity-button'));
+  assert.deepEqual({name: b.heartbeats.at(-1).name, color: b.heartbeats.at(-1).color}, {name: 'Sam (iPad)', color: 'brown'});
+  assert.equal(b.storage.get('setbeam-viewer-name'), 'Sam (iPad)'); assert.equal(b.readers.length, 1, 'Editing keeps the same peer');
+  b.listeners['identity-edit:click'](); await b.settle();
+  b.el('join-name').value = 'Someone else'; b.pick('teal');
+  b.listeners.keydown({key: 'Escape', target: {closest: () => true}, preventDefault() {}});
+  assert.equal(joinVisible(b), false, 'Escape cancels the editor');
+  assert.equal(b.el('identity-name').textContent, 'Sam (iPad)'); assert.equal(b.storage.get('setbeam-pointer-color'), 'brown');
+  b.listeners['identity-edit:click'](); await b.settle();
+  assert.equal(b.el('join-name').value, 'Sam (iPad)', 'A cancelled draft is not kept');
+  b.listeners['identity-button:click'](); await b.settle();
+  assert.equal(joinVisible(b), false, 'The direct identity button also closes its editor');
+  assert.equal(b.el('identity-button').getAttribute('aria-expanded'), 'false');
+  b.listeners['identity-button:click'](); await b.settle();
+  b.listeners['pointer:click'](); await b.settle();
+  assert.equal(joinVisible(b), false, 'Opening pointing controls closes identity editing first');
+  assert.equal(b.count('join'), 1, 'Editing never sends a new join request');
 });
 
 test('focus follows step changes on a keyboard device and stays put during polls', async () => {
@@ -687,11 +757,62 @@ test('under approval an admitted name is read-only in Connection help, and Hold 
   const g = gateway(); g.admission = 'admitted';
   const b = browser({eventSource: true, join: g.join, storage: {'setbeam-pass:': pass, 'setbeam-viewer-name': 'Sam'}});
   await b.settle(); await b.push({...b.state, approval: true}); await b.track();
-  assert.equal(b.el('viewer-name').readOnly, true); assert.equal(b.el('viewer-name-save').hidden, true);
-  assert.match(b.el('viewer-name-status').textContent, /fixed while the operator approves/);
+  assert.equal(b.el('identity-edit').textContent, 'Change color');
+  assert.match(b.el('identity-note').textContent, /fixed while the operator approves/);
+  b.listeners['identity-edit:click'](); await b.settle();
+  assert.equal(b.el('join-name').readOnly, true, 'The admitted name cannot be edited');
+  b.el('join-name').value = 'Director'; b.pick('teal'); b.listeners['join-form:submit']({preventDefault() {}}); await b.settle();
+  assert.deepEqual({name: b.heartbeats.at(-1).name, color: b.heartbeats.at(-1).color}, {name: 'Sam', color: 'teal'});
+  assert.equal(b.storage.get('setbeam-viewer-name'), 'Sam');
   await b.push({...b.state, approval: true, state: 'holding'});
   assert.equal(joinVisible(b), false); assert.equal(b.el('state').textContent, 'On hold');
   await b.push({...b.state, approval: true, state: 'live', revision: 2}); await b.track();
   assert.equal(b.el('state').textContent, 'Live feed');
   assert.equal(g.requests, 0, 'Recovering playback never sends a new request');
+});
+
+
+test('secondary controls disclose on request and idle without hiding focused controls', async () => {
+  const b = browser(); await b.settle(); await b.track();
+  b.el('help-panel').hidden = true; b.el('pointer-panel').hidden = true;
+  assert.equal(b.el('controls').hidden, true);
+  b.listeners['controls-toggle:click']();
+  assert.equal(b.el('controls').hidden, false);
+  const peers = b.readers.length;
+  b.el('controls').focus(); b.listeners['controls:focusin']();
+  await b.tick(3100); assert.equal(b.el('controls').hidden, false, 'keyboard focus pins controls');
+  b.context.document.activeElement = b.context.document.body;
+  await b.tick(3100); assert.equal(b.el('controls').hidden, true);
+  assert.equal(b.readers.length, peers, 'disclosure never replaces media');
+});
+
+test('pointing keeps picture gestures and the explicit controls entry remains available', async () => {
+  const b = browser({pointers: true}); await b.settle(); await b.track();
+  b.el('help-panel').hidden = true; b.el('pointer-panel').hidden = true;
+  b.el('picture').classList = {contains(name) { return name === 'pointing'; }};
+  b.listeners['picture:pointermove']({pointerType: 'mouse'});
+  b.listeners['picture:click']({target: {closest() { return null; }}});
+  assert.equal(b.el('controls').hidden, true);
+  b.listeners['controls-toggle:click'](); assert.equal(b.el('controls').hidden, false);
+});
+
+test('a pointer click opens controls once even when focus arrives before click', async () => {
+  const b = browser(); await b.settle();
+  b.el('help-panel').hidden = true; b.el('pointer-panel').hidden = true;
+  b.el('controls-toggle').matches = () => false;
+  b.listeners['controls-toggle:focus']();
+  b.listeners['controls-toggle:click']();
+  assert.equal(b.el('controls').hidden, false, 'pointer focus must not consume the first click');
+});
+
+test('playback updates preserve chat layout and compact keyboard classes', async () => {
+  const b = browser(); await b.settle(); await b.track();
+  const player = b.el('player');
+  player.className += ' chat-open keyboard-tight';
+  player.classList = {contains(name) { return player.className.split(' ').includes(name); }};
+  await b.tick(); await b.track();
+  assert.ok(player.className.split(' ').includes('chat-open'), 'A video update must not close the chat layout');
+  assert.ok(player.className.split(' ').includes('keyboard-tight'), 'A video update must not expand the keyboard composer');
+  b.state.state = 'holding'; await b.tick();
+  assert.ok(player.className.split(' ').includes('chat-open'), 'Chat remains open through Hold');
 });

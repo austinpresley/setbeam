@@ -97,10 +97,18 @@ public struct MacWindow: Identifiable, Equatable, Sendable {
         self.applicationName = Self.clean(applicationName).isEmpty ? "Application" : Self.clean(applicationName)
         self.title = Self.clean(title)
     }
-    public var label: String { Self.label(title) }
+    public var label: String { Self.label(title, application: applicationName) }
     public var sourceName: String { Self.sourceName(application: applicationName, title: title) }
-    public static func label(_ title: String) -> String { clean(title).isEmpty ? "Untitled window" : clean(title) }
-    public static func sourceName(application: String, title: String) -> String { "\(application) · \(label(title))" }
+    public static func label(_ title: String, application: String = "Application") -> String {
+        let title = clean(title)
+        let untitled = title.isEmpty || ["Untitled", "Untitled window"].contains { title.caseInsensitiveCompare($0) == .orderedSame }
+        return untitled ? (clean(application).isEmpty ? "Application" : clean(application)) : title
+    }
+    public static func sourceName(application: String, title: String) -> String {
+        let application = clean(application).isEmpty ? "Application" : clean(application)
+        let title = label(title, application: application)
+        return title == application ? application : "\(application) · \(title)"
+    }
 
     /// Single-line, bounded text for labels. Window titles can contain anything.
     public static func clean(_ text: String) -> String {

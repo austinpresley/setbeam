@@ -1,29 +1,6 @@
 import SwiftUI
 import SetbeamCore
 
-struct AudiencePreviewView: View {
-    @ObservedObject var model: SessionModel
-    @ObservedObject var player: NativePreview
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Viewers see").font(.caption.weight(.medium))
-            ZStack {
-                Color.black
-                if model.audiencePreviewPlaying && model.state.audienceAvailable, let picture = player.picture {
-                    PictureView(picture: picture)
-                } else {
-                    VStack(spacing: 5) {
-                        ProgressView().controlSize(.small)
-                        Text("Checking outgoing picture").font(.caption2).multilineTextAlignment(.center)
-                    }.padding(8).foregroundStyle(.white)
-                }
-            }.aspectRatio(16.0 / 9, contentMode: .fit).clipShape(RoundedRectangle(cornerRadius: 6))
-            Text(model.state.holding ? "On Hold · source picture and sound hidden" : model.outgoingNeedsAttention ? "Outgoing picture reconnecting" : model.audiencePreviewPlaying && model.state.audience == .live ? "Outgoing picture confirmed" : "Checking outgoing preview")
-                .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-        }.accessibilityElement(children: .combine)
-    }
-}
-
 struct SetupCheckView: View {
     @ObservedObject var model: SessionModel
     var body: some View {
@@ -46,9 +23,10 @@ struct SetupCheckView: View {
                     VStack(alignment: .leading, spacing: 9) {
                         Text(model.viewingInstructions).font(.caption).fixedSize(horizontal: false, vertical: true)
                         Button(model.copiedLink ? "Link copied" : "Copy viewing link") { model.copyLink() }
-                        if model.state.holding {
-                            Text("Viewers are on Hold. Inspect your picture before resuming.").font(.caption).foregroundStyle(.secondary)
-                            Button("Resume sharing to test") { model.toggleHold() }.disabled(!model.canShare)
+                        if model.audiencePresentation.phase != .sharing {
+                            Text(model.audiencePresentation.outputDetail).font(.caption).foregroundStyle(.secondary)
+                            Button(model.audiencePresentation.primaryTitle) { model.performAudienceAction() }
+                                .disabled(!model.audiencePresentation.primaryEnabled)
                         }
                     }
                 }

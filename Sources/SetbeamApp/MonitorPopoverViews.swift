@@ -14,10 +14,10 @@ struct MonitorSourcePopover: View {
             Divider()
             Button("Choose source…") { model.openSources() }
             Button("Rename session…") { show(.rename) }
-            Button("Connection details…") { model.openAdvanced() }
+            Button("Source details…") { model.openSourceDetails() }.disabled(model.busy)
             if let previous = model.previousSourceName {
                 Divider()
-                Button("Return to previous source: \(previous)") { model.returnToPreviousSource() }.disabled(model.busy)
+                Button("Return to previous source: \(previous)") { model.returnToPreviousSource() }.disabled(model.busy || model.protectsSourceDraft)
             }
         }.buttonStyle(.link).padding(18).frame(width: 270, alignment: .leading)
     }
@@ -30,43 +30,12 @@ struct MonitorSoundPopover: View {
             Text("Sound on this Mac").font(.headline)
             LabeledContent("Input", value: !model.state.sourceAvailable ? "Waiting" : model.sourceHasAudio ? "Audio track received" : "No audio track")
                 .accessibilityElement(children: .combine)
-            LabeledContent("Mac speakers", value: model.localMuted ? "Muted" : "On")
+            LabeledContent("Local sound", value: model.localMuted ? "Muted" : "Unmuted")
                 .accessibilityElement(children: .combine)
             Button(model.localMuted ? "Unmute this Mac" : "Mute this Mac") { model.toggleLocalSound() }
                 .frame(maxWidth: .infinity).buttonStyle(.bordered).disabled(model.preview == nil)
             Text("Only affects local monitoring.").font(.caption).foregroundStyle(.secondary)
         }.font(.callout).padding(18).frame(width: 246)
-    }
-}
-
-struct MonitorSharingPopover: View {
-    @ObservedObject var model: SessionModel
-    let show: (AppSheet) -> Void
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            if model.state.sharing {
-                AudiencePreviewView(model: model, player: model.audiencePlayer)
-                LabeledContent("Audience sound", value: model.state.holding ? "Silent" : model.state.audience != .live ? "Reconnecting" : model.audienceHasAudio ? "Included" : "No audio track")
-                    .font(.caption).accessibilityElement(children: .combine)
-                Divider()
-                LabeledContent("Playing", value: "\(model.verifiedViewers)")
-                    .accessibilityElement(children: .combine)
-                LabeledContent("Opened the link", value: "\(model.openedViewers)")
-                    .accessibilityElement(children: .combine)
-                if !model.pendingViewers.isEmpty {
-                    LabeledContent("Asking to join", value: "\(model.pendingViewers.count)")
-                        .accessibilityElement(children: .combine)
-                }
-                Button(model.pendingViewers.isEmpty ? "Viewer details…" : "Review requests…") { show(.viewers) }.buttonStyle(.link).font(.caption)
-            } else {
-                Text("Private monitoring").font(.headline)
-                Text("Sharing is off. Your picture stays on this Mac.").font(.callout).foregroundStyle(.secondary)
-            }
-            Divider()
-            ViewerOptions(model: model)
-        }.font(.callout).padding(18).frame(width: 300)
-            // Rows such as pending requests appear while the popover is open; grow it rather than shrink the picture.
-            .fixedSize(horizontal: false, vertical: true)
     }
 }
 
@@ -96,20 +65,19 @@ struct SessionNameView: View {
 struct ViewerOptions: View {
     @ObservedObject var model: SessionModel
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Toggle(isOn: Binding(get: { model.viewerApproval }, set: { model.setViewerApproval($0) })) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Ask before viewers join")
-                    Text("Viewers enter a name and wait for you to admit them.").font(.caption).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            Toggle(isOn: Binding(get: { model.sharedPointers }, set: { model.setSharedPointers($0) })) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Shared pointers")
-                    Text("Viewers can point at the picture. You and other pointing viewers see their name.").font(.caption).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+        VStack(alignment: .leading, spacing: 12) {
+            SharingSwitch(title: "Viewers can point", detail: "Viewers can point at the picture. Other pointing viewers see their name and color.",
+                isOn: Binding(get: { model.sharedPointers }, set: { model.setSharedPointers($0) }))
+            SharingSwitch(title: "Show pointers on this Mac", detail: "Draws viewers' pointers over your monitor and floating preview until sharing stops. Never sent in the picture.",
+                isOn: Binding(get: { model.pointersOnThisMac }, set: { model.setPointersOnThisMac($0) }))
+                .disabled(!model.sharedPointers).padding(.leading, 20)
+            if model.setup?.kind == .macScreen {
+                SharingSwitch(title: "Show pointers on shared display", detail: "Draws on the selected display without taking clicks or appearing in its captured video. Resets at Stop or a display change.",
+                    isOn: Binding(get: { model.pointersOnSourceDisplay }, set: { model.setPointersOnSourceDisplay($0) }))
+                    .disabled(!model.canShowPointersOnSourceDisplay).padding(.leading, 20)
+            } else {
+                Text("Pointers on the source display require This Mac's screen. External sending computers cannot be drawn on from this Mac.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
         }.toggleStyle(.switch).controlSize(.small)
     }

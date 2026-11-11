@@ -116,6 +116,35 @@ final class ViewerAccessLedgerTests: XCTestCase {
         XCTAssertEqual(ledger.record(a.pass)?.name, "Ana", "Under approval the first label is then fixed")
     }
 
+    func testHeartbeatsChangeColorButNotAFixedNameUnderApproval() throws {
+        var ledger = ViewerAccessLedger(); ledger.setApproval(true)
+        let a = try XCTUnwrap(joined(ledger.join(pass: nil, name: "Sam", asking: true, color: .teal, mobile: false, local: false, now: now)))
+        XCTAssertTrue(ledger.approve(number: a.number))
+        _ = ledger.heartbeat(a.pass, playing: true, health: .good, revision: 0, name: .some("Director"), color: .brown, mobile: false, local: false, now: now)
+        XCTAssertEqual(ledger.record(a.pass)?.name, "Sam", "The admitted name stays fixed")
+        XCTAssertEqual(ledger.record(a.pass)?.color, .brown, "The color is a label the viewer may change")
+        _ = ledger.heartbeat(a.pass, playing: true, health: .good, revision: 0, name: .none, color: nil, mobile: false, local: false, now: now)
+        XCTAssertEqual(ledger.record(a.pass)?.color, .brown, "A heartbeat without a color keeps the current one")
+    }
+
+    func testEveryChosenColorReachesPendingAndJoinedRowsAndUpdatesInPlace() throws {
+        for color in PointerColor.allCases {
+            var ledger = ViewerAccessLedger(); ledger.setApproval(true)
+            let request = try XCTUnwrap(joined(ledger.join(pass: nil, name: "Chosen color", asking: true,
+                color: color, mobile: false, local: false, now: now)))
+            let waiting = try XCTUnwrap(ledger.activity(session: nil, now: now).first)
+            XCTAssertEqual(waiting.color, color); XCTAssertEqual(waiting.admission, .pending)
+            XCTAssertTrue(ledger.approve(number: request.number))
+            let admitted = try XCTUnwrap(ledger.activity(session: nil, now: now).first)
+            XCTAssertEqual(admitted.color, color); XCTAssertEqual(admitted.admission, .admitted)
+            let changed: PointerColor = color == .teal ? .brown : .teal
+            _ = ledger.heartbeat(request.pass, playing: false, health: .ready, revision: 0, name: .none,
+                color: changed, mobile: false, local: false, now: now)
+            XCTAssertEqual(ledger.activity(session: nil, now: now).first?.color, changed)
+            XCTAssertEqual(ledger.activity(session: nil, now: now).first?.number, request.number)
+        }
+    }
+
     func testRequestAndSessionCountsAreBounded() throws {
         var ledger = ViewerAccessLedger(); ledger.setApproval(true)
         for index in 0..<ViewerAccessLedger.maxPending {

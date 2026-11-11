@@ -22,7 +22,7 @@ final class ViewerGatewayTests: XCTestCase {
                 XCTAssertEqual(response.value(forHTTPHeaderField: "Cache-Control"), "no-store")
                 XCTAssertEqual(data, page, "The same generic page must not disclose whether a session exists")
                 let html = String(decoding: data, as: UTF8.self)
-                XCTAssertTrue(html.contains("Ask the operator for the current code."))
+                XCTAssertTrue(html.contains("Ask the operator for the current link or QR code."))
                 XCTAssertFalse(html.contains("current-private-token"))
                 XCTAssertFalse(html.contains("src=")); XCTAssertFalse(html.contains("href="))
             }

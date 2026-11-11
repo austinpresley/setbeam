@@ -40,6 +40,6 @@ final class OutgoingStatusTests: XCTestCase {
         let model = try sharingModel(holding: true, sourceAvailable: false)
         model.audiencePreviewPlaying = false
         XCTAssertFalse(model.outgoingNeedsAttention)
-        XCTAssertEqual(model.sharingTitle, "On hold")
+        XCTAssertEqual(model.sharingTitle, "On Hold")
     }
 }

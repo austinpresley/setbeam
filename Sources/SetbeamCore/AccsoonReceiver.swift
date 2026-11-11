@@ -388,7 +388,13 @@ private final class AccsoonReceiveSession: @unchecked Sendable {
     }
 
     private func enqueue(_ packet: Data) throws {
-        if tcpOutputOffset > 0 { tcpOutput.removeFirst(tcpOutputOffset); tcpOutputOffset = 0 }
+        if tcpOutputOffset > 0 {
+            // Rebase into fresh storage; removeFirst retains the consumed prefix across appends.
+            tcpOutput = tcpOutput.withUnsafeBytes {
+                Data(bytes: $0.baseAddress!.advanced(by: tcpOutputOffset), count: $0.count - tcpOutputOffset)
+            }
+            tcpOutputOffset = 0
+        }
         guard tcpOutput.count + packet.count + 8 <= 1_024 * 1_024 else { throw Self.connectionError() }
         tcpOutput.append(framed(packet))
     }
@@ -406,7 +412,7 @@ private final class AccsoonReceiveSession: @unchecked Sendable {
             guard count > 0 else { throw Self.connectionError() }
             tcpOutputOffset += count
         }
-        tcpOutput.removeAll(keepingCapacity: true); tcpOutputOffset = 0
+        tcpOutput = Data(); tcpOutputOffset = 0
     }
 
     private static func socket(_ type: Int32) throws -> Int32 {
