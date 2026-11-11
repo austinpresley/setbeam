@@ -120,7 +120,7 @@ struct SessionChatView: View {
                 .overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(composing ? Color.accentColor : Color(nsColor: .separatorColor), lineWidth: 1) }
             if let error = model.chatProblem { Text(error).font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true) }
             HStack(spacing: 4) {
-                Text("Not encrypted · Clears at Stop").font(.caption).foregroundStyle(.secondary)
+                Text("Not encrypted · Clears when sharing stops").font(.caption).foregroundStyle(.secondary)
                 Spacer(minLength: 0)
                 Button { showingDetails.toggle() } label: {
                     Image(systemName: "info.circle").frame(width: 24, height: 24).contentShape(Rectangle())

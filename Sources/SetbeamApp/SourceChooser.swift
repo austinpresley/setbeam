@@ -11,6 +11,8 @@ struct ConnectionView: View {
     @State private var category: SourceCategory?
     @State private var query = ""
     @State private var guide: TransmitterModel?
+    @State private var contentHeight: CGFloat = 0
+    @State private var headerHeight: CGFloat = 140
     @FocusState private var searchFocused: Bool
 
     init(model: SessionModel) {
@@ -27,8 +29,8 @@ struct ConnectionView: View {
             VStack(alignment: .leading, spacing: 16) {
                 HStack {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Choose a source").font(.title2.weight(.semibold))
-                        Text("Choose what to preview on this Mac.").font(.callout).foregroundStyle(.secondary)
+                        Text("Choose a Source").font(.title2.weight(.semibold))
+                        Text("Choose what to monitor on this Mac.").font(.callout).foregroundStyle(.secondary)
                     }
                     Spacer()
                     Button("Close") { model.sheet = nil }.keyboardShortcut(.cancelAction)
@@ -40,16 +42,19 @@ struct ConnectionView: View {
                         .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
                 }
                 if let saved = model.provenSetup, saved.kind != .sample { lastConnection(saved) }
-            }.padding(20)
+            }.padding(20).background {
+                GeometryReader { proxy in Color.clear.preference(key: SourceChooserHeaderHeight.self, value: proxy.size.height) }
+            }
             Divider()
             HStack(spacing: 0) {
                 sidebar
                 Divider()
                 categoryContent
-            }.frame(height: min(688, max(360, (NSScreen.main?.visibleFrame.height ?? 900) - 248)))
+            }.frame(height: bodyHeight)
         }
         // The approved design needs a category column plus two legible window cards.
         .frame(width: 920)
+        .onPreferenceChange(SourceChooserHeaderHeight.self) { headerHeight = $0 }
         .task { model.refreshCaptureDevices(); browser.start { model.canDiscoverPyroH } }
         .task(id: model.screenDisplays.map(\.id) + [monitoredDisplayID ?? "", category?.rawValue ?? ""]) {
             while !Task.isCancelled {
@@ -63,9 +68,17 @@ struct ConnectionView: View {
                 do { try await Task.sleep(nanoseconds: 2_000_000_000) } catch { return }
             }
         }
-        .onChange(of: category) { _, _ in guide = nil; query = ""; searchFocused = false }
+        .onChange(of: category) { _, _ in guide = nil; query = ""; searchFocused = false; contentHeight = 0 }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) { _ in model.refreshCaptureDevices() }
         .onDisappear { displayPreviews.clear(); windowPreviews.clear(); browser.stop(); model.stopWirelessScan() }
+    }
+
+    private var bodyHeight: CGFloat {
+        let available = max(280, (NSScreen.main?.visibleFrame.height ?? 900) - headerHeight - 80)
+        // Window thumbnails keep the approved two-column canvas; short categories size to their rows.
+        let measured = contentHeight > 0 ? contentHeight + 40 + (category == .displays ? 28 : 0) : guide != nil ? 600 : 320
+        let requested = category == .windows ? 688 : max(320, measured)
+        return min(requested, available)
     }
 
     private var sidebar: some View {
@@ -76,9 +89,12 @@ struct ConnectionView: View {
                 ForEach(SourceCategory.allCases) { item in
                     Label(item.name, systemImage: item.symbol).padding(.vertical, 8).tag(item)
                 }
-            }.listStyle(.sidebar).accentColor(.gray).scrollDisabled(true)
+            }.listStyle(.sidebar).scrollDisabled(true).frame(height: 196)
+            Divider().padding(.horizontal, 20)
             Button("Enter Stream Address…") { model.openNetworkSource() }
-                .buttonStyle(.link).padding(20).help("Connect to a network video source using its full RTSP address")
+                .buttonStyle(.link).padding(.horizontal, 20).padding(.vertical, 12)
+                .help("Connect to a network video source using its full RTSP address")
+            Spacer(minLength: 0)
         }.frame(width: 212).background(.quaternary.opacity(0.25))
     }
 
@@ -106,7 +122,11 @@ struct ConnectionView: View {
                         case .wireless: wirelessSection
                         }
                     }.frame(maxWidth: .infinity, alignment: .leading).padding(.trailing, 4).id("source-top")
+                        .background {
+                            GeometryReader { proxy in Color.clear.preference(key: SourceChooserContentHeight.self, value: proxy.size.height) }
+                        }
                 }
+                .modifier(SourceChooserScrollHeight(height: $contentHeight))
                 .onChange(of: category) { _, _ in scroll.scrollTo("source-top", anchor: .top) }
                 .onChange(of: guide) { _, _ in scroll.scrollTo("source-top", anchor: .top) }
             }
@@ -219,11 +239,11 @@ struct ConnectionView: View {
     private func transmitterStatus(_ transmitter: TransmitterModel) -> (text: String, found: Bool) {
         switch transmitter {
         case .cineViewMaster4K:
-            if model.setup?.kind == .accsoon && model.state.monitoring { return ("Current source", true) }
+            if model.setup?.kind == .accsoon && model.state.monitoring { return (model.localReady ? "Current source · Monitoring" : "Current source · Waiting for picture", model.localReady) }
             let count = model.wirelessDevices.filter(\.recognized).count
             return count == 0 ? ("Set up… · Join its Wi-Fi", false) : ("Found on this Wi-Fi · Open setup…", true)
         case .pyroH:
-            if model.setup?.networkProfile == .pyroH && model.state.monitoring { return ("Current source", true) }
+            if model.setup?.networkProfile == .pyroH && model.state.monitoring { return (model.localReady ? "Current source · Monitoring" : "Current source · Waiting for picture", model.localReady) }
             return browser.pyroHSources.isEmpty ? ("Set up… · Join its Wi-Fi", false) : ("Stream found · Open setup…", true)
         }
     }
@@ -362,7 +382,30 @@ struct ConnectionView: View {
     }
 }
 
-private struct SourceChoiceStyle: ButtonStyle {
+private struct SourceChooserContentHeight: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
+}
+
+private struct SourceChooserScrollHeight: ViewModifier {
+    @Binding var height: CGFloat
+    func body(content: Content) -> some View {
+        if #available(macOS 15, *) {
+            content.onScrollGeometryChange(for: CGFloat.self) { $0.contentSize.height.rounded(.up) } action: { _, value in
+                if abs(value - height) >= 1 { height = value }
+            }
+        } else {
+            content.onPreferenceChange(SourceChooserContentHeight.self) { height = $0 }
+        }
+    }
+}
+
+private struct SourceChooserHeaderHeight: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
+}
+
+struct SourceChoiceStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         SourceChoiceBody(configuration: configuration)
     }

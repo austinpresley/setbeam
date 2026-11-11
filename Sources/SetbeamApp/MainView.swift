@@ -14,9 +14,7 @@ struct MainView: View {
 
     private enum MonitorPopover { case source, sound }
     private var inlineSharing: Bool { model.sharingSection != nil && !model.sharingInWindow }
-    private var outgoingNeedsAttention: Bool {
-        model.outgoingNeedsAttention
-    }
+    private var showingSourceRecovery: Bool { model.setup != nil && !model.localReady }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -110,7 +108,9 @@ struct MainView: View {
 
     private var picture: some View {
         ZStack {
-            if model.setup != nil {
+            if showingSourceRecovery {
+                SourceRecoveryView(model: model)
+            } else if model.setup != nil {
                 PlayerView(player: model.localPlayer, placeholder: model.recoveryTitle,
                     physicalStep: !model.busy && !model.connectingToPicture && !model.state.sourceAvailable && model.setup?.kind != .sample,
                     connectionStage: model.connectionStage, inputKind: model.setup?.kind ?? .sample, stageTitle: model.connectionStageTitle,
@@ -136,46 +136,22 @@ struct MainView: View {
 
     private var feedback: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if model.permissionDenied || model.setup != nil && !model.localReady && !model.preparingPicture { recovery }
-            if let message = model.error { issue(message) { model.error = nil } }
+            if !showingSourceRecovery, let message = model.error {
+                issue(message) { model.error = nil }
+                if model.permissionDenied {
+                    HStack(spacing: 12) {
+                        Button("Open Privacy Settings") { model.openPrivacySettings() }
+                        Button("Retry Now") { model.retry() }.disabled(model.busy)
+                    }.buttonStyle(.link).font(.caption)
+                }
+            }
             if model.networkChanged {
                 issue(model.state.sharing ? "The viewing address changed. Invite viewers with the current code. Sharing and Hold are preserved." : "The viewing network changed. Your monitor continues. Start sharing to invite viewers again.") { model.networkChanged = false }
-            }
-            if outgoingNeedsAttention && model.localReady {
-                Label { Text(model.audiencePresentation.recoveryDetail ?? "Outgoing media is not confirmed.").foregroundStyle(.primary) }
-                    icon: { Image(systemName: "exclamationmark.circle").foregroundStyle(.orange) }
-                    .font(.caption).fixedSize(horizontal: false, vertical: true)
-            }
-            if !model.localReady, let previous = model.previousSourceName {
-                Button("Return to previous source: \(previous)") { model.returnToPreviousSource() }
-                    .buttonStyle(.link).font(.caption).disabled(model.busy || model.protectsSourceDraft)
             }
         }.padding(.horizontal, 20).padding(.vertical, hasFeedback ? 8 : 0)
     }
     private var hasFeedback: Bool {
-        model.permissionDenied || model.setup != nil && !model.localReady && !model.preparingPicture ||
-            model.error != nil || model.networkChanged || outgoingNeedsAttention && model.localReady ||
-            !model.localReady && model.previousSourceName != nil
-    }
-
-    private var recovery: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: "cable.connector").font(.title3).foregroundStyle(.secondary)
-            VStack(alignment: .leading, spacing: 6) {
-                Text(model.recoveryDetail).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                HStack {
-                    if model.permissionDenied { Button("Open Privacy Settings") { model.openPrivacySettings() } }
-                    else if model.setup?.kind == .incoming { Button("Accsoon setup") { showSheet(.incoming) } }
-                    else if model.setup?.kind == .network {
-                        Button("Edit Stream Address…") { model.openNetworkSource() }
-                        Button("Open Wi-Fi Settings") { model.openWiFiSettings() }
-                    } else if model.setup?.kind == .accsoon { Button("Open Wi-Fi Settings") { model.openWiFiSettings() } }
-                    else if model.setup?.kind == .macWindow { Button("Choose a window") { model.openSources() } }
-                    Button("Retry now") { model.retry() }.disabled(model.busy)
-                    if let saved = model.provenSetup, saved.id != model.setup?.id { Button("Use last working setup") { model.restore(saved) } }
-                }.buttonStyle(.link).font(.caption)
-            }
-        }.padding(.vertical, 4)
+        !showingSourceRecovery && model.error != nil || model.networkChanged
     }
 
     private func issue(_ message: String, dismiss: @escaping () -> Void) -> some View {

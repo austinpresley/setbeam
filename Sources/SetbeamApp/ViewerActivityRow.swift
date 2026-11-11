@@ -5,6 +5,7 @@ struct ViewerActivityRow: View {
     let viewer: ViewerActivity
     /// Individual removal is offered only when approval makes it enforceable.
     var canRemove = false
+    var stackedAdmissionActions = false
     var audiencePresentation: AudiencePresentation?
     /// The short address in use now, to name where a typed request came from.
     var shortAddressHost: String?
@@ -24,13 +25,8 @@ struct ViewerActivityRow: View {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(viewer.displayName).fontWeight(.medium).lineLimit(2).help(viewer.displayName)
                     Spacer(minLength: 0)
-                    if viewer.admission == .pending {
-                        HStack(spacing: 4) {
-                            Button("Admit", action: admit).buttonStyle(.bordered)
-                                .accessibilityLabel("Admit \(viewer.displayName), session \(viewer.number)")
-                            Button("Decline", action: decline)
-                                .accessibilityLabel("Decline \(viewer.displayName), session \(viewer.number)")
-                        }.controlSize(.small).fixedSize()
+                    if viewer.admission == .pending && !stackedAdmissionActions {
+                        admissionActions
                     } else if canRemove {
                         Menu { Button("Remove Viewer", role: .destructive, action: remove) } label: { Image(systemName: "ellipsis") }
                             .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
@@ -43,6 +39,7 @@ struct ViewerActivityRow: View {
                 }
                 Text((["Session \(viewer.number)", viewer.onThisMac ? "This Mac" : "Another device"] + (viewer.pointing ? ["Pointing"] : [])).joined(separator: " · "))
                     .font(.caption).foregroundStyle(.secondary)
+                if viewer.admission == .pending && stackedAdmissionActions { admissionActions.padding(.top, 4) }
                 if viewer.admission == .pending && viewer.shortAddress {
                     Text("Typed \(shortAddressHost ?? "the local address")").font(.caption).foregroundStyle(.secondary)
                 } else if problemDetail {
@@ -50,6 +47,15 @@ struct ViewerActivityRow: View {
                 }
             }
         }.accessibilityElement(children: .contain).help(detail)
+    }
+
+    private var admissionActions: some View {
+        HStack(spacing: 8) {
+            Button("Admit", action: admit).buttonStyle(.bordered)
+                .accessibilityLabel("Admit \(viewer.displayName), session \(viewer.number)")
+            Button("Decline", action: decline)
+                .accessibilityLabel("Decline \(viewer.displayName), session \(viewer.number)")
+        }.controlSize(.small).fixedSize()
     }
 
     private var problemDetail: Bool {

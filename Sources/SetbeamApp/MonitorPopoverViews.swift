@@ -64,18 +64,21 @@ struct SessionNameView: View {
 /// Session options for who can watch and whether admitted viewers can point.
 struct ViewerOptions: View {
     @ObservedObject var model: SessionModel
+    var compact = false
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            SharingSwitch(title: "Viewers can point", detail: "Viewers can point at the picture. Other pointing viewers see their name and color.",
+            SharingSwitch(title: "Viewers can point", detail: compact ? "" : "Viewers can point at the picture. Other pointing viewers see their name and color.",
+                hint: "Viewers can point at the picture. Other pointing viewers see their name and color.",
                 isOn: Binding(get: { model.sharedPointers }, set: { model.setSharedPointers($0) }))
-            SharingSwitch(title: "Show pointers on this Mac", detail: "Draws viewers' pointers over your monitor and floating preview until sharing stops. Never sent in the picture.",
+            SharingSwitch(title: "Show pointers on this Mac", detail: compact ? "Local monitor and floating preview only." : "Draws viewers' pointers over your monitor and floating preview until sharing stops. Never sent in the picture.",
+                hint: "Draws viewers' pointers over your monitor and floating preview until sharing stops. Never sent in the picture. External sending computers cannot be drawn on from this Mac.",
                 isOn: Binding(get: { model.pointersOnThisMac }, set: { model.setPointersOnThisMac($0) }))
-                .disabled(!model.sharedPointers).padding(.leading, 20)
+                .disabled(!model.sharedPointers).padding(.leading, compact ? 0 : 20)
             if model.setup?.kind == .macScreen {
                 SharingSwitch(title: "Show pointers on shared display", detail: "Draws on the selected display without taking clicks or appearing in its captured video. Resets at Stop or a display change.",
                     isOn: Binding(get: { model.pointersOnSourceDisplay }, set: { model.setPointersOnSourceDisplay($0) }))
-                    .disabled(!model.canShowPointersOnSourceDisplay).padding(.leading, 20)
-            } else {
+                    .disabled(!model.canShowPointersOnSourceDisplay).padding(.leading, compact ? 0 : 20)
+            } else if !compact {
                 Text("Pointers on the source display require This Mac's screen. External sending computers cannot be drawn on from this Mac.")
                     .font(.caption).foregroundStyle(.secondary)
             }

@@ -16,12 +16,15 @@ struct MonitorCommandBar: View {
                 HStack(spacing: 12) { status; Spacer(minLength: 12); AudienceActionButtons(model: model) }
             }
         }.fixedSize(horizontal: false, vertical: true)
-            .padding(16).background(Color(nsColor: .windowBackgroundColor))
+            .padding(.horizontal, 16).padding(.vertical, 8).frame(minHeight: 56)
+            .background(Color(nsColor: .windowBackgroundColor))
             .accessibilityElement(children: .contain).accessibilityLabel("Sharing controls")
     }
     private var adaptiveCommands: some View {
         ViewThatFits(in: .horizontal) {
             HStack(spacing: 12) { status; audience; Spacer(minLength: 12); AudienceActionButtons(model: model) }
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 12) { status; Spacer(minLength: 8); requests; AudienceActionButtons(model: model) }
                 .fixedSize(horizontal: false, vertical: true)
             VStack(alignment: .leading, spacing: 8) {
                 status
@@ -32,27 +35,28 @@ struct MonitorCommandBar: View {
     }
     private var status: some View {
         Button { model.showSharingStatus() } label: {
-            Label { Text(presentation.title).foregroundStyle(.primary) }
-                icon: { Image(systemName: presentation.symbol).foregroundStyle(tint) }
-                .font(.callout.weight(.semibold)).fixedSize().padding(.vertical, 4).contentShape(Rectangle())
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: presentation.symbol).foregroundStyle(tint).font(.callout).frame(width: 12).padding(.top, 2)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(presentation.title).font(.callout.weight(.semibold)).foregroundStyle(.primary)
+                    if model.state.sharing || presentation.isChanging {
+                        Text(outputStatus).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }.fixedSize().contentShape(Rectangle())
         }.buttonStyle(.plain).help("\(outputStatus). Show Sharing details")
             .accessibilityLabel("\(presentation.title). \(outputStatus). Show Sharing details")
     }
     private var outputStatus: String {
-        guard presentation.phase == .sharing else { return presentation.outputDetail }
-        return "\(model.audiencePreviewPlaying ? "Outgoing picture confirmed" : "Checking outgoing picture"). \(model.audienceHasAudio ? "Sound included" : "No audio track")"
+        presentation.visibleOutputDetail(pictureConfirmed: model.audiencePreviewPlaying, hasAudio: model.audienceHasAudio)
     }
     private var audience: some View {
         HStack(spacing: 12) {
             if model.state.sharing {
-                if model.pendingViewers.isEmpty {
-                    Button { model.showSharing(.viewers) } label: {
-                        Label("\(model.admittedViewers.count) joined", systemImage: "person.2")
-                    }.buttonStyle(.plain).foregroundStyle(.secondary).help("Show joined browser sessions and playback health")
-                } else {
-                    Button("\(model.pendingViewers.count) asking to join") { model.showSharing(.viewers) }
-                        .buttonStyle(.link).help("Review viewers asking to join")
-                }
+                Button { model.showSharing(.viewers) } label: {
+                    Label("\(model.admittedViewers.count) joined · \(model.verifiedViewers) playing", systemImage: "person.2")
+                }.buttonStyle(.plain).foregroundStyle(.secondary).help("Show joined browser sessions and fresh playback health")
+                requests
                 if !model.strugglingViewers.isEmpty {
                     Button { model.showSharing(.viewers) } label: {
                         Label("\(model.strugglingViewers.count) struggling", systemImage: "exclamationmark.circle")
@@ -64,6 +68,13 @@ struct MonitorCommandBar: View {
                 }
             }
         }.font(.callout).fixedSize()
+    }
+    @ViewBuilder private var requests: some View {
+        if !model.pendingViewers.isEmpty {
+            Button("\(model.pendingViewers.count) waiting") { model.showSharing(.viewers) }
+                .buttonStyle(.link).font(.callout).help("Review viewers asking to join")
+                .accessibilityLabel("\(model.pendingViewers.count) viewers asking to join")
+        }
     }
     private var tint: Color {
         if presentation.needsAttention || presentation.confirmedHold { return .orange }

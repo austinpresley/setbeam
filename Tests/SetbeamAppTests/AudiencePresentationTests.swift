@@ -68,4 +68,25 @@ final class AudiencePresentationTests: XCTestCase {
         XCTAssertFalse(IncomingDestination.isLocalOnly("rtmp://192.168.1.4:1935"))
         XCTAssertFalse(IncomingDestination.isLocalOnly(""))
     }
+
+    func testVisibleOutputFactsFollowObservedOutputAndNeverAnUnconfirmedHold() throws {
+        let live = AudiencePresentation(session: try session(), control: .init(), localReady: true, busy: false)
+        XCTAssertEqual(live.visibleOutputDetail(pictureConfirmed: true, hasAudio: true), "Picture confirmed · Sound included")
+        XCTAssertEqual(live.visibleOutputDetail(pictureConfirmed: false, hasAudio: false), "Checking outgoing picture · No audio track")
+        for target in [AudienceTarget.hold, .resume] {
+            var pending = AudienceControlState(); pending.begin(target)
+            let transition = AudiencePresentation(session: try session(holding: target.holding, available: false), control: pending, localReady: true, busy: true)
+            let text = transition.visibleOutputDetail(pictureConfirmed: true, hasAudio: true)
+            XCTAssertFalse(text.contains("confirmed ·")); XCTAssertFalse(text.contains("suppressed"))
+            XCTAssertFalse(transition.sourceRecoveryDetail.contains("Sharing is off"))
+            pending.fail(target, session: try session(holding: target.holding, available: false))
+            let failed = AudiencePresentation(session: try session(holding: target.holding, available: false), control: pending, localReady: true, busy: false)
+            XCTAssertEqual(failed.visibleOutputDetail(pictureConfirmed: true, hasAudio: true), "Outgoing picture and sound not confirmed")
+        }
+        let held = AudiencePresentation(session: try session(holding: true, source: false), control: .init(), localReady: false, busy: false)
+        XCTAssertEqual(held.visibleOutputDetail(pictureConfirmed: false, hasAudio: false), "Holding picture confirmed · Source audio suppressed")
+        XCTAssertTrue(held.sourceRecoveryDetail.contains("Viewers remain on Hold"))
+        let privateState = AudiencePresentation(session: .init(), control: .init(), localReady: false, busy: false)
+        XCTAssertTrue(privateState.sourceRecoveryDetail.contains("Sharing is off"))
+    }
 }

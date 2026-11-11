@@ -28,4 +28,14 @@ final class ViewerAttentionTests: XCTestCase {
         ViewerActivity(id: id, label: "Browser", playing: health == .good || health == .struggling,
             onThisMac: false, revision: 1, lastSeen: Date(), number: number, name: nil, health: health)
     }
+
+    @MainActor func testPlaybackCountExcludesPendingAdmissionEvenIfAnOldReportSaysPlaying() {
+        let model = SessionModel()
+        var pending = viewer("pending", number: 1, health: .good)
+        pending.admission = .pending
+        model.viewers = [pending, viewer("playing", number: 2, health: .good), viewer("background", number: 3, health: .background)]
+        XCTAssertEqual(model.admittedViewers.count, 2)
+        XCTAssertEqual(model.pendingViewers.count, 1)
+        XCTAssertEqual(model.verifiedViewers, 1)
+    }
 }

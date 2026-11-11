@@ -11,8 +11,9 @@ enum TransmitterModel: String, CaseIterable, Identifiable {
     var artwork: String { self == .cineViewMaster4K ? "accsoon.master" : "hollyland.pyro" }
     /// The recorded physical evidence, in one line.
     var evidence: String {
-        self == .cineViewMaster4K ? "Tested in Setbeam over direct Wi-Fi, firmware 3.30" : "Not yet tested with a physical Pyro H"
+        self == .cineViewMaster4K ? "Physically tested · Direct Wi-Fi · Firmware 3.30" : "Not yet tested with a physical Pyro H"
     }
+    var physicallyTested: Bool { self == .cineViewMaster4K }
 }
 
 /// One model card in Choose a source. Choosing it opens that model's guided connection.
@@ -30,12 +31,19 @@ struct TransmitterCard: View {
                     Text(transmitter.name).font(.callout.weight(.medium)).foregroundStyle(.primary)
                     Label(status, systemImage: found ? "checkmark.circle" : "wifi").font(.caption)
                         .foregroundStyle(found ? Color.accentColor : .secondary).lineLimit(2)
+                    Label {
+                        Text(transmitter.evidence).foregroundStyle(transmitter.physicallyTested ? Color.secondary : Color.primary)
+                    } icon: {
+                        Image(systemName: transmitter.physicallyTested ? "checkmark.circle" : "exclamationmark.circle")
+                            .foregroundStyle(transmitter.physicallyTested ? Color.secondary : Color.orange)
+                    }.font(.caption).fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 0)
-            }.padding(12).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
-        }.buttonStyle(.plain).background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 12))
+                Text("Open Setup…").font(.callout).foregroundStyle(Color.accentColor)
+            }.padding(.vertical, 16).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+        }.buttonStyle(SourceChoiceStyle()).overlay(alignment: .bottom) { Divider() }
             .help("Set up \(transmitter.brand) \(transmitter.name). \(transmitter.evidence).")
-            .accessibilityLabel("Set up \(transmitter.brand) \(transmitter.name). \(status)")
+            .accessibilityLabel("Set up \(transmitter.brand) \(transmitter.name). \(status). \(transmitter.evidence).")
     }
 }
 

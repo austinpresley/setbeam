@@ -3,6 +3,16 @@ import SetbeamCore
 @testable import SetbeamApp
 
 final class SharingNavigationTests: XCTestCase {
+    @MainActor func testViewingNetworkDeepLinkOpensItsDisclosureWithoutChangingTheNetwork() {
+        let model = SessionModel()
+        let network = model.networkChoice
+        model.showViewingNetwork()
+        XCTAssertEqual(model.sharingSection, .options)
+        XCTAssertTrue(model.sharingOptionsNetworkRequested)
+        XCTAssertEqual(model.networkChoice, network)
+        model.showSharing(.options)
+        XCTAssertFalse(model.sharingOptionsNetworkRequested)
+    }
     @MainActor func testOpeningAndSwitchingPanelsNeverChangesSharingOrHold() throws {
         let suite = "app.setbeam.tests.sharing-navigation.\(UUID().uuidString)"
         let preferences = UserDefaults(suiteName: suite)!

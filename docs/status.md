@@ -1,5 +1,58 @@
 # Setbeam status
 
+## Approved design implementation, build 39, 2026-11-11
+
+All six audit findings are implemented on `design/audit-improvements`. The
+previous uncommitted build-38 work is preserved as baseline commit `369f808`.
+Recovery now places its explanation, next action and connection details in one
+block. Wireless cards show physical-test limits before setup; simple categories
+fit their content and longer guides grow. Sharing shows observed picture/audio
+facts and separates joined sessions from fresh playback. Options groups
+immediate controls and scoped Apply actions. Phone chat uses the remaining
+screen height and a 54 px composer with 44 px capture and Send targets.
+
+Native light/dark and generated window-source views are inspected. Seven
+recorded native layout checks pass, including 12 pt window-card gaps and visible
+recovery actions in a 640×472 window with 640×420 content. The wireless sheet is
+456 pt high; its longer guide grows to 560 pt. The first guide iteration kept
+the short height and required scrolling; scroll-content measurement corrected
+that before completion. Native output drafts survive tab switches, Apply
+changes the output while monitoring continues, and Cancel on a viewing-network
+confirmation keeps sharing active.
+
+Eight Chrome and seven macOS WebKit layouts pass with decoded sample media,
+rotation drafts, images and compact draft controls. Actual browser viewers
+follow native Hold/Resume. Admit first shows three joined and two playing,
+then three playing after fresh playback arrives. Native frame telemetry
+confirms the floating monitor advances and Stop preserves both local previews.
+Two early manual fixture drivers timed out with
+`page.waitForFunction: Timeout 30000ms exceeded.` One compared `On Hold` with
+the browser's `On hold`; the other allowed too little time for the operator
+step. The final state-based driver passes all phases. These are software
+checks; physical iOS/keyboard, audible output, spoken VoiceOver and hardware
+qualification remain separate.
+
+The complete isolated `scripts/check.sh` passes using packaged helpers and
+fixtures in 653.915 seconds: 293 Swift tests with one opt-in endurance soak
+skipped, five Python cases, 59 Node checks and every media stage. The final
+1,749 KB keyframe stage decodes 518 frames in seven seconds without errors.
+No stage failed or needed a retry in that full run. All 173 source/test/script
+inputs remain unchanged through it. All six arm64 executables pass strict
+signature and system-library-only audits; all 38 built, extracted and installed
+app files match. ZIP integrity and extracted executable permissions pass.
+
+Build 39 is installed privately with the saved CineView setup and exactly one
+visible main window. Build 38 is preserved at
+`~/Applications/.Setbeam-before-design-build39.app`. The archive SHA-256 is
+`094f46c70dfd7ba2840c763e93bcd7694829656638611fbb205669f7b8dc014c`.
+The [comparison report](../design/implementation/build39/Setbeam-build39-verification.html)
+contains implemented views, mockups, corrections and qualification limits.
+The [build, comparison report and screenshots](https://drive.google.com/drive/folders/1RDhJkf8rbBB3dlD5nj5uD8F2mPZXBUzl)
+are delivered privately with remote verification. Delivery ID:
+`20261111T234908Z--55830b50f53c`.
+This is an ad-hoc signed developer build. No hosted CI or upstream publication
+ran, and no hardware-test record was promoted.
+
 ## Design audit and mockups, 2026-11-11
 
 The [current design audit](../design/audits/2026-11-11-current/Setbeam-design-audit.html)

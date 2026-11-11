@@ -92,3 +92,28 @@ Native palette keyboard access with the Mac's default keyboard settings uses
 1-6 for reactions, R for Reply, Command-C for Copy, I for the image and Shift-D
 for Remove for Everyone. The conversation itself retains arrow navigation and
 Return to open actions. Browser menus retain arrow/Return navigation.
+
+## Approved audit improvements, 2026-11-11
+
+Austin approved all six audit findings and the five accompanying mockups.
+Recovery instructions, the next action and connection details belong together
+in the missing picture, with one explanation for each source problem. Private
+copy appears only while sharing is off; active Hold and transitions use observed
+outgoing state. Keep secondary recovery commands in Connection details.
+
+Wireless cards show their physical-test limits before setup, including the
+exact tested route and firmware. Short source categories fit their content;
+application windows retain the roomy two-column thumbnail grid. Keep stream
+address entry beside the category choices.
+
+The existing sharing strip shows outgoing picture and audio facts. Admission
+and confirmed playback are separate counts. Retain visible pending requests,
+Hold and Stop at compact widths. Joining and pointer controls lead Sharing
+Options, followed by viewer output. Local address and viewing network disclose
+their controls with the current value visible. Immediate switches and each
+scoped Apply action retain their existing effects and confirmations.
+
+Phone chat uses the space below the complete picture. Its empty composer is
+one approximately 54 px row with 44 px capture and Send targets. Drafts grow
+when needed; replies, images and reactions remain contextual. The lifetime
+notice reads "Clears when sharing stops." Mac controls retain native sizes.

@@ -37,7 +37,7 @@
     }
     function sizeDraft() {
       input.style.height='auto';
-      input.style.height=Math.min(input.scrollHeight,player.classList.contains('keyboard-tight')?44:88)+'px';
+      input.style.height=Math.min(Math.max(44,input.scrollHeight),player.classList.contains('keyboard-tight')?44:88)+'px';
     }
     function draftState() {
       send.disabled = posting || !admitted || !active || (!input.value.trim() && !attachment);

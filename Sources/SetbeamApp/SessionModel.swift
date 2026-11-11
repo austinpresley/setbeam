@@ -90,6 +90,7 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
     private var chatAttachmentLink: Int?
     private var chatCaptureGeneration = UUID()
     @Published private(set) var sharingOptionsTarget = 0
+    @Published private(set) var sharingOptionsNetworkRequested = false
     private var loadedWiFiSSID: String?
     @Published var networks: [NetworkAddress]
     @Published var viewerAddress: String
@@ -281,7 +282,7 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
         guard let previousSource, (try? previousSource.setup.source(address: previousSource.address)) != source else { return nil }
         return previousSource.setup.name
     }
-    var verifiedViewers: Int { viewers.filter(\.playing).count }
+    var verifiedViewers: Int { admittedViewers.filter(\.playing).count }
     var pendingViewers: [ViewerActivity] { viewers.filter { $0.admission == .pending } }
     var admittedViewers: [ViewerActivity] { viewers.filter { $0.admission == .admitted } }
     var pointingViewers: Int { viewers.filter(\.pointing).count }
@@ -464,7 +465,7 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
     }
     var recoveryDetail: String {
         if permissionDenied { return "Enable Setbeam in Privacy & Security, then retry. Access is only needed for the input you chose." }
-        if connectingToPicture { return "Your monitor is opening. Your picture stays private until you start sharing." }
+        if connectingToPicture { return "Opening the selected source on this Mac." }
         guard let setup else { return "Connect a receiver, camera, or computer output. You can also try a clearly labeled sample." }
         if setup.kind == .macWindow {
             if windowPresence == .closed { return "Setbeam never switches to another window or the whole display. Choose the window again in Choose a source." }
@@ -657,14 +658,14 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
     func showSharing(_ section: SharingSection) {
         if sheet != nil || monitorWindow?.isVisible == false { sharingInWindow = true }
         if section == .invite { loadViewingWiFi() }
-        if section == .options { prepareSharingDraft() }
+        if section == .options { prepareSharingDraft(); sharingOptionsNetworkRequested = false }
         lastSharingSection = section
         sharingSection = section
         sharingFocusRequest &+= 1
         if sharingInWindow { sharingWindow?.makeKeyAndOrderFront(nil) }
     }
     func showSharingStatus() { showSharing(sharingSection ?? lastSharingSection) }
-    func showViewingNetwork() { showSharing(.options); sharingOptionsTarget &+= 1 }
+    func showViewingNetwork() { showSharing(.options); sharingOptionsNetworkRequested = true; sharingOptionsTarget &+= 1 }
     func prepareSharingDraft() {
         if sharingDraft == nil { sharingDraft = SharingOptionsDraft(address: localAddressLabel, network: networkChoice, quality: audienceQuality, frameRate: audienceFrameRate) }
     }

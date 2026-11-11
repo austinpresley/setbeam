@@ -42,7 +42,7 @@ struct SharingPanel: View {
                     }.padding(20).frame(maxWidth: .infinity, alignment: .leading).id("sharing-top")
                 }
                 .onChange(of: model.sharingSection) { _, _ in scroll.scrollTo("sharing-top", anchor: .top) }
-                .onChange(of: model.sharingOptionsTarget) { _, _ in scroll.scrollTo("sharing-top", anchor: .top) }
+                .onChange(of: model.sharingOptionsTarget) { _, _ in scroll.scrollTo("viewing-network", anchor: .top) }
             }
             }
         }.frame(minWidth: SharingPanelLayout.width, maxWidth: .infinity, maxHeight: .infinity)
@@ -95,12 +95,23 @@ struct SharingViewersView: View {
     }
     private func viewerGroup(_ title: String, viewers: [ViewerActivity]) -> some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text(title).font(.headline)
+            HStack {
+                Text(title).font(.headline)
+                Spacer(minLength: 8)
+                if viewers.first?.admission == .admitted {
+                    Text("\(model.verifiedViewers) playing").font(.caption).foregroundStyle(.secondary)
+                }
+            }
             ForEach(viewers) { viewer in
                 ViewerActivityRow(viewer: viewer, canRemove: model.viewerApproval && viewer.admission == .admitted,
+                    stackedAdmissionActions: true,
                     audiencePresentation: model.audiencePresentation,
                     shortAddressHost: model.shortAddressHost,
                     admit: { model.admitViewer(viewer) }, decline: { model.declineViewer(viewer) }, remove: { model.removeViewer(viewer) })
+                    .padding(viewer.admission == .pending ? 12 : 0)
+                    .background {
+                        if viewer.admission == .pending { RoundedRectangle(cornerRadius: 8).fill(.quaternary.opacity(0.35)) }
+                    }
             }
         }
     }

@@ -36,6 +36,13 @@ const {chromium} = require(process.env.PLAYWRIGHT_MODULE || 'playwright-core');
     await page.locator('#chat-input').fill('This is the frame I mean.');
     await page.locator('#chat-send').click();
     await page.waitForFunction(count=>document.querySelectorAll('.chat-message').length===count+2 && [...document.querySelectorAll('.chat-frame')].some(image=>image.naturalWidth>0),previousCount);
+    await page.locator('#chat-input').fill('');
+    const emptyComposer = await page.evaluate(() => {
+      const rect=id=>{const r=document.getElementById(id).getBoundingClientRect();return {width:r.width,height:r.height}};
+      return {form:rect('chat-form'),capture:rect('chat-capture'),send:rect('chat-send')};
+    });
+    assert.ok(emptyComposer.form.height<=56,'Empty phone composer should occupy one 54 px row');
+    for(const target of [emptyComposer.capture,emptyComposer.send]) assert.ok(target.width>=44 && target.height>=44,'Composer touch targets remain 44 px');
     const reports=[];
     for (const [name,width,height] of [['iphone-portrait',390,844],['iphone-landscape',844,390],['ipad-portrait',768,1024],['ipad-landscape',1024,768],['ipad-air-portrait',820,1180],['ipad-air-landscape',1180,820],['split-width',320,640],['short-keyboard',844,260]]) {
       await page.setViewportSize({width,height});
@@ -49,6 +56,7 @@ const {chromium} = require(process.env.PLAYWRIGHT_MODULE || 'playwright-core');
       assert.ok(geometry.font>=16,name+' input may trigger focus zoom');
       assert.equal(geometry.draft,'Draft survives rotation');
       if(width>height && height<550) assert.ok(geometry.send.bottom<=height+1,name+' Send is clipped');
+      if(width<=600 && height>width) assert.ok(geometry.chat.bottom>=height-16 && geometry.chat.bottom<=height,name+' conversation should fill the remaining phone height');
       await page.screenshot({path:path.join(output,name+'.png'),fullPage:true});
       reports.push({name,...geometry});
     }
@@ -66,7 +74,7 @@ const {chromium} = require(process.env.PLAYWRIGHT_MODULE || 'playwright-core');
     await page.locator('#chat-cancel-reply').click();
     assert.equal(await page.locator('#chat-input').inputValue(),'Draft survives rotation');
     assert.deepEqual(errors,[],'Browser exceptions');
-    const result={passed:true,engine:'installed Chrome',checks:['actual decoded sample','identity/color','literal text','likes','reply','audience frame attachment','eight layouts','rotation draft retention'],reports};
+    const result={passed:true,engine:'installed Chrome',checks:['actual decoded sample','identity/color','literal text','likes','reply','audience frame attachment','54 px empty composer','44 px capture and Send targets','eight layouts','rotation draft retention'],emptyComposer,reports};
     fs.writeFileSync(path.join(output,'browser-results.json'),JSON.stringify(result,null,2));
     console.log(JSON.stringify({passed:true,layouts:reports.length,checks:result.checks}));
   } catch (error) { console.log(JSON.stringify({errors,state:await page.evaluate(()=>({state:document.getElementById('state')?.textContent,copy:document.getElementById('join-copy')?.textContent,status:document.getElementById('join-status')?.textContent,rows:document.querySelectorAll('.chat-message').length,chat:document.getElementById('chat-status')?.textContent}))})); await page.screenshot({path:path.join(output,'failure.png'),fullPage:true}); throw error; } finally { await browser.close(); }

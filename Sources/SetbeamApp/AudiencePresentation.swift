@@ -88,6 +88,21 @@ struct AudiencePresentation: Equatable {
         case .stopping: return "Ending viewer access"
         }
     }
+    func visibleOutputDetail(pictureConfirmed: Bool, hasAudio: Bool) -> String {
+        switch phase {
+        case .sharing:
+            return "\(pictureConfirmed ? "Picture confirmed" : "Checking outgoing picture") · \(hasAudio ? "Sound included" : "No audio track")"
+        case .holding: return "Holding picture confirmed · Source audio suppressed"
+        default: return outputDetail
+        }
+    }
+    var sourceRecoveryDetail: String {
+        switch phase {
+        case .privateMonitoring: return "Sharing is off. Viewers cannot see or hear this source."
+        case .holding: return "Viewers remain on Hold. Source picture and audio are suppressed."
+        default: return "\(title). \(outputDetail)."
+        }
+    }
     var incomingReadyDetail: String {
         switch phase {
         case .privateMonitoring: return "Your local monitor is ready. Sharing is off."
