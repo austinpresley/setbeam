@@ -272,6 +272,22 @@ Each browser tab joins through `POST join` and receives a gateway-issued secret 
 
 Viewer approval is an optional session choice. When it is off, every holder of the link is admitted and plays with the link's shared read credential, as before. When it is on, a new tab must send a name with an explicit `ask`, which the page sends only when the viewer presses Ask to join; a name saved in the tab only pre-fills the form. The tab then waits as a pending request and receives playback details only after the operator admits it and MediaMTX has accepted that session's own read-only user. Until it is admitted, the page shows a join card in place of the picture. MediaRuntime removes the shared `guest` user under approval, so the viewing-link token alone cannot read media. Removal makes the pass refused at once, so `config.json`, heartbeats, and presence stop working for it. The runtime then deletes that session's user before kicking every WebRTC and RTSP session MediaMTX reports for it, so a reconnect fails authorization while other readers continue. Reloading a pending, removed, or declined tab keeps that state without a new request. A request that lapsed, or a pass the gateway no longer knows, returns to the form rather than asking again by itself. A new tab is a new request. Turning approval on during sharing gives already-admitted sessions their own users, disconnects shared-credential readers, and advances the publisher revision so pages reconnect with their own credentials. Requests and sessions are bounded (16 pending, 128 passes). Hold keeps admissions; Stop Sharing rotates the link and clears every admission and reader. A future session password would gate `join` before this same admission step.
 
+Approved sessions stay in the operator roster until removed or the sharing
+session ends, even without heartbeats. After twelve seconds without an update,
+the row says No recent update and retains Remove; it never claims fresh
+playback. Ordinary link-only sessions retain their twelve-second visibility
+window. Pending requests stay visible until their thirty-second request expiry.
+The 128-pass bound cannot evict an approved reader to admit a new request.
+
+Enabling approval stops the old shared audience publisher before applying
+credentials and disconnecting shared readers. It starts the audience again only
+after both steps succeed. A failed credential or disconnect request ends
+sharing synchronously, rotates the link, and clears readers while retaining the
+source and private monitoring. An uncertain controller response never rolls an
+active session back to its previous access policy. The app retires invitations
+and explains why sharing stopped. A later explicit Start must apply the current
+authorization successfully before any audience output starts.
+
 Shared pointers are a separate operator option. An admitted page opts in with its existing name and color, then opens the `presence` WebSocket on the existing gateway. The handshake requires a same-origin `Origin`; the first message must carry an admitted pass. The channel is a small RFC 6455 subset: masked, unfragmented text frames of at most 512 bytes, no more than 120 frames per second, a three-second hello deadline, and a 20-second silence limit. It carries only picture-relative positions in, and other participants' number, label, color, position, and remaining time out. It cannot reach media control, publishing, administration, or the operator roster.
 
 `PointerPresence` keeps only each participant's latest position for the current publisher revision. Positions must be finite and inside the picture (0...1). Updates for another revision, while the audience is not live, or above 30 per second are dropped. A pointer stays visible for four seconds after meaningful movement (0.3% of the picture) or an explicit tap. Repeated or tiny updates do not extend it, and the server needs no final hide. Hold, Stop, a new publisher revision, a source change, removal, a closed channel, and turning pointers off clear positions. Each receiver has at most one send in flight; changes during it coalesce into the newest snapshot, and a send stuck for five seconds closes that channel. Receivers also expire each pointer locally from its remaining time.

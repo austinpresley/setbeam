@@ -24,6 +24,7 @@ public struct RuntimeSnapshot: Sendable {
 }
 
 enum SourceConfigurationStep: Sendable { case credentials, path }
+enum ViewerAccessStep: Sendable { case credentials, disconnect }
 
 /// Owns one received source, a private monitoring output, and an independent audience output.
 public actor MediaRuntime {
@@ -36,6 +37,7 @@ public actor MediaRuntime {
     private var source: VideoSource = .sample
     private var sourceNeedsConfiguration = false
     private let beforeSourceConfigurationStep: @Sendable (SourceConfigurationStep) throws -> Void
+    private let beforeViewerAccessStep: @Sendable (ViewerAccessStep) throws -> Void
     private var sourceArguments: [String] = []
     private var rtspPort: UInt16 = 0, apiPort: UInt16 = 0, webPort: UInt16 = 0, icePort: UInt16 = 0, rtmpPort: UInt16 = 0
     private let incomingRelay = IncomingStreamRelay()
@@ -79,13 +81,16 @@ public actor MediaRuntime {
     public init(paths: RuntimePaths, log: SessionLog = .shared) {
         self.paths = paths; self.log = log
         beforeSourceConfigurationStep = { _ in }
+        beforeViewerAccessStep = { _ in }
         let discovery = accsoonDiscovery
         accsoonReceiver.onAnnouncement = { data, host in discovery.observe(data, host: host) }
     }
     /// Allows actual-media tests to exercise failures between controller requests.
-    init(paths: RuntimePaths, beforeSourceConfigurationStep: @escaping @Sendable (SourceConfigurationStep) throws -> Void) {
+    init(paths: RuntimePaths, beforeSourceConfigurationStep: @escaping @Sendable (SourceConfigurationStep) throws -> Void,
+         beforeViewerAccessStep: @escaping @Sendable (ViewerAccessStep) throws -> Void = { _ in }) {
         self.paths = paths; self.log = .shared
         self.beforeSourceConfigurationStep = beforeSourceConfigurationStep
+        self.beforeViewerAccessStep = beforeViewerAccessStep
         let discovery = accsoonDiscovery
         accsoonReceiver.onAnnouncement = { data, host in discovery.observe(data, host: host) }
     }
@@ -543,13 +548,18 @@ public actor MediaRuntime {
     public func stopSharing() async {
         await acquireOperation()
         defer { releaseOperation() }
+        endAudienceSharing()
+        _ = try? await api("/v3/config/global/patch", method: "PATCH", object: ["authInternalUsers": users()])
+        publishSnapshot()
+    }
+    /// Synchronous so an authorization error closes source media before any further controller call.
+    /// A later Start applies the rotated credentials before publishing again.
+    private func endAudienceSharing() {
         if sharing { log.record("sharing.stop") }
         sessionState.stopSharing()
         observedAudienceAudio = false
-        publishSnapshot()
         audiencePublisher?.stop(); audiencePublisher = nil
         guestPassword = MediaRuntime.secret(); viewerReaders = []; pendingRevocations = []
-        _ = try? await api("/v3/config/global/patch", method: "PATCH", object: ["authInternalUsers": users()])
         publishSnapshot()
     }
 
@@ -566,14 +576,31 @@ public actor MediaRuntime {
         let previous = (approvalRequired, viewerReaders)
         approvalRequired = approval; viewerReaders = readers
         log.record("viewers.access", ["approval": approval, "readers": readers.count, "revoked": revoked.count])
+        if enablingApproval && sharing {
+            // The gateway already asks new viewers to wait. Suppress the old shared output
+            // throughout the controller update, including a timeout or lost response.
+            audiencePublisher?.stop(); audiencePublisher = nil
+            sessionState.updateAudience(available: false); observedAudienceAudio = false
+            publishSnapshot()
+        }
         // A restarted server starts from these users and has no earlier sessions to disconnect.
         guard mediaServer?.isRunning == true else { pendingRevocations = []; return }
-        do { _ = try await api("/v3/config/global/patch", method: "PATCH", object: ["authInternalUsers": users()]) }
-        catch { (approvalRequired, viewerReaders) = previous; throw error }
-        pendingRevocations.formUnion(revoked)
-        if !pendingRevocations.isEmpty { try await disconnectReaders(pendingRevocations); pendingRevocations = [] }
-        // Viewers playing with the shared credential reconnect with their own.
-        if enablingApproval && sharing { audienceRevision += 1; publishSnapshot() }
+        do {
+            try beforeViewerAccessStep(.credentials)
+            _ = try await api("/v3/config/global/patch", method: "PATCH", object: ["authInternalUsers": users()])
+            pendingRevocations.formUnion(revoked)
+            if !pendingRevocations.isEmpty {
+                try beforeViewerAccessStep(.disconnect)
+                try await disconnectReaders(pendingRevocations); pendingRevocations = []
+            }
+            if enablingApproval && sharing { try launchAudience() }
+        } catch {
+            // A failed response cannot establish which credentials the server accepted.
+            // End audience sharing instead of restoring an unsafe authorization state.
+            if sharing { endAudienceSharing() }
+            else { (approvalRequired, viewerReaders) = previous }
+            throw error
+        }
     }
     /// Ends existing media sessions read with these credentials.
     private func disconnectReaders(_ users: Set<String>) async throws {

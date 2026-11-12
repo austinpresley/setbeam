@@ -59,11 +59,12 @@ struct ViewerActivityRow: View {
     }
 
     private var problemDetail: Bool {
-        viewer.admission != .pending && [.ready, .paused, .background, .struggling, .reconnecting].contains(viewer.health)
+        viewer.admission != .pending && (viewer.updatesMissing || [.ready, .paused, .background, .struggling, .reconnecting].contains(viewer.health))
     }
 
     private var title: String {
         if viewer.admission == .pending { return "Asking to join" }
+        if viewer.updatesMissing { return "No recent update" }
         switch viewer.health {
         case .good: return "Good"
         case .struggling: return "Struggling"
@@ -78,6 +79,9 @@ struct ViewerActivityRow: View {
         }
     }
     private var detail: String {
+        if viewer.updatesMissing {
+            return "Playback is unconfirmed. This session still has access until you remove it or stop sharing."
+        }
         if viewer.admission == .pending {
             return viewer.shortAddress ? "Typed \(shortAddressHost ?? "the local address"). Names are chosen by viewers and are not verified."
                 : "Names are chosen by viewers and are not verified."
@@ -96,6 +100,7 @@ struct ViewerActivityRow: View {
         }
     }
     private var color: Color {
+        if viewer.updatesMissing { return .orange }
         if viewer.admission == .pending { return .accentColor }
         switch viewer.health {
         case .good, .playing: return .green
@@ -105,6 +110,7 @@ struct ViewerActivityRow: View {
         }
     }
     private var symbol: String {
+        if viewer.updatesMissing { return "clock" }
         if viewer.admission == .pending { return "person.badge.clock" }
         switch viewer.health {
         case .good, .playing: return "checkmark.circle.fill"

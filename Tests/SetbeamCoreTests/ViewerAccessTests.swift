@@ -162,6 +162,50 @@ final class ViewerAccessLedgerTests: XCTestCase {
                                          now: now.addingTimeInterval(ViewerAccessLedger.visibleFor + 1))), "A stale session makes room")
     }
 
+    func testApprovedSessionRemainsVisibleAndRemovableWithoutHeartbeats() throws {
+        var ledger = ViewerAccessLedger(); ledger.setApproval(true)
+        let request = try XCTUnwrap(joined(ledger.join(pass: nil, name: "Sam", asking: true,
+            color: .teal, mobile: false, local: false, now: now)))
+        XCTAssertTrue(ledger.approve(number: request.number))
+        _ = ledger.confirm(readers: ledger.readers)
+        let session = ViewerSession(token: "test", title: "Studio", sample: true, state: .live,
+            playback: PlaybackDescriptor(origin: "http://127.0.0.1:8889", path: "live", user: "guest", password: "test"), revision: 1)
+        _ = ledger.heartbeat(request.pass, playing: true, health: .good, revision: 1, name: .none,
+            mobile: false, local: false, now: now)
+        let rows = ledger.activity(session: session, now: now.addingTimeInterval(ViewerAccessLedger.visibleFor + 1))
+        XCTAssertEqual(rows.count, 1, "Missing heartbeats must not hide a session that still has media access.")
+        XCTAssertEqual(rows.first?.number, request.number)
+        XCTAssertEqual(rows.first?.playing, false, "Old reports do not confirm current playback.")
+        XCTAssertEqual(rows.first?.health, .reconnecting)
+        XCTAssertEqual(rows.first?.updatesMissing, true)
+        XCTAssertTrue(ledger.remove(number: request.number))
+        XCTAssertTrue(ledger.readers.isEmpty)
+        XCTAssertTrue(ledger.activity(session: session, now: now).isEmpty)
+    }
+
+    func testNewRequestsCannotEvictApprovedSessionsWithStaleHeartbeats() throws {
+        var ledger = ViewerAccessLedger(); ledger.setApproval(true)
+        for index in 0..<ViewerAccessLedger.maxRecords {
+            let request = try XCTUnwrap(joined(ledger.join(pass: nil, name: "Viewer \(index)", asking: true,
+                color: nil, mobile: false, local: false, now: now)))
+            XCTAssertTrue(ledger.approve(number: request.number))
+        }
+        let readers = ledger.readers
+        let later = now.addingTimeInterval(ViewerAccessLedger.visibleFor + 1)
+        guard case .full = ledger.join(pass: nil, name: "Extra", asking: true, color: nil, mobile: false, local: false, now: later) else {
+            return XCTFail("New requests must not silently evict an authorized viewer.")
+        }
+        XCTAssertEqual(ledger.readers, readers)
+        XCTAssertEqual(ledger.activity(session: nil, now: later).count, ViewerAccessLedger.maxRecords)
+    }
+
+    func testPendingRequestStaysVisibleUntilItsRequestExpires() throws {
+        var ledger = ViewerAccessLedger(); ledger.setApproval(true)
+        _ = ledger.join(pass: nil, name: "Sam", asking: true, color: nil, mobile: false, local: false, now: now)
+        XCTAssertEqual(ledger.activity(session: nil, now: now.addingTimeInterval(ViewerAccessLedger.visibleFor + 1)).count, 1)
+        XCTAssertTrue(ledger.activity(session: nil, now: now.addingTimeInterval(ViewerAccessLedger.pendingFor + 1)).isEmpty)
+    }
+
     func testOperatorRowsUseServerNumbersNotPasses() throws {
         var ledger = ViewerAccessLedger(); ledger.setApproval(true)
         let a = try XCTUnwrap(joined(ledger.join(pass: nil, name: "Sam", asking: true, color: nil, mobile: false, local: true, now: now)))

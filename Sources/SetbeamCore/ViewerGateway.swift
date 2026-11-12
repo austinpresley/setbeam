@@ -30,6 +30,8 @@ public struct ViewerActivity: Sendable, Identifiable {
     public var joinedAt: Date = .distantPast
     /// Asked to join from the short address rather than the viewing link.
     public var shortAddress = false
+    /// No recent heartbeat. Under approval this session still has media access and can be removed.
+    public var updatesMissing = false
     /// Shares a named pointer with other participants.
     public var pointing = false
 

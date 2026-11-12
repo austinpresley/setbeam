@@ -297,8 +297,8 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
     var openedViewers: Int { admittedViewers.count }
     var otherDeviceViewers: Int { viewers.filter { $0.playing && !$0.onThisMac }.count }
     private var appliedReaders: Set<ViewerReader> = []
-    /// The approval choice MediaMTX has accepted. A failed change retries, so the shared credential
-    /// never stays usable while the gateway is asking viewers to wait.
+    /// The approval choice MediaMTX has accepted. An uncertain active-session change ends
+    /// sharing; private monitoring continues and a later Start reapplies authorization.
     private var appliedApproval = false
     /// Pointers describe the live shared picture, so they appear only while it is being shared,
     /// and on this Mac only after the operator chooses to see them.
@@ -388,7 +388,7 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
         accessSync = Task { [weak self] in
             while let self, !self.shuttingDown {
                 self.accessSyncAgain = false
-                let approval = self.viewerApproval, readers = self.gateway.desiredReaders
+                let approval = self.viewerApproval, readers = self.gateway.desiredReaders, wasSharing = self.state.sharing
                 do {
                     try await self.runtime.setViewerAccess(approval: approval, readers: readers)
                     self.appliedReaders = readers; self.appliedApproval = approval
@@ -396,7 +396,12 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
                     if self.state.monitoring { self.apply(await self.runtime.snapshot()); self.publishGatewayState() }
                 } catch {
                     self.lastRuntimeProblem = Redaction.text(error.localizedDescription)
-                    self.error = "A viewer access change did not finish. Setbeam will retry."
+                    if wasSharing {
+                        await self.endSharing()
+                        self.error = "Sharing stopped because viewer access could not be confirmed. Your local monitor continues. Start sharing again to retry."
+                    } else {
+                        self.error = "Viewer access could not be confirmed. Setbeam will retry before sharing."
+                    }
                 }
                 guard self.accessSyncAgain else { break }
             }

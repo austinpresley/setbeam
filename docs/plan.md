@@ -2,6 +2,23 @@
 
 Date: 2026-10-20. Austin authorized a fork of `titleunknown/holly-share`, the name `setbeam`, a working copy in Project Vault's Projects directory, and continued implementation in this thread. The earlier suggestion to start an independent repository is superseded by that explicit fork request.
 
+## Viewer access fixes and public update, build 40
+
+Austin authorized review findings 1, 2 and 3 on 2026-11-11: retain approved
+viewers in the roster without heartbeats, end sharing safely if a viewer-access
+controller update fails, and update the public prerelease to include these
+changes and the build-38 memory correction. Build 39 is the implementation
+baseline. The other review findings remain separate work.
+
+Acceptance: stale approved sessions stay individually removable and cannot be
+evicted by new requests; missing updates never count as fresh playback.
+Credential and disconnect failures stop outgoing media and retire the viewing
+link while preserving the original private source. A new share reapplies the
+approval policy before publishing. Run failing regressions before the fixes,
+then local unit, actual-media, browser and native checks, package audits and
+download verification. Keep GitHub Actions disabled and retain physical
+qualification limits in the prerelease notes.
+
 ## Product goal
 
 Austin's approved visual direction is recorded in [design-standard.md](design-standard.md).

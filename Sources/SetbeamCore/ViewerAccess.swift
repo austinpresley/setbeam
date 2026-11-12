@@ -27,7 +27,7 @@ struct ViewerAccessLedger {
     static let maxRecords = 128, maxPending = 16
     /// Short-address requests leave room in the pending queue for holders of the link.
     static let maxShortAddressPending = 8
-    /// Rows disappear from operator details after this long without contact.
+    /// Playback updates are stale after this long. Approved access stays visible until revoked.
     static let visibleFor: TimeInterval = 12
     /// An unanswered request lapses after this long without its page asking again.
     static let pendingFor: TimeInterval = 30
@@ -97,8 +97,11 @@ struct ViewerAccessLedger {
         if approvalRequired, records.values.filter({ $0.admission == .pending }).count >= Self.maxPending { return .full }
         if shortAddress, records.values.filter({ $0.shortAddress && $0.admission == .pending }).count >= Self.maxShortAddressPending { return .full }
         if records.count >= Self.maxRecords {
-            // Make room only from sessions that have stopped contacting the gateway.
-            guard let oldest = records.values.filter({ now.timeIntervalSince($0.lastSeen) >= Self.visibleFor })
+            // An approved reader may keep receiving media without heartbeats. Never evict its
+            // identity and removal action to make room for a new request.
+            guard let oldest = records.values.filter({
+                !(approvalRequired && $0.admission == .admitted) && now.timeIntervalSince($0.lastSeen) >= Self.visibleFor
+            })
                 .min(by: { $0.lastSeen < $1.lastSeen }) else { return .full }
             records.removeValue(forKey: oldest.pass)
         }
@@ -190,7 +193,14 @@ struct ViewerAccessLedger {
     }
 
     func activity(session: ViewerSession?, now: Date) -> [ViewerActivity] {
-        records.values.filter { [.pending, .admitted].contains($0.admission) && now.timeIntervalSince($0.lastSeen) < Self.visibleFor }
+        records.values.filter { record in
+            let age = now.timeIntervalSince(record.lastSeen)
+            switch record.admission {
+            case .pending: return age < Self.pendingFor
+            case .admitted: return approvalRequired || age < Self.visibleFor
+            case .declined, .removed: return false
+            }
+        }
             .map { record in
                 let age = now.timeIntervalSince(record.lastSeen)
                 let admitted = record.admission == .admitted
@@ -198,7 +208,8 @@ struct ViewerAccessLedger {
                     playing: admitted && record.playing && record.revision == session?.revision && session?.state == .live && age < 8,
                     onThisMac: record.local, revision: record.revision, lastSeen: record.lastSeen, number: record.number, name: record.name,
                     health: admitted ? ViewerHealth.observed(record.health, playing: record.playing, revision: record.revision, session: session, age: age) : .connecting,
-                    admission: record.admission, color: record.color, joinedAt: record.joinedAt, shortAddress: record.shortAddress)
+                    admission: record.admission, color: record.color, joinedAt: record.joinedAt, shortAddress: record.shortAddress,
+                    updatesMissing: admitted && age >= Self.visibleFor)
             }.sorted { $0.number < $1.number }
     }
 
