@@ -4,11 +4,11 @@ Setbeam receives a computer display or camera feed on your Mac, then shares it w
 
 ## Install the prerelease
 
-[Download Setbeam 0.2.0 build 20](https://github.com/austinpresley/setbeam/releases/tag/v0.2.0-build20) for an Apple Silicon Mac running macOS 14 or later. Expand the ZIP and move **Setbeam.app** into Applications. FFmpeg, MediaMTX, the native preview helper, fixtures, and dependency notices are bundled. You do not need Homebrew to run it.
+[Download Setbeam 0.2.0 build 40](https://github.com/austinpresley/setbeam/releases/tag/v0.2.0-build40) for an Apple Silicon Mac running macOS 14 or later. Expand the ZIP and move **Setbeam.app** into Applications. FFmpeg, MediaMTX, the native preview helper, fixtures, and dependency notices are bundled. You do not need Homebrew to run it.
 
 This developer prerelease is ad-hoc signed and not notarized. If macOS blocks opening it, try to open it once, then use **System Settings → Privacy & Security → Open Anyway** if that option is available. Review macOS's confirmation before opening. Do not disable Gatekeeper globally. A managed Mac may require administrator approval.
 
-The development build was tested on macOS 27. Older supported macOS versions still need physical verification. See the [release notes](releases/0.2.0-build20.md) for validation and current limits.
+The development build was tested on macOS 27. Older supported macOS versions still need physical verification. See the [release notes](releases/0.2.0-build40.md) for validation and current limits.
 
 ## Build from source
 
@@ -29,7 +29,7 @@ The default source build is also ad-hoc signed and not notarized.
 
 ## Connect a source
 
-Open the source control at the top left and choose a detected source or your last working setup. **Enter Stream Address** in the chooser opens RTSP setup directly. The CineView guide offers the Accsoon SEE incoming-stream route. These controls describe the current developer build; earlier published builds use the older menus. For this computer's display, choose **This Mac's screen** and the display name/resolution. Allow Setbeam in Screen Recording when requested, then retry. Setbeam excludes its own windows and includes your cursor. This source has no sound. If the display disconnects, Setbeam waits for that same display.
+Open the source control at the top left and choose a detected source or your last working setup. **Enter Stream Address** in the chooser opens RTSP setup directly. The CineView guide offers the Accsoon SEE incoming-stream route. These controls describe the current developer build; earlier published builds use the older menus. For this computer's display, choose **Displays** and select the display name/resolution. Allow Setbeam in Screen Recording when requested, then retry. Setbeam excludes its own windows and includes your cursor. This source has no sound. If the display disconnects, Setbeam waits for that same display.
 
 To share one application window instead, such as Capture One, choose it under **Application windows** in the same chooser. Windows are listed with their application, title, and an updating preview once Setbeam has Screen Recording access; opening the chooser never asks for it. Only that window is shared, without sound, wherever it moves and even when other windows cover it. Its size when chosen sets the picture size; after a resize the whole window is fitted inside that picture without cropping. Minimizing it, hiding its application, or closing it pauses the picture until that same window is shown again. If its application quits, choose the window again: Setbeam never switches to another window or the whole display. After relaunch, Setbeam restores the window privately only while its application is still running.
 
@@ -74,7 +74,7 @@ them. **Sharing → Show Large Join Codes…** opens the same view.
 sessions. The circles in **Asking to join** and **Joined** use each viewer's
 chosen color, including later color changes. Hover a circle to see its color
 name. Names and colors are labels chosen by viewers, not verified identities.
-Joined counts browser sessions; playback health appears separately.
+Joined counts browser sessions; playback health appears separately. With viewer approval on, admitted sessions remain listed until you remove them or stop sharing. **No recent update** means playback is unconfirmed; the session still has access and its Remove action remains available.
 
 The main window has one local picture. Sharing contains Invite, Viewers, Options
 and Chat without a second live thumbnail. Clicking sharing status opens or
@@ -105,7 +105,7 @@ confirms when viewers receive the holding output. A requested change remains
 **Applying Hold** or **Resuming sharing** until its output is confirmed. A
 failure offers **Retry Hold** or **Retry Resume** for the intended change.
 **Resume Sharing** restores the feed through the same viewer page.
-**Stop Sharing** ends audience access while leaving your local monitor available.
+**Stop Sharing** ends audience access while leaving your local monitor available. If a viewer permission change cannot be confirmed, Setbeam stops sharing and retires that viewing link. Your private monitor continues. Start sharing again to retry; permissions must apply before the outgoing picture starts.
 
 On the viewer page, sound stays directly available. The three-dot control opens
 secondary actions, which also appear on pointer movement or keyboard focus.
@@ -126,7 +126,7 @@ See [project status](status.md) for remaining work, [the execution plan](plan.md
 
 ## README screenshots
 
-The README's [dark](../Assets/screenshots/main-dark.png) and [light](../Assets/screenshots/main-light.png) main windows, [browser viewer](../Assets/screenshots/viewer.jpg), and [Picture settings](../Assets/screenshots/picture-settings.jpg) were captured from build 20. They show labeled fictional sample media, not a physical source. The main windows are unmodified native PNG captures. The browser image is cropped to the full-screen player and the settings image to its sheet, then exported as JPEG. No controls or media were composited. Capture and release evidence is recorded in [build 20 publication verification](verification-release-build20-2026-10-29.md). The portrait's generation notes remain in [Fixtures/sample-image-notes.txt](../Fixtures/sample-image-notes.txt).
+The README's [dark](../Assets/screenshots/main-dark.png) and [light](../Assets/screenshots/main-light.png) main windows, [browser viewer](../Assets/screenshots/viewer.jpg), and [Sharing Options](../Assets/screenshots/sharing-options.png) show build 40. They use explicitly labeled fictional sample media from the local QA launch mode, not a physical source. The main windows and options are unmodified native PNG captures. The browser image is a page capture exported as JPEG. No controls or media were composited. Capture and release evidence is recorded in [build 40 verification](verification-release-build40.md). The portrait's generation notes remain in [Fixtures/sample-image-notes.txt](../Fixtures/sample-image-notes.txt).
 
 ## Minimal floating preview
 

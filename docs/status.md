@@ -1,5 +1,42 @@
 # Setbeam status
 
+## Viewer access fixes and public update, build 40
+
+Austin authorized the first three full-app review findings. Approved sessions
+remain visible without heartbeats, with No recent update, unconfirmed playback
+and an individual Remove action. Capacity preserves approved sessions and
+unexpired pending requests. Failed credential or disconnect updates end sharing,
+rotate the link and retain private monitoring. The requested approval policy
+survives private errors, and Start applies the current choice atomically before
+publishing. Approval changes are disabled during a pending media command.
+
+Nine regressions were observed failing before their corrections. Both third-round
+source reviews clear `930929c` with no blockers. The complete isolated packaged
+`scripts/check.sh` passes in 730.764 seconds: 303 Swift tests with one opt-in
+endurance soak skipped, five Python cases, 59 Node checks and all media stages.
+Its 1,750 KB keyframe stage decodes 503 frames in seven seconds without errors.
+All 178 frozen inputs remain unchanged. The accelerated writer test sends
+79.35 GiB with 0 MiB reported footprint growth.
+
+Actual Chrome viewers in both native appearances keep a no-heartbeat session
+listed while it decodes 369/370 frames, then lose only that viewer's media on
+Remove. The other viewer, same-page Hold/Resume and Stop preserving advancing
+native frames pass. Eight Chrome and seven macOS WebKit layouts pass. Light/dark
+status details fit their scroll areas. Earlier operator-timeout, fixture startup
+and interrupted-check evidence is retained in
+[build 40 verification](verification-release-build40.md); no test limit changed.
+
+Build 40 is installed privately on the saved CineView setup, with all 38 files
+matching the verified package. Six arm64 executables pass strict signatures and
+system-library-only audits. Build 39 is preserved at
+`~/Applications/.Setbeam-before-access-build40.app`. ZIP integrity, extracted
+strict signatures and executable permissions pass. Archive SHA-256:
+`b5421edd2b6fa0fae547704653cd29ce51ab804f308831afc6997c42d0a7edcf`.
+The [build and checksum](https://drive.google.com/drive/folders/1MFCJzffS3IT6YXZAv7VSnZD_w8l2Op2O) are delivered privately with remote
+verification, delivery `20261112T011502Z--e0c1a9df5009`. The public prerelease is being
+published. Hardware compatibility is unchanged; physical qualification and
+notarization remain open.
+
 ## Approved design implementation, build 39, 2026-11-11
 
 All six audit findings are implemented on `design/audit-improvements`. The
