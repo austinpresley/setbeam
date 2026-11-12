@@ -284,7 +284,9 @@ credentials and disconnecting shared readers. It starts the audience again only
 after both steps succeed. A failed credential or disconnect request ends
 sharing synchronously, rotates the link, and clears readers while retaining the
 source and private monitoring. An uncertain controller response never rolls an
-active session back to its previous access policy. The app retires invitations
+requested access policy back, including failures during private monitoring.
+Unconfirmed updates remain pending for retry, and an immediate Start uses the
+requested policy before publishing. The app retires invitations
 and explains why sharing stopped. A later explicit Start must apply the current
 authorization successfully before any audience output starts.
 

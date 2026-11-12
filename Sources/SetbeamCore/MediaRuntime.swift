@@ -24,7 +24,7 @@ public struct RuntimeSnapshot: Sendable {
 }
 
 enum SourceConfigurationStep: Sendable { case credentials, path }
-enum ViewerAccessStep: Sendable { case credentials, disconnect }
+enum ViewerAccessStep: Sendable { case credentials, credentialsApplied, disconnect }
 
 /// Owns one received source, a private monitoring output, and an independent audience output.
 public actor MediaRuntime {
@@ -48,6 +48,8 @@ public actor MediaRuntime {
     private var approvalRequired = false
     private var viewerReaders: Set<ViewerReader> = []
     private var pendingRevocations: Set<String> = []
+    /// Requested access is authoritative even if the controller response is lost.
+    private var viewerAccessNeedsUpdate = false
     private var viewerAddress = "127.0.0.1"
     private var inputAddress = "127.0.0.1"
     private var sessionState = SessionState()
@@ -291,7 +293,10 @@ public actor MediaRuntime {
         let deadline = Date().addingTimeInterval(5)
         while Date() < deadline {
             guard mediaServer?.isRunning == true else { throw SetbeamError.runtime("The video service could not start.") }
-            if (try? await api("/v3/config/global/get")) != nil { sourceNeedsConfiguration = false; return }
+            if (try? await api("/v3/config/global/get")) != nil {
+                sourceNeedsConfiguration = false; viewerAccessNeedsUpdate = false; pendingRevocations = []
+                return
+            }
             try await Task.sleep(nanoseconds: 100_000_000)
         }
         throw SetbeamError.runtime("The video service did not respond.")
@@ -371,7 +376,9 @@ public actor MediaRuntime {
         guard mediaServer?.isRunning == true else { throw SetbeamError.unavailable("Connect a source before sharing.") }
         guard !sharing else { return snapshot() }
         guestPassword = MediaRuntime.secret(); viewerReaders = []
+        viewerAccessNeedsUpdate = true
         _ = try await api("/v3/config/global/patch", method: "PATCH", object: ["authInternalUsers": users()])
+        viewerAccessNeedsUpdate = false; pendingRevocations = []
         try sessionState.startSharing(); sessionState.updateAudience(available: false); audienceFailures = 0
         log.record("sharing.start", ["quality": audienceQuality.rawValue, "fps": audienceFrameRate.rawValue])
         publishSnapshot()
@@ -549,7 +556,9 @@ public actor MediaRuntime {
         await acquireOperation()
         defer { releaseOperation() }
         endAudienceSharing()
-        _ = try? await api("/v3/config/global/patch", method: "PATCH", object: ["authInternalUsers": users()])
+        if (try? await api("/v3/config/global/patch", method: "PATCH", object: ["authInternalUsers": users()])) != nil {
+            viewerAccessNeedsUpdate = false
+        }
         publishSnapshot()
     }
     /// Synchronous so an authorization error closes source media before any further controller call.
@@ -560,21 +569,23 @@ public actor MediaRuntime {
         observedAudienceAudio = false
         audiencePublisher?.stop(); audiencePublisher = nil
         guestPassword = MediaRuntime.secret(); viewerReaders = []; pendingRevocations = []
+        viewerAccessNeedsUpdate = true
         publishSnapshot()
     }
 
     /// Applies viewer approval and the admitted sessions' readers, then disconnects any reader
     /// whose access ended. Credentials apply before the disconnect, so a revoked page cannot
     /// reconnect in between. Changing approval during sharing moves viewers to the new credentials
-    /// through a publisher revision. Other readers, local monitoring, and Hold are unaffected.
+    /// through a publisher revision. Successful individual removal preserves other readers.
+    /// An uncertain update ends audience sharing while local monitoring continues.
     public func setViewerAccess(approval: Bool, readers: Set<ViewerReader>) async throws {
         await acquireOperation()
         defer { releaseOperation() }
         let revoked = Set(viewerReaders.subtracting(readers).map(\.user)).union(approval && !approvalRequired ? ["guest"] : [])
         let enablingApproval = approval && !approvalRequired
-        guard approval != approvalRequired || readers != viewerReaders || !pendingRevocations.isEmpty else { return }
-        let previous = (approvalRequired, viewerReaders)
+        guard approval != approvalRequired || readers != viewerReaders || !pendingRevocations.isEmpty || viewerAccessNeedsUpdate else { return }
         approvalRequired = approval; viewerReaders = readers
+        viewerAccessNeedsUpdate = true
         log.record("viewers.access", ["approval": approval, "readers": readers.count, "revoked": revoked.count])
         if enablingApproval && sharing {
             // The gateway already asks new viewers to wait. Suppress the old shared output
@@ -588,17 +599,18 @@ public actor MediaRuntime {
         do {
             try beforeViewerAccessStep(.credentials)
             _ = try await api("/v3/config/global/patch", method: "PATCH", object: ["authInternalUsers": users()])
+            try beforeViewerAccessStep(.credentialsApplied)
             pendingRevocations.formUnion(revoked)
             if !pendingRevocations.isEmpty {
                 try beforeViewerAccessStep(.disconnect)
                 try await disconnectReaders(pendingRevocations); pendingRevocations = []
             }
             if enablingApproval && sharing { try launchAudience() }
+            viewerAccessNeedsUpdate = false
         } catch {
             // A failed response cannot establish which credentials the server accepted.
             // End audience sharing instead of restoring an unsafe authorization state.
             if sharing { endAudienceSharing() }
-            else { (approvalRequired, viewerReaders) = previous }
             throw error
         }
     }

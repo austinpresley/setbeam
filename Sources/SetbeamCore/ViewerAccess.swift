@@ -100,7 +100,8 @@ struct ViewerAccessLedger {
             // An approved reader may keep receiving media without heartbeats. Never evict its
             // identity and removal action to make room for a new request.
             guard let oldest = records.values.filter({
-                !(approvalRequired && $0.admission == .admitted) && now.timeIntervalSince($0.lastSeen) >= Self.visibleFor
+                $0.admission != .pending && !(approvalRequired && $0.admission == .admitted) &&
+                    now.timeIntervalSince($0.lastSeen) >= Self.visibleFor
             })
                 .min(by: { $0.lastSeen < $1.lastSeen }) else { return .full }
             records.removeValue(forKey: oldest.pass)

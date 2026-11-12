@@ -55,16 +55,73 @@ final class ViewerAuthorizationFailureTests: XCTestCase {
         return try XCTUnwrap(response as? HTTPURLResponse).statusCode
     }
 
-    func testFailedApprovalEndsSharingBeforeUnsafeMediaCanRecover() async throws {
+    private func decodingReader(_ runtime: MediaRuntime, _ credential: ViewerReader) async throws -> ManagedChild {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let tools = ProcessInfo.processInfo.environment["SETBEAM_TEST_TOOLS"].map { URL(fileURLWithPath: $0) } ?? root.appendingPathComponent("Vendor/bin")
+        var address = URLComponents(string: await runtime.localRTSP("live"))!
+        address.user = credential.user; address.password = credential.password
+        let reader = try ManagedChild(name: "Authorization regression reader", executable: tools.appendingPathComponent("ffmpeg"),
+            arguments: ["-nostdin", "-hide_banner", "-loglevel", "error", "-progress", "pipe:1", "-stats_period", "0.2",
+                "-rtsp_transport", "tcp", "-i", address.string!, "-f", "null", "-"], directory: FileManager.default.temporaryDirectory)
+        let deadline = Date().addingTimeInterval(10)
+        while reader.isRunning && reader.lastVideoFrameAt == nil && Date() < deadline {
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        guard reader.isRunning && reader.lastVideoFrameAt != nil else {
+            reader.stop(); throw SetbeamError.runtime("The authorization regression reader did not decode video.")
+        }
+        return reader
+    }
+
+    private func assertPlaybackEnded(_ reader: ManagedChild, file: StaticString = #filePath, line: UInt = #line) async throws {
+        let deadline = Date().addingTimeInterval(5)
+        while reader.isRunning && Date() < deadline { try await Task.sleep(nanoseconds: 100_000_000) }
+        XCTAssertFalse(reader.isRunning, "An already-decoding reader must lose media after the access failure.", file: file, line: line)
+    }
+
+    func testFailedPrivateApprovalCannotBeBypassedByImmediateStart() async throws {
         let gate = FailureGate(), runtime = try runtime(gate)
+        do {
+            _ = try await runtime.prepare(source: .sample, viewerAddress: "127.0.0.1")
+            let deadline = Date().addingTimeInterval(15)
+            while !(await runtime.snapshot()).sourceAvailable && Date() < deadline {
+                try await Task.sleep(nanoseconds: 100_000_000)
+            }
+            gate.block(.credentials)
+            do { try await runtime.setViewerAccess(approval: true, readers: []); XCTFail("Expected the controller failure.") }
+            catch SetbeamError.runtime(let message) { XCTAssertEqual(message, "Injected viewer authorization failure.") }
+            gate.allow()
+            // Start immediately, before any background access synchronization can retry.
+            _ = try await runtime.startSharing()
+            let live = try await waitForAudience(runtime)
+            let status = try await authorizationStatus(live.audience, user: "guest", password: live.guestToken)
+            XCTAssertEqual(status, 401, "Start must retain the requested approval policy after a private update fails.")
+            await runtime.shutdown()
+        } catch { await runtime.shutdown(); throw error }
+    }
+
+    func testFailedApprovalEndsSharingBeforeUnsafeMediaCanRecover() async throws {
+        try await verifyApprovalFailure(at: .credentials)
+    }
+
+    func testLostAuthorizationConfirmationEndsAlreadyDecodingPlayback() async throws {
+        try await verifyApprovalFailure(at: .credentialsApplied)
+    }
+
+    private func verifyApprovalFailure(at step: ViewerAccessStep) async throws {
+        let gate = FailureGate(), runtime = try runtime(gate)
+        var reader: ManagedChild?
+        defer { reader?.stop() }
         do {
             _ = try await runtime.prepare(source: .sample, viewerAddress: "127.0.0.1")
             _ = try await runtime.startSharing()
             let live = try await waitForAudience(runtime), processes = await runtime.processIDs()
-            gate.block(.credentials, audiencePID: processes.last)
+            reader = try await decodingReader(runtime, ViewerReader(user: "guest", password: live.guestToken))
+            gate.block(step, audiencePID: processes.last)
             do { try await runtime.setViewerAccess(approval: true, readers: []); XCTFail("Expected the controller failure.") }
             catch SetbeamError.runtime(let message) { XCTAssertEqual(message, "Injected viewer authorization failure.") }
             XCTAssertFalse(gate.audienceRunningAtFailure, "The shared publisher must stop before enabling approval can fail.")
+            try await assertPlaybackEnded(try XCTUnwrap(reader))
             let stopped = await runtime.snapshot(), remaining = await runtime.processIDs()
             XCTAssertFalse(stopped.session.sharing)
             XCTAssertFalse(stopped.audienceAvailable)
@@ -89,15 +146,20 @@ final class ViewerAuthorizationFailureTests: XCTestCase {
         let gate = FailureGate(), runtime = try runtime(gate)
         let a = ViewerReader(user: "viewerA", password: UUID().uuidString)
         let b = ViewerReader(user: "viewerB", password: UUID().uuidString)
+        var readers: [ManagedChild] = []
+        defer { readers.forEach { $0.stop() } }
         do {
             _ = try await runtime.prepare(source: .sample, viewerAddress: "127.0.0.1")
             _ = try await runtime.startSharing()
             _ = try await waitForAudience(runtime)
             try await runtime.setViewerAccess(approval: true, readers: [a, b])
             let live = try await waitForAudience(runtime), processes = await runtime.processIDs()
+            readers.append(try await decodingReader(runtime, a))
+            readers.append(try await decodingReader(runtime, b))
             gate.block(.disconnect)
             do { try await runtime.setViewerAccess(approval: true, readers: [b]); XCTFail("Expected the disconnect failure.") }
             catch SetbeamError.runtime(let message) { XCTAssertEqual(message, "Injected viewer authorization failure.") }
+            for reader in readers { try await assertPlaybackEnded(reader) }
             let stopped = await runtime.snapshot(), remaining = await runtime.processIDs()
             XCTAssertFalse(stopped.session.sharing)
             XCTAssertFalse(stopped.audienceAvailable)

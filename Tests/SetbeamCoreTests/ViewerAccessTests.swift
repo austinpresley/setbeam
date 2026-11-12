@@ -206,6 +206,25 @@ final class ViewerAccessLedgerTests: XCTestCase {
         XCTAssertTrue(ledger.activity(session: nil, now: now.addingTimeInterval(ViewerAccessLedger.pendingFor + 1)).isEmpty)
     }
 
+    func testFullTableKeepsAnUnexpiredPendingRequestBesideApprovedViewers() throws {
+        var ledger = ViewerAccessLedger(); ledger.setApproval(true)
+        for index in 0..<(ViewerAccessLedger.maxRecords - 1) {
+            let request = try XCTUnwrap(joined(ledger.join(pass: nil, name: "Viewer \(index)", asking: true,
+                color: nil, mobile: false, local: false, now: now)))
+            XCTAssertTrue(ledger.approve(number: request.number))
+        }
+        let waiting = try XCTUnwrap(joined(ledger.join(pass: nil, name: "Waiting", asking: true,
+            color: nil, mobile: false, local: false, now: now)))
+        let later = now.addingTimeInterval(ViewerAccessLedger.visibleFor + 1)
+        guard case .full = ledger.join(pass: nil, name: "Extra", asking: true, color: nil, mobile: false, local: false, now: later) else {
+            return XCTFail("A new request must not evict an unanswered request before its expiry.")
+        }
+        XCTAssertEqual(ledger.record(waiting.pass)?.admission, .pending)
+        XCTAssertEqual(ledger.activity(session: nil, now: later).count, ViewerAccessLedger.maxRecords)
+        XCTAssertNotNil(joined(ledger.join(pass: nil, name: "After expiry", asking: true, color: nil,
+            mobile: false, local: false, now: now.addingTimeInterval(ViewerAccessLedger.pendingFor + 1))))
+    }
+
     func testOperatorRowsUseServerNumbersNotPasses() throws {
         var ledger = ViewerAccessLedger(); ledger.setApproval(true)
         let a = try XCTUnwrap(joined(ledger.join(pass: nil, name: "Sam", asking: true, color: nil, mobile: false, local: true, now: now)))
