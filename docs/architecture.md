@@ -283,12 +283,18 @@ Enabling approval stops the old shared audience publisher before applying
 credentials and disconnecting shared readers. It starts the audience again only
 after both steps succeed. A failed credential or disconnect request ends
 sharing synchronously, rotates the link, and clears readers while retaining the
-source and private monitoring. An uncertain controller response never rolls an
+source and private monitoring. An uncertain controller response never rolls the
 requested access policy back, including failures during private monitoring.
 Unconfirmed updates remain pending for retry, and an immediate Start uses the
 requested policy before publishing. The app retires invitations
 and explains why sharing stopped. A later explicit Start must apply the current
 authorization successfully before any audience output starts.
+
+The app passes its current approval choice into Start. The runtime applies that
+choice inside the same serialized operation as the credential update and
+publisher launch, so an older access update cannot determine the new share's
+policy while a newer choice is waiting for a coalesced follow-up. Approval
+changes are disabled during a media command, including a pending Start.
 
 Shared pointers are a separate operator option. An admitted page opts in with its existing name and color, then opens the `presence` WebSocket on the existing gateway. The handshake requires a same-origin `Origin`; the first message must carry an admitted pass. The channel is a small RFC 6455 subset: masked, unfragmented text frames of at most 512 bytes, no more than 120 frames per second, a three-second hello deadline, and a 20-second silence limit. It carries only picture-relative positions in, and other participants' number, label, color, position, and remaining time out. It cannot reach media control, publishing, administration, or the operator roster.
 

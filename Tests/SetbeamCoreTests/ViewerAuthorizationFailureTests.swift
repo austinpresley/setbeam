@@ -4,10 +4,13 @@ import Darwin
 
 final class ViewerAuthorizationFailureTests: XCTestCase {
     private final class FailureGate: @unchecked Sendable {
-        private let lock = NSLock()
+        private let lock = NSCondition()
         private var step: ViewerAccessStep?
         private var audiencePID: Int32?
         private var observedAudienceRunning = false
+        private var pauseCredentials = false
+        private var enteredPause = false
+        var waiting: Bool { lock.lock(); defer { lock.unlock() }; return enteredPause }
         var audienceRunningAtFailure: Bool {
             lock.lock(); defer { lock.unlock() }; return observedAudienceRunning
         }
@@ -17,8 +20,14 @@ final class ViewerAuthorizationFailureTests: XCTestCase {
             self.step = step; self.audiencePID = audiencePID
         }
         func allow() { lock.lock(); step = nil; lock.unlock() }
+        func pauseNextCredentials() { lock.lock(); pauseCredentials = true; enteredPause = false; lock.unlock() }
+        func resumeCredentials() { lock.lock(); pauseCredentials = false; lock.broadcast(); lock.unlock() }
         func check(_ step: ViewerAccessStep) throws {
             lock.lock(); defer { lock.unlock() }
+            if step == .credentials && pauseCredentials {
+                enteredPause = true
+                while pauseCredentials { lock.wait() }
+            }
             guard self.step == step else { return }
             observedAudienceRunning = audiencePID.map { kill($0, 0) == 0 } ?? false
             throw SetbeamError.runtime("Injected viewer authorization failure.")
@@ -98,6 +107,30 @@ final class ViewerAuthorizationFailureTests: XCTestCase {
             XCTAssertEqual(status, 401, "Start must retain the requested approval policy after a private update fails.")
             await runtime.shutdown()
         } catch { await runtime.shutdown(); throw error }
+    }
+
+    func testStartAppliesLatestApprovalAheadOfCoalescedAccessFollowup() async throws {
+        let gate = FailureGate(), runtime = try runtime(gate)
+        defer { gate.resumeCredentials() }
+        do {
+            _ = try await runtime.prepare(source: .sample, viewerAddress: "127.0.0.1")
+            try await runtime.setViewerAccess(approval: true, readers: [])
+            gate.pauseNextCredentials()
+            let earlier = Task { try await runtime.setViewerAccess(approval: false, readers: []) }
+            let deadline = Date().addingTimeInterval(5)
+            while !gate.waiting && Date() < deadline { try await Task.sleep(nanoseconds: 10_000_000) }
+            XCTAssertTrue(gate.waiting)
+            // The gateway/UI has changed back to approval-on while the older request is pending.
+            // Its coalesced follow-up has not entered the runtime queue when Start arrives.
+            let start = Task { try await runtime.startSharing(approval: true) }
+            gate.resumeCredentials()
+            try await earlier.value
+            _ = try await start.value
+            let live = try await waitForAudience(runtime)
+            let status = try await authorizationStatus(live.audience, user: "guest", password: live.guestToken)
+            XCTAssertEqual(status, 401, "Start must apply its current approval choice instead of an older queued policy.")
+            await runtime.shutdown()
+        } catch { gate.resumeCredentials(); await runtime.shutdown(); throw error }
     }
 
     func testFailedApprovalEndsSharingBeforeUnsafeMediaCanRecover() async throws {

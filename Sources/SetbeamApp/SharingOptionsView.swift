@@ -27,6 +27,7 @@ struct SharingOptionsView: View {
                 }
                 SharingSwitch(title: "Ask before viewers join", detail: "Viewers wait for your Admit.", hint: approvalDetail,
                     isOn: Binding(get: { model.viewerApproval }, set: { model.setViewerApproval($0) }))
+                    .disabled(model.busy)
                 ViewerOptions(model: model, compact: true)
             }
             Divider()

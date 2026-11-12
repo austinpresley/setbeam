@@ -3,6 +3,16 @@ import XCTest
 @testable import SetbeamApp
 
 final class ViewerAttentionTests: XCTestCase {
+    @MainActor func testApprovalChoiceCannotChangeDuringAMediaCommand() {
+        let suite = "setbeam-approval-busy-\(UUID().uuidString)"
+        let preferences = UserDefaults(suiteName: suite)!
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let model = SessionModel(preferences: preferences)
+        model.busy = true
+        model.setViewerApproval(true)
+        XCTAssertFalse(model.viewerApproval, "A pending Start must retain the approval choice it is applying.")
+    }
+
     @MainActor func testStrugglingViewersComeFirstWithoutLosingNeutralOrHealthySessions() throws {
         var state = SessionState()
         state.beginMonitoring()

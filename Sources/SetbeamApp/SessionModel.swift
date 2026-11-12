@@ -327,7 +327,7 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
     }
 
     func setViewerApproval(_ enabled: Bool) {
-        guard enabled != viewerApproval else { return }
+        guard !busy, enabled != viewerApproval else { return }
         viewerApproval = enabled
         if !integration { defaults.set(enabled, forKey: "viewerApproval") }
         SessionLog.shared.record("viewers.approval", ["enabled": enabled])
@@ -874,7 +874,7 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
         do {
             await refreshNetworks()
             guard !shuttingDown else { busy = false; return }
-            apply(try await runtime.startSharing())
+            apply(try await runtime.startSharing(approval: viewerApproval))
             appliedReaders = []; viewingLink += 1
             guard !shuttingDown else { busy = false; return }
             outgoingTransition.observeReady(outgoingReady)

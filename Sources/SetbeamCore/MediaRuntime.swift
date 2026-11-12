@@ -370,11 +370,14 @@ public actor MediaRuntime {
         return ("rtmp://\(inputAddress):\(port)", "source?user=sender&pass=\(key)")
     }
 
-    public func startSharing() async throws -> RuntimeSnapshot {
+    public func startSharing(approval: Bool? = nil) async throws -> RuntimeSnapshot {
         await acquireOperation()
         defer { releaseOperation() }
         guard mediaServer?.isRunning == true else { throw SetbeamError.unavailable("Connect a source before sharing.") }
         guard !sharing else { return snapshot() }
+        // Start carries the current operator choice, so a coalesced access follow-up cannot
+        // leave an older policy in effect when the publisher begins.
+        if let approval { approvalRequired = approval }
         guestPassword = MediaRuntime.secret(); viewerReaders = []
         viewerAccessNeedsUpdate = true
         _ = try await api("/v3/config/global/patch", method: "PATCH", object: ["authInternalUsers": users()])
