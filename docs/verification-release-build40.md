@@ -111,7 +111,12 @@ build-40 links and details markup; local 900 px dark and 360 px light renders
 load all four images without horizontal overflow. This is a local rendering of
 GitHub-sanitized Markdown, not a physical phone check.
 
-Public download-byte verification is recorded after publication.
+The prerelease is published at the tag above with two assets. An anonymous
+HTTPS download matches SHA-256 `b5421edd2b6fa0fae547704653cd29ce51ab804f308831afc6997c42d0a7edcf` byte for byte.
+Its checksum asset also matches the local file. Build 20's existing release
+notes are preserved with a superseding-build notice. The README and setup guide
+target build 40. GitHub Actions remains disabled; all tests/builds/packaging ran
+locally.
 
 ## Qualification limits
 

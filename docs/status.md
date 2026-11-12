@@ -33,9 +33,10 @@ system-library-only audits. Build 39 is preserved at
 strict signatures and executable permissions pass. Archive SHA-256:
 `b5421edd2b6fa0fae547704653cd29ce51ab804f308831afc6997c42d0a7edcf`.
 The [build and checksum](https://drive.google.com/drive/folders/1MFCJzffS3IT6YXZAv7VSnZD_w8l2Op2O) are delivered privately with remote
-verification, delivery `20261112T011502Z--e0c1a9df5009`. The public prerelease is being
-published. Hardware compatibility is unchanged; physical qualification and
-notarization remain open.
+verification, delivery `20261112T011502Z--e0c1a9df5009`. The [public prerelease](https://github.com/austinpresley/setbeam/releases/tag/v0.2.0-build40) is published; its anonymously downloaded
+ZIP matches that same SHA-256. Build 20's release page points to this correction.
+GitHub Actions remains disabled. Hardware compatibility is unchanged; physical
+qualification and notarization remain open.
 
 ## Approved design implementation, build 39, 2026-11-11
 
