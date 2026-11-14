@@ -40,6 +40,11 @@ an expired agreement makes `notarytool` return HTTP 403.
    anonymous download matches, then pushes the feed to the `gh-pages` branch
    and waits until `https://austinpresley.github.io/setbeam/appcast.xml` serves it.
    The first publication also enables GitHub Pages for that branch.
+   Rerunning resumes after a partial failure: an existing release is reused
+   only if it is this candidate's prerelease, and an identical published feed
+   counts as done. The feed is read from the `gh-pages` branch. Publishing
+   stops if that feed changed after staging; stage again. A build number must
+   be higher than every published one.
 7. Point the README, setup guide and previous release page at the new build.
 
 `SETBEAM_VERSION`, `SETBEAM_BUILD`, `SETBEAM_UPDATES=1` and

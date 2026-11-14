@@ -27,6 +27,7 @@ SPARKLE_NS = "http://www.andymatuschak.org/xml-namespaces/sparkle"
 REPOSITORY = "austinpresley/setbeam"
 KEY_ACCOUNT = "Setbeam"
 TEAM = "G2R8798RLT"
+PAGES_BRANCH = "gh-pages"
 
 
 class ReleaseError(Exception):
@@ -168,14 +169,20 @@ def notes_html(markdown):
     return "\n".join(out)
 
 
-def published_feed(url):
-    """The live feed, so earlier items stay available. None before the first release."""
-    result = run(["curl", "--fail", "--silent", "--location", "--max-time", "30", url], check=False)
-    if result.returncode == 22 or (result.returncode == 0 and not result.stdout.strip()):
-        return None
-    if result.returncode != 0:
-        raise ReleaseError(f"Could not read the published feed {url} (curl exit {result.returncode}).")
-    return result.stdout
+def published_feed():
+    """The feed on the Pages branch and its SHA-256, so earlier items stay available.
+
+    The branch, not the HTTPS copy, is the source of truth: only a missing branch
+    means a first release. Any other failure stops staging rather than dropping history.
+    """
+    remote = run(["git", "-C", ROOT, "ls-remote", "--exit-code", "origin", f"refs/heads/{PAGES_BRANCH}"], check=False)
+    if remote.returncode == 2:
+        return None, None
+    if remote.returncode != 0:
+        raise ReleaseError(f"Could not read origin's {PAGES_BRANCH} branch (git exit {remote.returncode}).")
+    run(["git", "-C", ROOT, "fetch", "--quiet", "origin", PAGES_BRANCH])
+    feed = run(["git", "-C", ROOT, "show", "FETCH_HEAD:appcast.xml"]).stdout
+    return feed, hashlib.sha256(feed.encode()).hexdigest()
 
 
 def write_feed(path, previous, args, url, signature, length, notes):
@@ -191,9 +198,9 @@ def write_feed(path, previous, args, url, signature, length, notes):
         ET.SubElement(channel, "link").text = f"https://github.com/{REPOSITORY}/releases"
         ET.SubElement(channel, "description").text = "Signed Setbeam updates for Apple Silicon Macs."
         ET.SubElement(channel, "language").text = "en"
-    for old in channel.findall("item"):
-        if old.findtext(f"{{{SPARKLE_NS}}}version") == str(args.build):
-            raise ReleaseError(f"The published feed already contains build {args.build}.")
+    published = [int(old.findtext(f"{{{SPARKLE_NS}}}version") or 0) for old in channel.findall("item")]
+    if published and max(published) >= args.build:
+        raise ReleaseError(f"Build {args.build} must be newer than published build {max(published)}.")
     tag = f"v{args.version}-build{args.build}"
     item = ET.Element("item")
     ET.SubElement(item, "title").text = f"Setbeam {args.version} build {args.build}"
@@ -270,7 +277,7 @@ def stage(args):
         run(["hdiutil", "detach", mount], check=False)
 
     signature = run([TOOLS / "sign_update", "--account", KEY_ACCOUNT, "-p", dmg]).stdout.strip()
-    previous = published_feed(configured["SUFeedURL"])
+    previous, previous_digest = published_feed()
     feed = work / "appcast.xml"
     url = f"https://github.com/{REPOSITORY}/releases/download/v{args.version}-build{args.build}/{dmg.name}"
     write_feed(feed, previous, args, url, signature, dmg.stat().st_size, notes_html(args.notes.read_text()))
@@ -282,7 +289,7 @@ def stage(args):
         "version": args.version, "build": args.build, "tag": f"v{args.version}-build{args.build}",
         "commit": commit, "identity": identity, "notarySubmissions": {"app": app_submission, "dmg": dmg_submission},
         "dmg": dmg.name, "sha256": digest, "bytes": dmg.stat().st_size, "edSignature": signature,
-        "feedURL": configured["SUFeedURL"], "previousFeedItems": previous is not None,
+        "feedURL": configured["SUFeedURL"], "previousFeedSHA256": previous_digest,
         "appFiles": len(tree_hashes(app)),
     }
     (work / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
