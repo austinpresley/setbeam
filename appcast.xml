@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?><!-- sparkle-sign-warning:
+IMPORTANT: This file was signed by Sparkle. Any modifications to this file requires re-signing this file with generate_appcast or sign_update! The signed signature will be embedded at the end of this file.
+--><rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+  <channel>
+    <title>Setbeam</title>
+    <link>https://github.com/austinpresley/setbeam/releases</link>
+    <description>Signed Setbeam updates for Apple Silicon Macs.</description>
+    <language>en</language>
+    <item>
+      <title>Setbeam 0.3.0 build 41</title>
+      <pubDate>Sat, 14 Nov 2026 09:39:07 GMT</pubDate>
+      <sparkle:version>41</sparkle:version>
+      <sparkle:shortVersionString>0.3.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <sparkle:fullReleaseNotesLink>https://github.com/austinpresley/setbeam/releases/tag/v0.3.0-build41</sparkle:fullReleaseNotesLink>
+      <description>&lt;p&gt;Apple Silicon, macOS 14 or later. Developer prerelease, signed with Developer ID and notarized by Apple.&lt;/p&gt;
+&lt;p&gt;&lt;a href="https://github.com/austinpresley/setbeam/releases/download/v0.3.0-build41/Setbeam-0.3.0-build41.dmg"&gt;Download the Mac app&lt;/a&gt; · &lt;a href="https://github.com/austinpresley/setbeam/blob/v0.3.0-build41/docs/getting-started.md"&gt;Installation and setup&lt;/a&gt;&lt;/p&gt;
+&lt;h3&gt;Install and update&lt;/h3&gt;
+&lt;ul&gt;&lt;li&gt;Open the disk image and drag Setbeam to Applications. macOS opens it normally; you no longer need Open Anyway in Privacy &amp;amp; Security.&lt;/li&gt;&lt;li&gt;Setbeam checks for signed updates once a day. Choose Setbeam → Check for Updates… to check now, or turn automatic checks off in Settings → Updates. Installing an update quits and reopens the app.&lt;/li&gt;&lt;li&gt;An update found while you're sharing waits in the menus and never interrupts the share. If you install one during a share, Setbeam asks before ending it.&lt;/li&gt;&lt;li&gt;Build 40 and earlier can't update themselves. Install this build once by hand; later builds arrive in the app.&lt;/li&gt;&lt;li&gt;The new signature means macOS asks again for Screen Recording, Camera, Microphone, Local Network and Location access the first time each is needed.&lt;/li&gt;&lt;/ul&gt;
+&lt;h3&gt;Changes since build 40&lt;/h3&gt;
+&lt;p&gt;Build 41 adds notarized installation and in-app updates. Monitoring, sharing, viewer access and media behavior are unchanged from build 40, including its memory and viewer-approval fixes. See the &lt;a href="https://github.com/austinpresley/setbeam/blob/v0.3.0-build41/docs/releases/0.2.0-build40.md"&gt;build 40 notes&lt;/a&gt;.&lt;/p&gt;
+&lt;h3&gt;Limits&lt;/h3&gt;
+&lt;p&gt;Hardware compatibility is unchanged. Physical iOS/Safari and keyboard tests, audible native output and A/V timing, long transmitter sessions, physical 4K devices, wider capture hardware, older macOS and Intel support remain separate qualification. See &lt;a href="https://github.com/austinpresley/setbeam/blob/v0.3.0-build41/docs/hardware-tests.md"&gt;hardware tests&lt;/a&gt;.&lt;/p&gt;</description>
+      <enclosure url="https://github.com/austinpresley/setbeam/releases/download/v0.3.0-build41/Setbeam-0.3.0-build41.dmg" length="66546792" type="application/octet-stream" sparkle:edSignature="+1Tq8CvkXLQcPvzlVRFqTjcV7Fihx4374A8MXTAPgbY9iBbaJrx7YbJOUQnyAEi8NzMasW/MB0h3uls4lUpaCQ=="></enclosure>
+    </item>
+  </channel>
+</rss><!-- sparkle-signatures:
+edSignature: 4dRoBi0w/Csf0cFLKK8Hal/PHC5SzcZzbhq34CYs590M7RgvsxG1WMO9b1FX83AwdTfywIzudM9wDNhyHOKOCg==
+length: 3619
+-->
