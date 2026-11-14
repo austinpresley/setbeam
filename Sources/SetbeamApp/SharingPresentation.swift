@@ -5,7 +5,7 @@ enum SharingSection: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
-enum SettingsSection: String { case permissions, diagnostics }
+enum SettingsSection: String { case permissions, diagnostics, updates }
 
 enum SharingDestination: Equatable {
     case hidden, inline, window

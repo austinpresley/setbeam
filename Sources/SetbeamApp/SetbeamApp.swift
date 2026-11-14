@@ -3,6 +3,7 @@ import AppKit
 
 @MainActor @main struct SetbeamApp: App {
     @StateObject private var model: SessionModel
+    @StateObject private var updater: AppUpdater
     @NSApplicationDelegateAdaptor(ApplicationDelegate.self) private var delegate
     @Environment(\.openWindow) private var openWindow
     init() {
@@ -12,15 +13,17 @@ import AppKit
             NSApplication.shared.appearance = NSAppearance(named: args[index + 1] == "light" ? .aqua : .darkAqua)
         }
         let value = SessionModel(); _model = StateObject(wrappedValue: value); ApplicationDelegate.model = value
+        let updates = AppUpdater(); updates.isSharing = { [weak value] in value?.state.sharing ?? false }
+        _updater = StateObject(wrappedValue: updates)
     }
     var body: some Scene {
         monitorScene
         Window("Sharing", id: "sharing") { SharingWindowView(model: model) }
             .defaultSize(width: 360, height: 640)
             .windowResizability(.contentMinSize)
-        Settings { AppSettingsView(model: model) }
+        Settings { AppSettingsView(model: model, updater: updater) }
         MenuBarExtra("Setbeam", systemImage: !model.joinRequests.requests.isEmpty ? "person.badge.clock" : model.state.sharing ? "dot.radiowaves.left.and.right" : "rectangle.on.rectangle") {
-            SetbeamMenu(model: model)
+            SetbeamMenu(model: model, updater: updater)
         }
     }
     private var monitorScene: some Scene {
@@ -30,16 +33,23 @@ import AppKit
             .defaultSize(width: 900, height: 636)
             .windowToolbarStyle(.unified)
             .windowResizability(.contentMinSize)
-            .commands { SetbeamCommands(model: model) }
+            .commands { SetbeamCommands(model: model, updater: updater) }
     }
 }
 
 private struct SetbeamCommands: Commands {
     @ObservedObject var model: SessionModel
+    @ObservedObject var updater: AppUpdater
     @Environment(\.openWindow) private var openWindow
     @Environment(\.openSettings) private var openSettings
     var body: some Commands {
-        CommandGroup(replacing: .appInfo) { Button("About Setbeam") { show(.about) }.disabled(model.protectsSourceDraft) }
+        CommandGroup(replacing: .appInfo) {
+            Button("About Setbeam") { show(.about) }.disabled(model.protectsSourceDraft)
+            if updater.availability == .enabled {
+                Button(updater.waitingVersion.map { "Update Available: \($0)…" } ?? "Check for Updates…") { updater.checkForUpdates() }
+                    .disabled(!updater.canCheck && updater.waitingVersion == nil)
+            }
+        }
         CommandGroup(replacing: .newItem) {}
         CommandMenu("Source") {
             Button("Choose Source…") { main(); model.openSources() }.keyboardShortcut("o", modifiers: .command).disabled(model.protectsSourceDraft || model.busy)
@@ -95,6 +105,7 @@ private struct SetbeamCommands: Commands {
 
 private struct SetbeamMenu: View {
     @ObservedObject var model: SessionModel
+    @ObservedObject var updater: AppUpdater
     @Environment(\.openWindow) private var openWindow
     var body: some View {
         Button("Open Setbeam") { model.reopenMonitor() }
@@ -123,6 +134,9 @@ private struct SetbeamMenu: View {
             Button(model.chatUnreadCount > 0 ? "Show Chat (\(model.chatUnreadCount) Unread)" : "Show Chat") { show(.chat) }
             Button("Copy Viewing Link") { model.copyLink() }.disabled(!model.state.sharing || !model.canInviteOtherDevices)
             Button("Show Join Codes") { model.showJoinCodeWindow() }.disabled(!model.state.sharing && model.wifiSSID.isEmpty)
+        }
+        if let version = updater.waitingVersion {
+            Divider(); Button("Update Available: \(version)…") { updater.checkForUpdates() }
         }
         Divider(); Button("Quit Setbeam") { NSApp.terminate(nil) }
     }
