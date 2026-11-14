@@ -1,5 +1,33 @@
 # Setbeam status
 
+## Notarized install and signed updates, build 41, 2026-11-14
+
+Austin asked to make the public download installable and updatable. Release
+builds are now signed with Developer ID and the hardened runtime, and ship as a
+disk image. Sparkle 2.10.0 checks a signed feed on GitHub Pages daily.
+Developer and test launches never check for updates. Scheduled updates wait
+while sharing, and installing during a share uses the existing Quit
+confirmation. `scripts/release.py` stages a notarized candidate.
+`scripts/publish-release.py` publishes the feed only after the uploaded image
+downloads and matches.
+
+Blocked: notarization returns HTTP 403, "A required agreement is missing or has
+expired," for profile `DFA`. Austin must accept the current Apple Developer
+agreement. Nothing is notarized or published; public build 40 is unchanged.
+
+Evidence in [build 41 verification](verification-notarized-updates-2026-11-14.md).
+All 11 executables pass the hardened-runtime, team, timestamp and linkage
+audit. Gatekeeper rejects them only as unnotarized. The complete check passes
+in 729.93 s with the signed helpers: 309 Swift tests, ten Python cases and
+every media stage. A Developer ID build installs a signed update end to
+end through Sparkle from a loopback feed. Settings → Updates is inspected in
+light and dark. A pre-existing finding: Quit is refused while the first-launch
+Permissions sheet is open, in build 39 too.
+
+Next: accept the agreement, push this branch, run `release.py`, install the
+staged image, then `publish-release.py`, and update the README and setup guide.
+See [releasing](releasing.md).
+
 ## Viewer access fixes and public update, build 40
 
 Austin authorized the first three full-app review findings. Approved sessions
