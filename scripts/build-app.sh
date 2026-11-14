@@ -29,6 +29,7 @@ cp Fixtures/Demo.mp4 Fixtures/Hold.mp4 "$APP/Contents/Resources/Fixtures/"
 cp Fixtures/Compatibility-*.mp4 Fixtures/compatibility-notes.txt "$APP/Contents/Resources/Fixtures/"
 cp Vendor/licenses/* "$APP/Contents/Resources/Licenses/"
 cp LICENSE THIRD_PARTY_NOTICES.md runtime-lock.json "$APP/Contents/Resources/Licenses/"
+cp "$ROOT/.build/artifacts/sparkle/Sparkle/LICENSE" "$APP/Contents/Resources/Licenses/Sparkle-LICENSE.txt"
 cp Vendor/cache/ffmpeg-9.0.2.tar.xz Vendor/cache/ffmpeg-9.0.2.tar.xz.asc Vendor/cache/ffmpeg-devel.asc Vendor/cache/opus-1.6.1.tar.gz "$APP/Contents/Resources/Licenses/Sources/"
 SETBEAM_VERSION="$VERSION" SETBEAM_BUILD="$BUILD_NUMBER" SETBEAM_UPDATES="$UPDATES" python3 - <<'PY'
 from pathlib import Path

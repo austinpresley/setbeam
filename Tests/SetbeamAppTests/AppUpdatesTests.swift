@@ -15,6 +15,11 @@ final class AppUpdatesTests: XCTestCase {
 
     func testInsecureFeedIsRejected() {
         XCTAssertEqual(UpdateAvailability.resolve(feedURL: "http://example.com/appcast.xml", arguments: ["Setbeam"], environment: [:]), .noFeed)
+        XCTAssertEqual(UpdateAvailability.resolve(feedURL: "http://192.168.1.4/appcast.xml", arguments: ["Setbeam"], environment: [:]), .noFeed)
+    }
+
+    func testLoopbackFeedIsAllowedForLocalUpdateQA() {
+        XCTAssertEqual(UpdateAvailability.resolve(feedURL: "http://127.0.0.1:8765/appcast.xml", arguments: ["Setbeam"], environment: [:]), .enabled)
     }
 
     func testIntegrationAndQALaunchesStayOffline() {

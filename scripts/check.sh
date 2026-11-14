@@ -6,6 +6,8 @@ mkdir -p build/logs
 git diff --check
 python3 -m unittest discover -s Tests/SetbeamPreviewBridgeTests > build/logs/preview-timing-tests.log 2>&1 || { cat build/logs/preview-timing-tests.log; exit 1; }
 cat build/logs/preview-timing-tests.log
+python3 -I -m unittest discover -s Tests/SetbeamReleaseTests > build/logs/release-tests.log 2>&1 || { cat build/logs/release-tests.log; exit 1; }
+cat build/logs/release-tests.log
 scripts/build-preview-bridge.sh
 python3 scripts/check-preview-bridge.py --tools "${SETBEAM_TEST_TOOLS:-$ROOT/Vendor/bin}" > build/logs/preview-bridge-integration.log 2>&1 || { cat build/logs/preview-bridge-integration.log; exit 1; }
 cat build/logs/preview-bridge-integration.log

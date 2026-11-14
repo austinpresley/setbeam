@@ -25,7 +25,7 @@ open build/Setbeam.app
 
 Third-party build products stay under the ignored `Vendor/` directory. The app bundles its runtime and needs no Homebrew installation to run. Pinned versions and source hashes are in [runtime-lock.json](../runtime-lock.json); licensing and bundled source details are in [third-party notices](../THIRD_PARTY_NOTICES.md).
 
-The default source build is also ad-hoc signed and not notarized.
+The default source build is ad-hoc signed, not notarized, and doesn't check for updates. Public releases are built with [the release procedure](releasing.md).
 
 ## Connect a source
 

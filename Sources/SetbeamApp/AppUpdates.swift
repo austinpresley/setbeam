@@ -12,7 +12,10 @@ enum UpdateAvailability: Equatable {
     case testLaunch
 
     static func resolve(feedURL: String?, arguments: [String], environment: [String: String]) -> Self {
-        guard let feedURL, URL(string: feedURL)?.scheme == "https" else { return .noFeed }
+        // Plain HTTP is accepted only from this Mac, for local update QA. Releases use HTTPS.
+        guard let url = feedURL.flatMap(URL.init(string:)),
+              url.scheme == "https" || (url.scheme == "http" && ["127.0.0.1", "localhost"].contains(url.host))
+        else { return .noFeed }
         if arguments.count > 1 || environment["SETBEAM_DISABLE_UPDATES"] == "1" { return .testLaunch }
         return .enabled
     }
