@@ -3,7 +3,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 CONFIGURATION="${SETBEAM_CONFIGURATION:-release}"
-VERSION="${SETBEAM_VERSION:-0.2.0}"
+VERSION="${SETBEAM_VERSION:-0.3.0}"
 BUILD_NUMBER="${SETBEAM_BUILD:-41}"
 # Only published releases carry the update feed. Developer and QA builds never check for updates.
 UPDATES="${SETBEAM_UPDATES:-0}"

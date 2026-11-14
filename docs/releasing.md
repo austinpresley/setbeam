@@ -25,7 +25,7 @@ an expired agreement makes `notarytool` return HTTP 403.
 1. Write `docs/releases/<version>-build<N>.md`. Use absolute HTTPS links:
    Sparkle shows these notes inside the app.
 2. Commit and push. The candidate must match a pushed commit.
-3. `scripts/release.py --version 0.2.0 --build N --notes docs/releases/0.2.0-buildN.md --preflight`
+3. `scripts/release.py --version 0.3.0 --build N --notes docs/releases/0.3.0-buildN.md --preflight`
    checks the identity, notary profile, update key, notes, tree and tag
    without building.
 4. Run the same command without `--preflight`. It builds with the hardened

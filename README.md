@@ -3,13 +3,13 @@
   <h1>Setbeam</h1>
   <p><strong>Monitor on your Mac. Share with the set.</strong></p>
   <p>Receive a computer display or camera feed.<br>Give nearby viewers a link to watch in their browser.</p>
-  <p><strong>0.2.0 · Build 40</strong> &nbsp; / &nbsp; Apple Silicon &nbsp; / &nbsp; macOS 14+</p>
+  <p><strong>0.3.0 · Build 41</strong> &nbsp; / &nbsp; Apple Silicon &nbsp; / &nbsp; macOS 14+</p>
   <p>
-    <a href="https://github.com/austinpresley/setbeam/releases/download/v0.2.0-build40/Setbeam-0.2.0-build40-macOS-arm64.zip"><strong>Download for Mac</strong></a> &nbsp;·&nbsp;
+    <a href="https://github.com/austinpresley/setbeam/releases/download/v0.3.0-build41/Setbeam-0.3.0-build41.dmg"><strong>Download for Mac</strong></a> &nbsp;·&nbsp;
     <a href="docs/getting-started.md">Setup guide</a> &nbsp;·&nbsp;
-    <a href="docs/releases/0.2.0-build40.md">What's new</a>
+    <a href="docs/releases/0.3.0-build41.md">What's new</a>
   </p>
-  <p><sub>Developer prerelease. Ad-hoc signed; not notarized.</sub></p>
+  <p><sub>Developer prerelease. Notarized by Apple; updates arrive in the app.</sub></p>
 </div>
 
 <picture>
@@ -20,7 +20,7 @@
 
 <p align="center"><sub>The native Mac app in light and dark appearances. All pictures below use labeled, fictional sample media.</sub></p>
 
-Build 40 includes the sustained-memory fix and safer viewer approval. Approved viewers stay individually removable when playback updates stop. [Read the release notes](docs/releases/0.2.0-build40.md).
+Build 41 installs from a notarized disk image and updates itself. Earlier builds can't update themselves, so install it once by hand. It keeps build 40's memory fix and safer viewer approval. [Read the release notes](docs/releases/0.3.0-build41.md).
 
 ## Your picture stays on the Mac
 
@@ -53,11 +53,11 @@ Setbeam receives each source once. The main window, floating preview, and shared
 
 ## Up and running
 
-1. [Download build 40](https://github.com/austinpresley/setbeam/releases/tag/v0.2.0-build40), unzip it, and move **Setbeam.app** into Applications.
+1. [Download build 41](https://github.com/austinpresley/setbeam/releases/tag/v0.3.0-build41), open the disk image, and drag **Setbeam** to Applications.
 2. Open Setbeam and choose a source.
 3. Click **Start sharing**, choose a viewing network your audience can reach, and share the QR code or link.
 
-The app bundles its media runtime and needs no Homebrew installation to run. This prerelease is ad-hoc signed, so macOS may block the first launch. See the [installation guide](docs/getting-started.md#install-the-prerelease) for the normal macOS opening flow.
+The app bundles its media runtime and needs no Homebrew installation to run. It is signed with Developer ID and notarized, so macOS opens it normally. Setbeam checks for signed updates daily; see the [installation guide](docs/getting-started.md#install-the-prerelease).
 
 Viewing uses local HTTP and read-only session links. Use a trusted local network. Setbeam has no internet relay or viewer account service.
 
@@ -81,7 +81,7 @@ Hosted CI is disabled. Tests, builds, and packaging checks run locally.
 
 Mac screen capture and display previews. A redesigned browser viewer with optional names and playback health. Independent FPS and bitrate controls. GPU-backed native pictures and fixes for detailed 4K sharing. Persistent join codes, clearer network guidance, and native Pyro H discovery.
 
-Read the [October 21–29 change notes](docs/releases/0.2.0-build40.md) for the complete scope, validation, and remaining limits. Physical Pyro H testing, long-session reliability, audible Mac output, wider device coverage, and Developer ID notarization remain open.
+Read the [October 21–29 change notes](docs/releases/0.2.0-build40.md) for the complete scope, validation, and remaining limits. Physical Pyro H testing, long-session reliability, audible Mac output, and wider device coverage remain open.
 
 [Setup guide](docs/getting-started.md) · [Hardware evidence](docs/hardware-tests.md) · [Current status](docs/status.md) · [Architecture](docs/architecture.md)
 

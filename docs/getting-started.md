@@ -4,11 +4,13 @@ Setbeam receives a computer display or camera feed on your Mac, then shares it w
 
 ## Install the prerelease
 
-[Download Setbeam 0.2.0 build 40](https://github.com/austinpresley/setbeam/releases/tag/v0.2.0-build40) for an Apple Silicon Mac running macOS 14 or later. Expand the ZIP and move **Setbeam.app** into Applications. FFmpeg, MediaMTX, the native preview helper, fixtures, and dependency notices are bundled. You do not need Homebrew to run it.
+[Download Setbeam 0.3.0 build 41](https://github.com/austinpresley/setbeam/releases/tag/v0.3.0-build41) for an Apple Silicon Mac running macOS 14 or later. Open the disk image and drag **Setbeam** to Applications. FFmpeg, MediaMTX, the native preview helper, fixtures, and dependency notices are bundled. You do not need Homebrew to run it.
 
-This developer prerelease is ad-hoc signed and not notarized. If macOS blocks opening it, try to open it once, then use **System Settings → Privacy & Security → Open Anyway** if that option is available. Review macOS's confirmation before opening. Do not disable Gatekeeper globally. A managed Mac may require administrator approval.
+The app is signed with Developer ID and notarized by Apple, so macOS opens it normally. Setbeam checks for signed updates once a day. Choose **Setbeam → Check for Updates…** to check now, or turn automatic checks off in **Settings → Updates**. Installing an update quits and reopens the app. An update found while you're sharing waits in the menus.
 
-The development build was tested on macOS 27. Older supported macOS versions still need physical verification. See the [release notes](releases/0.2.0-build40.md) for validation and current limits.
+Build 40 and earlier can't update themselves; install build 41 once by hand. Because the signature changed, macOS asks again for Screen Recording, Camera, Microphone, Local Network and Location access the first time each is needed.
+
+The development build was tested on macOS 27. Older supported macOS versions still need physical verification. See the [release notes](releases/0.3.0-build41.md) for validation and current limits.
 
 ## Build from source
 
