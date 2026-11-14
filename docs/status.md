@@ -1,32 +1,39 @@
 # Setbeam status
 
-## Notarized install and signed updates, build 41, 2026-11-14
+## Notarized install and signed updates, 0.3.0 build 41, 2026-11-14
 
-Austin asked to make the public download installable and updatable. Release
-builds are now signed with Developer ID and the hardened runtime, and ship as a
-disk image. Sparkle 2.10.0 checks a signed feed on GitHub Pages daily.
-Developer and test launches never check for updates. Scheduled updates wait
-while sharing, and installing during a share uses the existing Quit
-confirmation. `scripts/release.py` stages a notarized candidate.
-`scripts/publish-release.py` publishes the feed only after the uploaded image
-downloads and matches.
+Austin asked to make the public download installable and updatable, then
+chose version 0.3.0. The [public prerelease](https://github.com/austinpresley/setbeam/releases/tag/v0.3.0-build41)
+ships a Developer ID-signed, hardened-runtime, notarized and stapled disk
+image. Sparkle 2.10.0 checks the signed feed at
+`https://austinpresley.github.io/setbeam/appcast.xml` daily. Developer and
+test launches never check. Scheduled updates wait while sharing, and
+installing during a share uses the existing Quit confirmation. Media behavior
+is unchanged from build 40.
 
-Blocked: notarization returns HTTP 403, "A required agreement is missing or has
-expired," for profile `DFA`. Austin must accept the current Apple Developer
-agreement. Nothing is notarized or published; public build 40 is unchanged.
+Apple accepted both submissions with no issues after Austin renewed the
+developer agreement. A quarantined copy of the disk image and its installed app
+pass Gatekeeper as Notarized Developer ID; `syspolicy_check distribution`
+passes. Sparkle installs a signed update end to end from that exact notarized
+app. The anonymous download matches SHA-256
+`e58e76f54a3d4f9c5c2835379f02de542c3efab51a1e2dbc448a687faa17dc57` (66,546,792
+bytes). The live feed's signature verifies and matches the staged feed byte for byte. Build
+40's release page points to build 41. The [disk image, checksum and notes](https://drive.google.com/drive/folders/1klN8wXxJ7HMOPH_lU9BvJC3JvCWurlKg)
+are delivered privately, delivery `20261114T094021Z--faadbeacb7c2`.
 
-Evidence in [build 41 verification](verification-notarized-updates-2026-11-14.md).
-All 11 executables pass the hardened-runtime, team, timestamp and linkage
-audit. Gatekeeper rejects them only as unnotarized. The complete check passes
-in 729.93 s with the signed helpers: 309 Swift tests, ten Python cases and
-every media stage. A Developer ID build installs a signed update end to
-end through Sparkle from a loopback feed. Settings → Updates is inspected in
-light and dark. A pre-existing finding: Quit is refused while the first-launch
-Permissions sheet is open, in build 39 too.
+The complete check passes in 729.93 s with the signed helpers: 309 Swift
+tests, ten Python cases and every media stage. An independent GPT-6.1 Sol
+review found three publication-safety defects; all are fixed and tested. The
+first publish stopped when GitHub enabled Pages on its own (HTTP 409); the
+fixed rerun resumed and finished. Details are in
+[build 41 verification](verification-notarized-updates-2026-11-14.md).
 
-Next: accept the agreement, push this branch, run `release.py`, install the
-staged image, then `publish-release.py`, and update the README and setup guide.
-See [releasing](releasing.md).
+Open: build 40 has no updater, so its users install build 41 once by hand.
+Austin's installed copy is still build 40 and was left running. A published
+build-to-build update, installation on a second Mac, and the interactive update
+window are unverified. A pre-existing finding: Quit is refused while the
+first-launch Permissions sheet is open, in build 39 too. Hardware
+qualification is unchanged.
 
 ## Viewer access fixes and public update, build 40
 

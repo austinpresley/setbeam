@@ -112,8 +112,11 @@ def publish_feed(candidate, manifest):
     else:
         push_feed(feed, manifest)
     if run(["gh", "api", f"repos/{REPOSITORY}/pages"], check=False).returncode != 0:
-        run(["gh", "api", "-X", "POST", f"repos/{REPOSITORY}/pages",
-             "-f", f"source[branch]={PAGES_BRANCH}", "-f", "source[path]=/"])
+        # Pushing gh-pages can enable Pages by itself; "already enabled" (409) is success.
+        enable = run(["gh", "api", "-X", "POST", f"repos/{REPOSITORY}/pages",
+                      "-f", f"source[branch]={PAGES_BRANCH}", "-f", "source[path]=/"], check=False)
+        if enable.returncode != 0 and "already enabled" not in enable.stdout + enable.stderr:
+            raise PublishError(f"Could not enable GitHub Pages: {(enable.stdout + enable.stderr).strip()}")
     deadline = time.monotonic() + 900
     while time.monotonic() < deadline:
         live = run(["curl", "--fail", "--silent", "--location", "--max-time", "30",

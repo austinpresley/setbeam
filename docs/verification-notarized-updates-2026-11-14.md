@@ -1,26 +1,42 @@
-# Notarized install and signed updates, build 41
+# Notarized install and signed updates, 0.3.0 build 41
 
 Austin asked on 2026-11-14 to make the public download installable and
 updatable. Implementation is on `release/notarized-updates`: `0e82763` adds
 Sparkle and Developer ID signing, `808a829` adds release staging, publication
-and the end-to-end update check. Nothing has been published.
+and the end-to-end update check. Later commits fix review findings, set
+version 0.3.0 and document installation.
 
-## Blocker: Apple agreement
+## Notarization and publication
 
-Every notarization request from the existing `DFA` profile, the one that
-notarized PortPanic, returns:
+Notarization first returned HTTP 403, "A required agreement is missing or has
+expired," for profile `DFA`. Austin renewed the agreement; access returned at
+04:31 after fifteen minute-by-minute retries had failed. A 0.2.0 candidate was
+notarized and verified, then discarded unpublished when Austin chose 0.3.0.
 
-```
-Error: HTTP status code: 403. A required agreement is missing or has expired.
-This request requires an in-effect agreement that has not been signed or has
-expired. Ensure your team has signed the necessary legal agreements and that
-they are not expired.
-```
+The published candidate is commit `2273230`, tag `v0.3.0-build41`. Apple
+accepted the app (`cb528165-60c8-40aa-933b-4db263bbc243`) and the disk image
+(`f3b2c8a9-99e3-435c-8a14-107a20fa9579`) with no issues; both are stapled.
+The app has 125 files, including the staple ticket. A quarantined copy of the
+disk image and of its installed app are accepted by Gatekeeper as `Notarized
+Developer ID`, and `syspolicy_check distribution` reports the app ready for
+distribution. `check-update-install.py` passes starting from the notarized app
+in the image.
 
-`scripts/release.py --preflight` reports only this problem. The Developer ID
-identity, Setbeam update key, clean tree and unused tag all pass. Accepting the
-current agreement in the Apple Developer account is an account-holder action.
-No notarization, stapling or publication has run.
+`publish-release.py` created the prerelease, and an anonymous download matched
+SHA-256 `e58e76f54a3d4f9c5c2835379f02de542c3efab51a1e2dbc448a687faa17dc57`
+(66,546,792 bytes). It then pushed `gh-pages`, which made GitHub enable Pages
+by itself. The explicit enable request returned `409 GitHub Pages is already
+enabled.` and stopped the script. The script now accepts that response. The
+rerun reused the matching release, found the feed already on the branch, and
+confirmed the HTTPS feed matches. Separately, the live feed's signature verifies with
+`sign_update --verify`, and its enclosure points to the published image.
+
+Before publication, an independent GPT-6.1 Sol (xhigh) review found three
+defects. Publishing could not resume after a partial failure. An older staged
+candidate could drop newer feed items. Any HTTP error was read as a first
+release. Staging now reads the feed from `gh-pages` and records its hash.
+Publishing refuses a changed feed, requires increasing builds, and resumes a
+matching release. Twelve release tests cover these rules.
 
 ## Signing
 
@@ -36,8 +52,8 @@ itself. Strict deep verification passes. Gatekeeper rejects the build only as
 The release disk-image commands were exercised on that build. The signed
 66,487,472-byte image verifies, mounts read-only with `Setbeam.app` and an
 Applications link, and its app matches all 124 files. Gatekeeper rejects it
-only as unnotarized. Notarization, stapling and Gatekeeper acceptance remain
-unverified until the agreement is current.
+only as unnotarized. That was before notarization; see above for the
+notarized result.
 
 ## Updates
 
@@ -79,7 +95,7 @@ seconds without decoder errors.
 
 ## Not yet verified
 
-Notarization and stapling, Gatekeeper acceptance after download with
-quarantine, installation on a second Mac, GitHub Pages serving the feed, and an
-update from one published build to the next. Build 40 has no updater; its users
-install build 41 once by hand. Hardware qualification is unchanged.
+A published build-to-build update, installation on a second Mac, and Sparkle's
+interactive update window. Build 40 has no updater; its users, including
+Austin's installed copy, install build 41 once by hand. Hardware qualification is
+unchanged.
