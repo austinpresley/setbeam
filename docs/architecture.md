@@ -15,6 +15,11 @@ not the controller for the new app.
   state instead of constructing media commands.
 - Bundled viewer resources own browser playback and accurate audience states.
   They use the received media rather than contacting the transmitter.
+- `AppUpdater` owns Sparkle. Only release builds carry the feed URL and public
+  EdDSA key; launches with arguments, used by every test, stay offline. It never
+  touches media. Installing quits through the normal Quit path, so sharing
+  confirmation and owned-process cleanup apply. A scheduled update found while
+  sharing waits as a menu item. See [releasing](releasing.md).
 
 The source adapters are a labeled sample, a complete RTSP URL, an authenticated
 incoming RTMP stream, a compatible capture device, and direct CineView Master 4K

@@ -2,6 +2,21 @@
 
 Date: 2026-10-20. Austin authorized a fork of `titleunknown/holly-share`, the name `setbeam`, a working copy in Project Vault's Projects directory, and continued implementation in this thread. The earlier suggestion to start an independent repository is superseded by that explicit fork request.
 
+## Installable and updatable public download, build 41
+
+Austin asked on 2026-11-14 to make the public download installable and
+updatable. Build 41 ships as a Developer ID-signed, hardened-runtime, notarized
+and stapled disk image, and includes Sparkle 2.10.0 with a signed feed on the
+repository's GitHub Pages. Media behavior is unchanged from build 40.
+
+Acceptance: every executable carries the hardened runtime, team G2R8798RLT and
+a secure timestamp. Gatekeeper accepts the app and disk image as notarized.
+A Developer ID build installs a signed update end to end through Sparkle on
+this Mac. Developer and test launches never contact the feed. A scheduled
+update never interrupts an active share. The feed goes live only after the
+uploaded disk image downloads anonymously and matches. Build 40 users install
+build 41 once by hand.
+
 ## Viewer access fixes and public update, build 40
 
 Austin authorized review findings 1, 2 and 3 on 2026-11-11: retain approved
