@@ -1,126 +1,163 @@
 import SwiftUI
 import SetbeamCore
 
-struct ViewerActivityRow: View {
+struct ViewerAvatar: View {
     let viewer: ViewerActivity
-    /// Individual removal is offered only when approval makes it enforceable.
-    var canRemove = false
-    var stackedAdmissionActions = false
-    var audiencePresentation: AudiencePresentation?
-    /// The short address in use now, to name where a typed request came from.
-    var shortAddressHost: String?
-    var admit: () -> Void = {}
-    var decline: () -> Void = {}
-    var remove: () -> Void = {}
+    var holding = false
+    var size: CGFloat = 28
 
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            Text(String(viewer.displayName.prefix(1)).uppercased()).font(.caption.weight(.medium))
-                .foregroundStyle(viewer.color.darkText ? Color(white: 0.06) : .white)
-                .frame(width: 24, height: 24)
-                .background(Color(red: viewer.color.rgb.red, green: viewer.color.rgb.green, blue: viewer.color.rgb.blue), in: Circle())
-                .help("\(viewer.color.label), chosen by \(viewer.displayName)")
-                .accessibilityLabel("Viewer color: \(viewer.color.label)")
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(viewer.displayName).fontWeight(.medium).lineLimit(2).help(viewer.displayName)
-                    Spacer(minLength: 0)
-                    if viewer.admission == .pending && !stackedAdmissionActions {
-                        admissionActions
-                    } else if canRemove {
-                        Menu { Button("Remove Viewer", role: .destructive, action: remove) } label: { Image(systemName: "ellipsis") }
-                            .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
-                            .accessibilityLabel("Actions for \(viewer.displayName), session \(viewer.number)")
-                            .help("Remove this browser session. Other viewers continue.")
-                    }
-                }
-                if viewer.admission != .pending {
-                    Label(title, systemImage: symbol).font(.caption).foregroundStyle(color)
-                }
-                Text((["Session \(viewer.number)", viewer.onThisMac ? "This Mac" : "Another device"] + (viewer.pointing ? ["Pointing"] : [])).joined(separator: " · "))
-                    .font(.caption).foregroundStyle(.secondary)
-                if viewer.admission == .pending && stackedAdmissionActions { admissionActions.padding(.top, 4) }
-                if viewer.admission == .pending && viewer.shortAddress {
-                    Text("Typed \(shortAddressHost ?? "the local address")").font(.caption).foregroundStyle(.secondary)
-                } else if problemDetail {
-                    Text(detail).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        let status = ViewerStatus(viewer: viewer, holding: holding)
+        Text(String(viewer.displayName.prefix(1)).uppercased()).font(.caption.weight(.semibold))
+            .foregroundStyle(viewer.color.darkText ? Color(white: 0.06) : .white)
+            .frame(width: size, height: size)
+            .background(Color(red: viewer.color.rgb.red, green: viewer.color.rgb.green, blue: viewer.color.rgb.blue), in: Circle())
+            .padding(3)
+            .overlay { Circle().strokeBorder(status.ring, lineWidth: 2) }
+            .help("\(viewer.displayName) · \(status.title)")
+            .accessibilityHidden(true)
+    }
+}
+
+struct ViewerRequestRow: View {
+    @ObservedObject var model: SessionModel
+    let viewer: ViewerActivity
+    var framed = true
+
+    var body: some View {
+        let request = JoinRequest(viewer, link: model.viewingLink)
+        let method = viewer.shortAddress ? "Typed \(model.shortAddressHost ?? "the local address"). " : ""
+        return HStack(spacing: 8) {
+            ViewerAvatar(viewer: viewer, size: 28)
+            Text(viewer.displayName).font(.callout.weight(.semibold)).lineLimit(1)
+                .help("\(viewer.displayName) · \(method)Name chosen by the viewer")
+                .accessibilityLabel("\(viewer.displayName), session \(viewer.number). \(method)Asking to join")
+            Spacer(minLength: 0)
+            ViewerDeviceIcon(viewer: viewer)
+            requestButton("Admit", symbol: "checkmark", tint: SetbeamChrome.admit) { model.answer(request, admit: true) }
+            requestButton("Decline", symbol: "xmark", tint: nil) { model.answer(request, admit: false) }
+        }.padding(.horizontal, 12).frame(minHeight: 48)
+            .background(framed ? SetbeamChrome.raised : .clear, in: RoundedRectangle(cornerRadius: 10))
+            .overlay {
+                if framed {
+                    RoundedRectangle(cornerRadius: 10).strokeBorder(SetbeamChrome.line, lineWidth: 1).allowsHitTesting(false)
                 }
             }
-        }.accessibilityElement(children: .contain).help(detail)
     }
 
-    private var admissionActions: some View {
-        HStack(spacing: 8) {
-            Button("Admit", action: admit).buttonStyle(.bordered)
-                .accessibilityLabel("Admit \(viewer.displayName), session \(viewer.number)")
-            Button("Decline", action: decline)
-                .accessibilityLabel("Decline \(viewer.displayName), session \(viewer.number)")
-        }.controlSize(.small).fixedSize()
+    private func requestButton(_ title: String, symbol: String, tint: Color?, action: @escaping () -> Void) -> some View {
+        let description = "\(title) \(viewer.displayName), session \(viewer.number)"
+        return Button(action: action) {
+            Image(systemName: symbol).font(.system(size: 13, weight: .bold))
+                .foregroundStyle(tint == nil ? Color.primary : .white)
+                .frame(width: 28, height: 28)
+                .background(tint ?? .primary.opacity(0.10), in: Circle())
+                .contentShape(Circle())
+        }.buttonStyle(.plain).help(description).accessibilityLabel(description)
     }
+}
 
-    private var problemDetail: Bool {
-        viewer.admission != .pending && (viewer.updatesMissing || [.ready, .paused, .background, .struggling, .reconnecting].contains(viewer.health))
+struct ViewerActivityRow: View {
+    @ObservedObject var model: SessionModel
+    let viewer: ViewerActivity
+    @State private var hover = false
+    @FocusState private var removeFocused: Bool
+
+    var body: some View {
+        let reference = JoinRequest(viewer, link: model.viewingLink)
+        let status = ViewerStatus(viewer: viewer, holding: model.audiencePresentation.confirmedHold)
+        return HStack(spacing: 8) {
+            ViewerAvatar(viewer: viewer, holding: model.audiencePresentation.confirmedHold)
+            Text(viewer.displayName).font(.callout.weight(.semibold)).lineLimit(2)
+                .accessibilityLabel("\(viewer.displayName), session \(viewer.number)")
+            Spacer(minLength: 0)
+            if viewer.pointing {
+                Image(systemName: "cursorarrow").font(.caption).foregroundStyle(.secondary)
+                    .help("Pointing").accessibilityLabel("Pointing")
+            }
+            ViewerDeviceIcon(viewer: viewer)
+            ZStack {
+                Image(systemName: status.symbol, variableValue: status.variableValue).font(.system(size: 14)).foregroundStyle(status.tint)
+                    .help(status.title).accessibilityLabel(status.title)
+                    .opacity(model.viewerApproval && (hover || removeFocused) ? 0 : 1)
+                if model.viewerApproval {
+                    ChromeIconButton("Remove \(viewer.displayName), session \(viewer.number)", symbol: "minus.circle", size: 28,
+                                     hint: "Remove this viewer. Other viewers continue.") { model.removeViewer(reference) }
+                        .foregroundStyle(SetbeamChrome.red)
+                        .focused($removeFocused).opacity(hover || removeFocused ? 1 : 0.001)
+                        .allowsHitTesting(hover || removeFocused)
+                }
+            }.frame(width: 28, height: 28)
+        }.padding(.horizontal, 8).frame(minHeight: 48)
+            .background(.primary.opacity(hover ? 0.05 : 0), in: RoundedRectangle(cornerRadius: 8))
+            .contentShape(Rectangle()).onHover { hover = $0 }
+            .help("\(viewer.displayName) · \(status.title)")
+            .accessibilityElement(children: .contain)
+            .accessibilityValue(status.title)
+            .contextMenu {
+                if model.viewerApproval {
+                    Button("Remove Viewer", role: .destructive) { model.removeViewer(reference) }
+                }
+            }
     }
+}
 
-    private var title: String {
+private struct ViewerDeviceIcon: View {
+    let viewer: ViewerActivity
+    var body: some View {
+        let title = viewer.onThisMac ? "This Mac" : viewer.label
+        Image(systemName: viewer.mobile ? "iphone" : "laptopcomputer").font(.system(size: 14))
+            .frame(width: 16).foregroundStyle(.secondary).help(title).accessibilityLabel(title)
+    }
+}
+
+private struct ViewerStatus {
+    let viewer: ViewerActivity
+    let holding: Bool
+
+    var title: String {
         if viewer.admission == .pending { return "Asking to join" }
-        if viewer.updatesMissing { return "No recent update" }
+        if holding { return "On Hold" }
+        if viewer.updatesMissing { return "No recent update. This session still has access." }
         switch viewer.health {
-        case .good: return "Good"
-        case .struggling: return "Struggling"
-        case .checking: return "Checking"
+        case .good: return "Good playback"
+        case .struggling: return "Struggling playback"
+        case .checking: return "Playing. Checking reception"
         case .playing: return "Playing"
         case .connecting: return "Connecting"
         case .reconnecting: return "Reconnecting"
-        case .paused: return "Paused"
+        case .paused: return "Paused by viewer"
         case .background: return "In background"
-        case .ready: return "Ready to play"
-        case .holding: return audiencePresentation?.confirmedHold == false ? "Outgoing feed not confirmed" : "On Hold"
+        case .ready: return "Viewer needs to press Play"
+        case .holding: return "Holding output unconfirmed"
         }
     }
-    private var detail: String {
-        if viewer.updatesMissing {
-            return "Playback is unconfirmed. This session still has access until you remove it or stop sharing."
-        }
-        if viewer.admission == .pending {
-            return viewer.shortAddress ? "Typed \(shortAddressHost ?? "the local address"). Names are chosen by viewers and are not verified."
-                : "Names are chosen by viewers and are not verified."
-        }
-        switch viewer.health {
-        case .good: return "Fresh video with low reported loss and delay."
-        case .struggling: return "Video is playing with sustained loss, delay, or dropped frames."
-        case .checking: return "Picture is playing. Measuring reception."
-        case .playing: return "Fresh picture. Detailed measurements are unavailable."
-        case .connecting: return "Waiting for the current picture."
-        case .reconnecting: return "Fresh playback has not been confirmed."
-        case .paused: return "Playback is paused on this viewer."
-        case .background: return "The viewer page is in the background."
-        case .ready: return "The viewer needs to tap Play."
-        case .holding: return audiencePresentation?.confirmedHold == false ? "Holding output is not confirmed." : "Viewers are on Hold."
-        }
+
+    private var needsAttention: Bool {
+        viewer.admission == .pending || holding || viewer.updatesMissing || [.struggling, .reconnecting, .holding].contains(viewer.health)
     }
-    private var color: Color {
-        if viewer.updatesMissing { return .orange }
-        if viewer.admission == .pending { return .accentColor }
-        switch viewer.health {
-        case .good, .playing: return .green
-        case .struggling, .reconnecting: return .orange
-        case .holding: return .orange
-        default: return .secondary
-        }
+    var ring: Color {
+        if needsAttention { return SetbeamChrome.amber }
+        return viewer.playing ? SetbeamChrome.green : .secondary.opacity(0.55)
     }
-    private var symbol: String {
+    var tint: Color {
+        if needsAttention { return SetbeamChrome.amberText }
+        return viewer.playing ? SetbeamChrome.greenText : .secondary
+    }
+
+    var variableValue: Double? { !holding && !viewer.updatesMissing && viewer.health == .struggling ? 0.25 : nil }
+
+    var symbol: String {
+        if holding { return "pause.fill" }
         if viewer.updatesMissing { return "clock" }
-        if viewer.admission == .pending { return "person.badge.clock" }
         switch viewer.health {
-        case .good, .playing: return "checkmark.circle.fill"
-        case .struggling: return "exclamationmark.circle.fill"
-        case .reconnecting: return "arrow.triangle.2.circlepath"
-        case .holding: return audiencePresentation?.confirmedHold == false ? "arrow.triangle.2.circlepath" : "pause.circle"
+        case .good, .playing, .checking: return "play.fill"
+        case .struggling: return "cellularbars"
+        case .reconnecting, .holding: return "arrow.triangle.2.circlepath"
         case .paused: return "pause.circle"
         case .background: return "rectangle.on.rectangle"
         case .ready: return "play.circle"
-        default: return "circle.dashed"
+        case .connecting: return "circle.dashed"
         }
     }
 }

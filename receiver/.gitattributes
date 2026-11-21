@@ -1,0 +1,3 @@
+android/gradlew.bat text eol=crlf
+# Preserve the formatting of bundled license texts.
+android/app/src/main/assets/third_party_notices.txt -whitespace

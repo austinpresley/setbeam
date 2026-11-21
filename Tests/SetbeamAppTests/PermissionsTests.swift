@@ -25,16 +25,13 @@ final class PermissionsTests: XCTestCase {
         XCTAssertEqual(PermissionState.location(.denied), .denied)
     }
 
-    @MainActor func testPermissionsOpenOnceOnFirstRunAndRememberTheChoices() throws {
+    @MainActor func testPermissionChoicesPersist() throws {
         let suite = "app.setbeam.tests.permissions.\(UUID().uuidString)"
         let preferences = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { preferences.removePersistentDomain(forName: suite) }
         let model = SessionModel(preferences: preferences)
-        XCTAssertTrue(model.showsPermissionsAtLaunch)
         model.permissionUses = PermissionUses(screen: true, transmitter: true, sharing: false)
-        preferences.set(true, forKey: "permissionsIntroduced")
         let relaunched = SessionModel(preferences: preferences)
-        XCTAssertFalse(relaunched.showsPermissionsAtLaunch, "Later or Done is not shown again at launch")
         XCTAssertEqual(relaunched.permissionUses, PermissionUses(screen: true, transmitter: true, sharing: false))
     }
 }

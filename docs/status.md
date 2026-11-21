@@ -1,5 +1,320 @@
 # Setbeam status
 
+## Branch verification, 2026-11-21
+
+Local `scripts/check.sh` passed 310 Swift cases with one opt-in soak skipped,
+five Python tests, 58 Node tests, and all ten media probes. The short-address
+probe used a substitute port while the TV fixture was listening on port 80.
+
+The packaged Mac build passed strict recursive signature verification. All
+six executables link only macOS system libraries.
+Against its isolated Sample session, Chrome passed eight viewer layouts,
+chat reactions and replies, frame attachments, and draft retention through
+rotation. The first run reported `Composer touch targets remain 44 px`.
+Restoring the 44 px targets resolved that failure. The next run timed out
+clicking `#chat-toggle` after rotation because the controls had faded. The
+check now taps the picture to reveal the controls before reopening chat.
+macOS WebKit passed seven layouts, decoded playback, and frame attachment.
+
+The Android build passed 86 JVM tests and assembled both APKs. Lint reported
+zero errors and eight warnings. The debug APK matched the previously verified
+0.2.1 developer APK and signer. All 102 provisioning tests passed locally.
+
+The Google TV emulator passed discovery, approval, playback, remote controls,
+chat and pointers, Hold, Resume, and removal. The first Stop check ran after
+removal and timed out because the receiver stayed in `removed` instead of
+`ended` or `searching`. The rerun started with a freshly admitted viewer and
+passed Stop, continued local monitoring, and a new request on the next share.
+Physical onn hardware and HDMI qualification remain open.
+
+## Viewer page redesign, 2026-11-21
+
+Austin approved the [viewer redesign](viewer-web-redesign.md) and its five
+behavior changes. The viewer page now uses the full window for the picture.
+The status tally and Sample label sit over the picture, and the viewer's
+avatar sits in the corner. One icon dock holds sound, pointing, chat, picture
+in picture, and full screen. On a large screen the dock fades after 3 s without
+movement. The tally, Sample, and a muted-sound reminder stay visible. On a phone
+held upright, the icons sit below the picture and chat stays open underneath.
+The join card previews the viewer's avatar. The name note is behind ⓘ. Wait,
+decline, removal, ended, and expired-link steps show one symbol and a short line.
+
+The five behavior changes are in place:
+- The screen stays on once the picture plays. The sun button is gone.
+- Upright phones dock chat open, with no toggle. Turning sideways closes
+  docked chat and restores the toggle.
+- The not-encrypted notice is a lock button in the composer that opens the chat
+  details.
+- The help panel and three-dot menu are gone. Tooltips show the M, F, P, and C
+  shortcuts. Network advice appears only after the picture drops or a join
+  request fails.
+- One tap on the pointer starts or stops pointing. Its hint shows for 4 s.
+  Pointer options are in the avatar editor while pointing.
+
+The second `scripts/check.sh` run passed. It ran 307 Swift tests, with 1 skipped,
+plus 46 viewer and 12 pointer checks and 60 probe PASS lines. The first run
+failed in `ViewerGatewayTests` because that test asserted the old expired-page
+sentence. The assertion now checks the new sentence. Viewer checks for the
+removed help, three-dot, and Keep Screen On controls were rewritten for the dock
+idle, automatic screen-on, shortcuts, and one-tap pointing.
+
+Browser QA ran headless Chrome against a local stand-in gateway, not a
+Setbeam session. The stand-in served the shipped viewer files and played
+`Fixtures/Demo.mp4` through canvas capture in place of WebRTC. A production
+Setbeam was running on this Mac, so no integration-demo app was started.
+Desktop at 1280×800 and phone at 390×844 completed join, wait, admit, chat,
+the lock details, pointing, the avatar editor, rotation, Hold, and Stop.
+Neither run had page errors or horizontal overflow.
+`check-viewer-webkit.swift` passed all seven WebKit layouts against the
+stand-in. `check-chat-webkit.swift` passed its automated steps on a LAN origin
+and stopped at its manual Copy click, which was not performed. The Playwright
+chat checks were updated for docked chat but were not run against an app
+session. No physical phone, iPad, or Safari on iOS was tested. Light appearance
+is unchanged.
+
+## Simpler Mac monitor and Sharing panel, 2026-11-21
+
+All eight Simpler v1 stages are implemented. Cold launch offers Screen,
+Camera, Window, Wireless, the last working source when available, and
+Sample. Click the last source to reconnect privately. Permissions open
+from the relevant setup or Settings. The Wireless chooser shows the
+recorded hardware evidence on each card, and recovery shows connection
+steps with details on demand.
+
+One toolbar tally shows Go Live, LIVE, HOLD and the transition states.
+The toolbar exposes pending viewer requests and unread chat. Invite
+shows Wi-Fi and Watch codes side by side. People puts requests before
+admitted viewers and shows each session's playback health. Options
+shows Apply Output after the bitrate or frame rate changes.
+
+Local sample QA passed in light and dark. It opened every source route and
+exercised shared playback, Hold, Resume, Admit, Decline, Remove, an output
+change, and Stop with the local picture still running. The final Hold runs
+reported a silent audio track. The packaged media probe measured silence
+in the outgoing feed while the local preview continued. Vision decoded both
+compact QR codes in light and dark screenshots. Recovery used a saved
+transmitter fixture. The LAN name remained in macOS's checking state during
+the UI run, so the invitation kept its IP fallback. Physical hardware
+qualification is recorded separately in [hardware tests](hardware-tests.md).
+
+The first Claude Opus 5.5 High review graded the implementation B+. The
+follow-up centers the native window buttons, uses a macOS 14 copy symbol,
+fixes dark-mode badge contrast and weak signal bars, and fits multiple
+requests in the toolbar popover. The second review graded stages 3–8 A and
+identified source label alignment in stages 1 and 2. Both rows now reserve
+the same height for each icon. The Stop and output tests use real browser
+playback. The Wi-Fi recovery mark reflects macOS withholding the network
+name, and Options keeps the 1–15 fps choices under the ellipsis.
+
+The first local `scripts/check.sh` run reached the media probe and reported
+`The video service could not start.` The standalone media probe passed on
+retry. The next run found a stale test reference to `viewersForDetails`.
+After updating that test for stable People row order, the full check passed
+309 Swift cases with one opt-in soak skipped, five Python cases, 59 Node
+cases and all ten media probes. The final UI revision also passed all
+125 runnable Mac app tests. The compact step initially timed out at
+640 × 420 and 640 × 430. The final QA runs verified all three Wireless
+cards at 640 × 472 and closed the chooser with Escape in both appearances.
+The source tiles and category tabs share identical label baselines in
+both captures. All eight stages were recaptured on the final executable
+whose SHA-256 is `85f8133b3d76e2afe14828b973ad70fbc1794b575724af7bb809d255180fdf4e`.
+
+Claude Opus 5.5 High signed off on every stage with an A. The compact
+hardware chips can shorten at 640 points, and the cards retain their full
+text in help and accessibility labels. QR decoding is recorded in
+`build/simpler-v1/qr-vision-reviewed.log`.
+
+The developer archive is `Setbeam-0.2.0-build42-simpler-v1-macOS-arm64.zip`.
+Its SHA-256 is `c888d7286e85bac1a1af12ce57725bea34d750827118a71166d085d634f4544e`.
+The extracted bundle passed strict recursive signature verification. It
+is an unnotarized developer build with ad-hoc signatures. All 38
+files matched the build and all six executables use arm64 and macOS
+system libraries. The QA executable matched the distributable executable
+byte-for-byte after removing the two ad-hoc signatures.
+
+On the final reviewed source, local `scripts/check.sh` passed again with
+the runtime helpers and fixtures from the extracted ZIP. The run passed
+309 Swift tests with one opt-in soak skipped, five Python tests, 59 Node
+tests, and all ten media probes. The result is recorded in
+`build/simpler-v1/check-reviewed.log`. A separate macOS WebKit run decoded
+the sample, exercised a chat frame attachment, and passed seven layouts.
+Austin Deliveries verified the upload under Setbeam / Simpler v1.
+Delivery ID `20261121T111353Z--23b5c1cf7d2f`.
+
+## TV setup and remote controls, 2026-11-19
+
+Receiver 0.2.1, version code 5, opens on a list of Macs. One OK on a
+discovered Mac pairs and requests admission. Manual address entry and TV
+startup have their own screens. Playback controls now fit in a single
+icon-led row with clear focus. Short status messages tell the viewer
+what to do next.
+
+All 86 Android JVM tests pass, lint has zero errors and eight warnings,
+and the debug APK matches the existing developer signer. The complete
+local `scripts/check.sh` passed on retry after a UDP port collision.
+All eight Google TV emulator steps passed against the real Mac stack.
+Separate fresh-install checks verified pairing by discovery and typed
+IPv4 address, each reaching the Mac's approval queue before media.
+Physical onn hardware and HDMI qualification remain open.
+[Verification](verification-tv-receiver-usability.md) records the runs.
+
+The [developer APK and four before-and-after comparisons](https://drive.google.com/drive/folders/19wy9eb2L5EVlIfT2-Dk4_wH6ggj7p-nu)
+are delivered with remote verification, delivery `20261119T083949Z--04c21d4a3b46`.
+
+## TV receiver 0.2.0, 2026-11-18
+
+Austin asked to fully build out the Android TV app, unattended. Receiver
+0.2.0, version code 4, adds read-only session chat (a menu panel, plus
+optional pop-ups). It shows other viewers' shared pointers as an option. It
+adds a Sound choice and lists Macs on the network in setup. The menu gains a
+second row and simple icons. Chat and pointers follow only the admitted
+pass and clear at once on refusal, removal, lapse, a new share or Stop.
+Pop-ups and pointers are off by default, so playback stays clean. No Mac
+source changed.
+
+An independent review found a pointer keepalive bug, ended-share chat
+binding, test repeatability, chat focus and port filtering. All are fixed with
+regression tests. The Android build passes 86 JVM tests and lint with zero
+errors and 18 warnings. `verify-apk` confirms the existing developer signer.
+The full `scripts/check.sh` passes: 310 Swift tests with one opt-in soak
+skipped, five Python cases, 59 Node cases and all media stages.
+
+All eight real-stack Google TV emulator steps pass, including the new
+chat/pointers case. A second viewer's pointer stays visible past the Mac's
+20 s silence limit. Earlier harness failures from slow 4K captures and OCR
+misreads are recorded. The setup list is unit-tested only, and no hardware
+claim changed. See [verification](verification-tv-receiver-0.2.0.md).
+The [APK, screenshots, guide and checksums](https://drive.google.com/drive/folders/1JWAD4wLfm9KGshqXK7gOPmKDtP0J6KOW)
+are delivered with remote verification, delivery `20261118T094113Z--5199e96d8b69`.
+The receiver tree was still uncommitted at this checkpoint.
+
+## Simpler UI proposal, 2026-11-18
+
+Austin asked for an ease-of-use rethink with before/after mockups, keeping
+text minimal and using clear icons. Eight pairs cover first run, the source
+chooser, transmitter recovery, live, Hold, Invite, People and Options. The
+proposals: one Go Live/LIVE/HOLD tally replaces the command bar, viewer
+avatars with health rings, one-click admit, icon tabs with badges, source
+tiles on the empty stage, a recovery checklist, and icon-led options. SAMPLE,
+Untested and Stop Sharing stay as words. Befores are build 39 captures,
+plus two redrawn from current SwiftUI source. Afters are HTML mockups under
+ignored `design/mockups/simpler-v1/`. Design only: no app source changed and
+no build, check or physical test ran. Austin has not yet chosen what to build.
+The [gallery and PNGs](https://drive.google.com/drive/folders/1cYx-dsg7Awm_QBlsiX9M8rCvVaeEZ_YV)
+are delivered with remote verification, delivery `20261118T081232Z--8897b21d86dd`.
+
+## TV remote menu, 2026-11-18
+
+Austin approved the OK menu. Receiver 0.1.2, version code 3, opens Receiver
+options from OK during playback or from the status-card button. Left/Right
+and OK select Connection info or Mac settings. Back dismisses the menu or
+information overlay without leaving playback. The menu hides after 10 idle
+seconds, with input extending that timer. Playback stays clean when it closes.
+
+The local Android build passes 69 JVM tests and lint with zero errors and
+18 warnings. APK verification confirms the existing developer signer. The
+full local `scripts/check.sh` passes, including 310 Swift tests with one
+opt-in soak skipped, five Python cases, 59 Node cases and all media stages.
+All seven real-stack Google TV emulator cases pass, including menu navigation,
+video continuing beneath it, timeout/reset, pending requests, Hold and removal.
+Initial Back testing found a text-input transition on entering settings;
+the initial keyboard is now hidden, and keyboard entry and single-Back return
+are verified. The receiver is uninstalled, baseline settings/HOME are restored,
+and owned fixtures, emulator and private adb server are stopped. Physical
+qualification is unchanged. See [verification](verification-tv-receiver-remote-menu.md).
+The [APK, screenshots and guide](https://drive.google.com/drive/folders/1MLyaxBlnTs1OUcN-TmhbKxoFhyXTjXhw)
+are delivered with remote verification, delivery `20261118T062039Z--c8ebd63401e4`.
+
+## Clean TV playback, 2026-11-18
+
+Austin requested a clean receiver picture. Receiver 0.1.1, version code 2,
+removes the persistent session-name/Live badge and puts the session name in
+optional diagnostics. SAMPLE MEDIA stays visible for sample sources. Current
+remote controls are documented; an OK controls menu is a proposal, not implemented.
+
+The Android build passes 69 JVM tests, lint with zero errors and 18 warnings,
+and APK verification with the existing developer signer. The full local
+`scripts/check.sh` passes: 310 Swift tests with one opt-in soak skipped,
+five Python cases, 59 Node cases and every media stage. Seven real-stack
+emulator cases pass, including clean playback, OK diagnostics, Menu/Back,
+approval, Hold/Resume and terminal removal. The receiver is uninstalled,
+settings and HOME match baseline, and owned fixtures, emulator and private
+adb server are stopped. No physical-device claim changed.
+See [verification](verification-tv-receiver-clean-playback.md).
+The [updated APK, clean capture and guide](https://drive.google.com/drive/folders/1YJU9i7r4Cs6I9ZcITo111TnkCr7PRyzs)
+are delivered with remote verification, delivery `20261118T055940Z--6479b0d0b9aa`.
+
+## Dedicated TV receiver developer handoff, 2026-11-17
+
+Austin's Opus 5.5 High implementation and review team completed native
+Android TV/Google TV Receiver 0.1.0, Mac discovery and reversible startup setup.
+Final independent reviews approve the native runtime and startup tool with no
+P0/P1/P2. The complete local `scripts/check.sh` passes: 310 Swift tests with
+one opt-in soak skipped, five Python cases, 59 Node checks and all media stages.
+Its 1,749 KB keyframe stage decodes 512 frames in seven seconds without errors.
+Android passes 69 JVM tests and lint with zero errors; startup passes 102 tests
+on Python 3.9 and 3.14, including process-kill and exact restore regressions.
+
+Final Google TV emulator runs pass approval, native playback, privacy covers,
+Hold/Resume, terminal refusal across restart, real-stack recovery, visible
+re-pairing, lost-Mac searching and unattended next-share requests. A 4K source
+decodes into a confirmed 3840x2160 buffer with a 1920x1080 interface, at about
+10.7 fps with heavy emulator drops. This does not qualify sustained 4K30.
+
+The stock launcher outranks Setbeam as HOME on this image. The tool detects
+that and restores the prior Home choice. The receiver's own boot-start path
+passes both graceful and hard emulator reboot with permission retained,
+changed boot IDs, no input, advancing pictures and fresh Mac playback reports.
+Restoration returns the app-op to default. The test receiver, emulator,
+private adb server and owned media processes are cleaned up.
+
+Developer Mac build 42 is packaged. All six arm64 executables pass strict
+signatures and positive system-library-only audits; all 38 extracted files
+match, and ZIP/signature/executable-permission checks pass. The installed
+Mac app and public releases have not changed. Final APK SHA-256 is
+`26689524ef065a5e475e07b7f2bb7c7e135f735682371e229e721b7ba86aa372`.
+The [verification record](verification-tv-receiver.md) and
+[detailed integration results](verification-tv-receiver-integration.md) retain
+exact inputs, corrections, failed evidence and software qualification limits.
+The [APK, Mac build, setup archive, guide, checksums and reboot capture](https://drive.google.com/drive/folders/1K4MjWoAgnKxLqbuWKiPIvO2yv7uibVNn)
+are delivered privately with remote verification, delivery
+`20261118T013155Z--de8577d659ae`.
+
+No physical onn is qualified. Android 12/13 HOME changes are refused; the
+boot-start permission and launcher fallback need exact-device testing. Real
+power restoration, CEC/standby, Wi-Fi/mDNS, sustained decode, graphics memory,
+energy saver and actual HDMI mode remain open in the
+[physical checklist](../receiver/docs/hardware-qualification.md).
+
+## Feature showcase assets, 2026-11-14
+
+Created ten PNGs showing additions since 0.2.0 build 20: a 2400×1350 hero,
+a 1200×1200 announcement, seven 1080×1350 core feature cards and a separate
+build 41 installation/update card. Core claims follow the build 40 release
+notes; the build 41 card is separately scoped to its published release branch.
+Actual sample-session screenshots, editable self-contained HTML masters,
+post copy, screenshot provenance and a contact sheet are retained under ignored
+`design/launch/since-build20/`. All ten PNGs decode at their specified dimensions;
+local HTML render checks pass image loading and artboard bounds. The gallery
+passes all eight selections at 728 and 360 px without horizontal overflow.
+The 28-file ZIP passes integrity validation. No app source changed, and no app
+build, media suite, physical test or hosted CI ran for this artwork task.
+The [asset pack and individual images](https://drive.google.com/drive/folders/1HApT9Bt7eEtTcehqGIvAYZtQni0QlXL_)
+are delivered with remote verification, delivery `20261114T143206Z--f6fbf5fcb63d`.
+
+## Viewer transport protection design, 2026-11-14
+
+Austin asked to protect the viewer transport and chose HTTPS. The
+[options note](research/viewer-transport-protection-2026-11-14.md) maps the
+plain-HTTP traffic: link code, per-tab passes, chat, pointers, and WHEP Basic
+credentials on a second origin. WebRTC media is already DTLS-SRTP. It compares
+self-signed TLS, a per-Mac authority installed on viewer devices, and a public
+DNS name, and recommends an opt-in per-Mac authority with WHEP proxied through
+the gateway. Design only: no source changed and no build or check ran. A device
+test of certificate warnings, `wss://`, WHEP and secure-context APIs on iPhone,
+iPad, Android and Mac Safari must come before implementation. Austin's decisions
+on profile installation, default and the short address are pending.
+
 ## Viewer access fixes and public update, build 40
 
 Austin authorized the first three full-app review findings. Approved sessions

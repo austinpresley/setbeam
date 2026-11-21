@@ -12,10 +12,19 @@ enum SourceCategory: String, CaseIterable, Identifiable {
         case .wireless: return "Wireless transmitters"
         }
     }
+    var tileName: String {
+        switch self {
+        case .displays: return "Screen"
+        case .cameras: return "Camera"
+        case .windows: return "Window"
+        case .wireless: return "Wireless"
+        }
+    }
+    var tabName: String { self == .wireless ? tileName : tileName + "s" }
     var symbol: String {
         switch self {
         case .displays: return "display"
-        case .cameras: return "camera"
+        case .cameras: return "video"
         case .windows: return "macwindow"
         case .wireless: return "antenna.radiowaves.left.and.right"
         }
@@ -25,7 +34,8 @@ enum SourceCategory: String, CaseIterable, Identifiable {
         case .macScreen: return .displays
         case .capture: return .cameras
         case .network, .incoming, .accsoon: return .wireless
-        default: return .windows
+        case .macWindow: return .windows
+        default: return .displays
         }
     }
 }

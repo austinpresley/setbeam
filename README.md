@@ -77,6 +77,19 @@ Hosted CI is disabled. Tests, builds, and packaging checks run locally.
 
 </details>
 
+## Dedicated TV receiver development
+
+The [native Android TV receiver](receiver/README.md) pairs with a Setbeam Mac,
+asks to join automatically, and plays after the operator admits it. Build the
+Mac from this checkout for receiver discovery; the public build 40 does not
+include that discovery service. The existing approval, local-address and
+short-address options must be enabled.
+
+The receiver includes a [reversible startup setup tool](receiver/docs/startup.md).
+Automatic startup depends on the device's firmware. Physical onn compatibility,
+cold power-on and true 4K HDMI playback remain unqualified; see the
+[hardware checklist](receiver/docs/hardware-qualification.md).
+
 ## New since October 21
 
 Mac screen capture and display previews. A redesigned browser viewer with optional names and playback health. Independent FPS and bitrate controls. GPU-backed native pictures and fixes for detailed 4K sharing. Persistent join codes, clearer network guidance, and native Pyro H discovery.

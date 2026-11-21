@@ -3,9 +3,9 @@ import SetbeamCore
 @testable import SetbeamApp
 
 final class SourceChooserStateTests: XCTestCase {
-    func testInitialCategoryFollowsTheSourceAndDefaultsToWindows() {
-        XCTAssertEqual(SourceCategory.initial(for: nil), .windows)
-        for (kind, category) in [(InputKind.macScreen, SourceCategory.displays), (.macWindow, .windows), (.capture, .cameras), (.accsoon, .wireless), (.network, .wireless), (.incoming, .wireless), (.sample, .windows)] {
+    func testInitialCategoryFollowsTheSourceAndDefaultsToScreens() {
+        XCTAssertEqual(SourceCategory.initial(for: nil), .displays)
+        for (kind, category) in [(InputKind.macScreen, SourceCategory.displays), (.macWindow, .windows), (.capture, .cameras), (.accsoon, .wireless), (.network, .wireless), (.incoming, .wireless), (.sample, .displays)] {
             XCTAssertEqual(SourceCategory.initial(for: SourceSetup(kind: kind, name: "Same label")), category)
         }
     }

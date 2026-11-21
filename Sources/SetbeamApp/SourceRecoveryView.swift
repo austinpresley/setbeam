@@ -29,6 +29,14 @@ struct SourceRecoveryView: View {
     }
 
     var body: some View {
+        if !model.permissionDenied && (kind == .accsoon || model.setup?.networkProfile == .pyroH) {
+            TransmitterRecoveryView(model: model)
+        } else {
+            genericRecovery
+        }
+    }
+
+    private var genericRecovery: some View {
         GeometryReader { geometry in
             ScrollView {
                 VStack(spacing: 16) {

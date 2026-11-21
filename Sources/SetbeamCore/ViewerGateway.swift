@@ -34,6 +34,7 @@ public struct ViewerActivity: Sendable, Identifiable {
     public var updatesMissing = false
     /// Shares a named pointer with other participants.
     public var pointing = false
+    public var mobile = false
 
     public var displayName: String { name ?? "\(label) \(number)" }
 }

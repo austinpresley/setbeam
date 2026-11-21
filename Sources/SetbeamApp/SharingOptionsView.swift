@@ -18,30 +18,29 @@ struct SharingOptionsView: View {
     private var outputChanged: Bool { draft.wrappedValue.quality != model.audienceQuality || draft.wrappedValue.frameRate != model.audienceFrameRate }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text("Joining & pointers").font(.headline)
-                    Spacer(minLength: 8)
-                    Text("Applies immediately").font(.caption).foregroundStyle(.secondary)
-                }
-                SharingSwitch(title: "Ask before viewers join", detail: "Viewers wait for your Admit.", hint: approvalDetail,
-                    isOn: Binding(get: { model.viewerApproval }, set: { model.setViewerApproval($0) }))
-                    .disabled(model.busy)
-                ViewerOptions(model: model, compact: true)
+        VStack(alignment: .leading, spacing: 12) {
+            switchRow("Ask first", symbol: "hand.raised", tint: SetbeamChrome.amber, hint: approvalDetail,
+                      value: Binding(get: { model.viewerApproval }, set: { model.setViewerApproval($0) }))
+                .disabled(model.busy)
+            switchRow("Pointers", symbol: "cursorarrow", tint: SetbeamChrome.blue, hint: "Let admitted viewers point at the picture.",
+                      value: Binding(get: { model.sharedPointers }, set: { model.setSharedPointers($0) }))
+            switchRow("On this Mac", symbol: "eye", hint: "Show viewer pointers on the local monitor and floating preview.",
+                      value: Binding(get: { model.pointersOnThisMac }, set: { model.setPointersOnThisMac($0) }))
+                .disabled(!model.sharedPointers).padding(.leading, 36)
+            if model.setup?.kind == .macScreen {
+                switchRow("On the shared display", symbol: "display", hint: "Draw on the selected display without capturing the pointers or taking clicks.",
+                          value: Binding(get: { model.pointersOnSourceDisplay }, set: { model.setPointersOnSourceDisplay($0) }))
+                    .disabled(!model.canShowPointersOnSourceDisplay).padding(.leading, 36)
             }
             Divider()
             output
             Divider()
-            SharingOptionsDisclosure(title: "Local address", summary: !model.canInviteOtherDevices ? "This Mac only" : model.localAddressEnabled ? LocalAddressName.host(model.localAddressLabel) : "Off",
-                attention: addressChanged || model.localAddressStatus.attention, isExpanded: $addressExpanded) {
-                address
-            }
-            Divider()
-            SharingOptionsDisclosure(title: "Viewing network", summary: networkSummary,
-                attention: draft.wrappedValue.network != model.networkChoice, isExpanded: $networkExpanded) {
+            SharingOptionsDisclosure(title: "Viewing network", summary: networkSummary, symbol: "wifi",
+                tint: SetbeamChrome.admit, attention: draft.wrappedValue.network != model.networkChoice, isExpanded: $networkExpanded) {
                 ViewerNetworkEditor(model: model, showsTitle: false)
             }.id("viewing-network")
+            localAddressRow
+            if addressExpanded { address.padding(.leading, 4) }
         }.controlSize(.small)
             .onAppear {
                 model.prepareSharingDraft()
@@ -51,40 +50,111 @@ struct SharingOptionsView: View {
             .onChange(of: model.sharingOptionsTarget) { _, _ in networkExpanded = true }
     }
 
+    private let quickFrameRates = [VideoFrameRate.source, .fps24, .fps25, .fps30]
+    private let slowFrameRates = [VideoFrameRate.fps1, .fps5, .fps10, .fps15]
+
     private var output: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Viewer output").font(.headline)
-            LabeledContent("Picture quality") {
-                Picker("Picture quality", selection: draft.quality) {
-                    ForEach(AudienceQuality.allCases, id: \.self) { Text($0.title).tag($0) }
-                }.labelsHidden().accessibilityLabel("Viewer picture quality")
-            }
-            LabeledContent("Frame rate") {
-                Picker("Frame rate", selection: draft.frameRate) {
-                    ForEach(VideoFrameRate.allCases, id: \.self) { Text($0.title).tag($0) }
-                }.labelsHidden().accessibilityLabel("Viewer frame rate")
-            }
-            Label("Applying reconnects viewers. Local monitoring continues.", systemImage: "info.circle")
-                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(outputChanged ? "Unapplied changes" : "No unapplied changes").font(.caption).foregroundStyle(.secondary)
-                Spacer(minLength: 0)
-                Button("Apply Output") {
-                    let value = draft.wrappedValue
-                    model.setVideoSettings(quality: value.quality, frameRate: value.frameRate, screenRate: model.screenFrameRate)
-                }.disabled(model.busy || !outputChanged).accessibilityLabel("Apply Viewer Output")
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 2) {
+                ForEach([AudienceQuality.light, .balanced, .best], id: \.self) { quality in
+                    segment(selected: draft.wrappedValue.quality == quality, title: quality.title, height: 44) {
+                        draft.wrappedValue.quality = quality
+                    } content: {
+                        VStack(spacing: 3) {
+                            QualityBars(level: quality.kilobits == 12_000 ? 3 : quality.kilobits == 6_000 ? 2 : 1)
+                            Text("\(quality.kilobits / 1000) Mbps").font(.caption2)
+                        }
+                    }
+                }
+            }.padding(2).background(SetbeamChrome.segment, in: RoundedRectangle(cornerRadius: 8))
+                .accessibilityElement(children: .contain).accessibilityLabel("Viewer picture quality")
+            HStack(spacing: 2) {
+                ForEach(quickFrameRates, id: \.self) { rate in
+                    segment(selected: draft.wrappedValue.frameRate == rate, title: rate.title, height: 28) {
+                        draft.wrappedValue.frameRate = rate
+                    } content: {
+                        Text(rate == .source ? "Auto" : "\(rate.rawValue)").font(.callout)
+                    }
+                }
+                let selectedRate = draft.wrappedValue.frameRate
+                let slowSelected = slowFrameRates.contains(selectedRate)
+                Menu {
+                    ForEach(slowFrameRates, id: \.self) { rate in
+                        Button { draft.wrappedValue.frameRate = rate } label: {
+                            if selectedRate == rate { Label(rate.title, systemImage: "checkmark") } else { Text(rate.title) }
+                        }
+                    }
+                } label: {
+                    Group {
+                        if slowSelected { Text("\(selectedRate.rawValue)") }
+                        else { Image(systemName: "ellipsis") }
+                    }.frame(width: 28, height: 28)
+                }.menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                    .background(slowSelected ? SetbeamChrome.raised : .clear, in: RoundedRectangle(cornerRadius: 6))
+                    .help("More frame rates").accessibilityLabel("More viewer frame rates")
+                    .accessibilityValue(slowSelected ? selectedRate.title : "")
+            }.padding(2).background(SetbeamChrome.segment, in: RoundedRectangle(cornerRadius: 8))
+                .accessibilityElement(children: .contain).accessibilityLabel("Viewer frame rate")
+            if outputChanged {
+                HStack(spacing: 8) {
+                    if model.state.sharing {
+                        Text("Viewers will reconnect.").font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 0)
+                    Button("Apply Output") {
+                        let value = draft.wrappedValue
+                        model.setVideoSettings(quality: value.quality, frameRate: value.frameRate, screenRate: model.screenFrameRate)
+                    }.disabled(model.busy).accessibilityLabel("Apply Viewer Output")
+                }
             }
         }
+    }
+
+    private func segment<Content: View>(selected: Bool, title: String, height: CGFloat, action: @escaping () -> Void,
+                                       @ViewBuilder content: () -> Content) -> some View {
+        Button(action: action) {
+            content()
+                .frame(maxWidth: .infinity, minHeight: height)
+                .foregroundStyle(selected ? .primary : .secondary)
+                .background(selected ? SetbeamChrome.raised : .clear, in: RoundedRectangle(cornerRadius: 6))
+                .contentShape(Rectangle())
+        }.buttonStyle(ChromeButtonStyle()).help(title).accessibilityLabel(title)
+            .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+
+    private var localAddressRow: some View {
+        HStack(spacing: 8) {
+            Button { addressExpanded.toggle() } label: {
+                HStack(spacing: 8) {
+                    OptionsIcon(symbol: "globe", tint: .gray)
+                    Text(LocalAddressName.host(model.localAddressLabel)).font(.system(.callout, design: .monospaced))
+                        .lineLimit(1).truncationMode(.middle)
+                    if addressChanged || model.localAddressStatus.attention {
+                        Image(systemName: "exclamationmark.circle").foregroundStyle(SetbeamChrome.amberText)
+                    }
+                    Spacer(minLength: 0)
+                }.contentShape(Rectangle())
+            }.buttonStyle(ChromeButtonStyle()).help("Local address settings")
+                .accessibilityLabel("Local address settings, \(LocalAddressName.host(model.localAddressLabel))")
+                .accessibilityValue(addressExpanded ? "Expanded" : "Collapsed")
+            Toggle("Offer a local address", isOn: Binding(get: { model.localAddressEnabled },
+                    set: { model.setLocalAddress(enabled: $0, label: model.localAddressLabel) }))
+                .labelsHidden().toggleStyle(.switch).tint(SetbeamChrome.green)
+                .disabled(!model.canInviteOtherDevices)
+                .help(model.localAddressStatus.text)
+        }
+    }
+
+    private func switchRow(_ title: String, symbol: String, tint: Color? = nil, hint: String, value: Binding<Bool>) -> some View {
+        HStack(spacing: 8) {
+            OptionsIcon(symbol: symbol, tint: tint)
+            SharingSwitch(title: title, hint: hint, isOn: value)
+        }.tint(SetbeamChrome.green)
     }
 
     private var address: some View {
         VStack(alignment: .leading, spacing: 12) {
             if model.canInviteOtherDevices {
-                Text("Switches apply immediately. Apply Address saves a changed name.").font(.caption).foregroundStyle(.secondary)
-                SharingSwitch(title: "Offer a local address", isOn: Binding(
-                    get: { model.localAddressEnabled },
-                    set: { model.setLocalAddress(enabled: $0, label: model.localAddressLabel) }
-                ))
                 if model.localAddressEnabled {
                     HStack(spacing: 4) {
                         TextField("Local address name", text: draft.address).textFieldStyle(.roundedBorder)
@@ -119,7 +189,10 @@ struct SharingOptionsView: View {
     }
     private var networkSummary: String {
         if draft.wrappedValue.network != model.networkChoice { return "Unapplied changes" }
-        if model.networkChoice == "automatic" { return "Automatic" }
+        if model.networkChoice == "automatic" {
+            let current = model.viewerNetworkLabel
+            return current == "This Mac only" ? "Automatic" : current
+        }
         if model.networkChoice == "lo0" { return "This Mac only" }
         return model.networks.first(where: { $0.interface == model.networkChoice })?.name ?? "Unavailable"
     }
@@ -206,6 +279,8 @@ struct SharingSwitch: View {
 private struct SharingOptionsDisclosure<Content: View>: View {
     let title: String
     let summary: String
+    let symbol: String
+    let tint: Color
     var attention = false
     @Binding var isExpanded: Bool
     @ViewBuilder let content: () -> Content
@@ -214,16 +289,42 @@ private struct SharingOptionsDisclosure<Content: View>: View {
         VStack(alignment: .leading, spacing: 12) {
             Button { isExpanded.toggle() } label: {
                 HStack(spacing: 8) {
-                    Text(title).font(.headline).foregroundStyle(.primary)
+                    OptionsIcon(symbol: symbol, tint: tint)
+                    Text(summary).font(.callout.weight(.medium)).lineLimit(1).help(summary)
                     Spacer(minLength: 8)
-                    if attention { Image(systemName: "exclamationmark.circle").foregroundStyle(.orange) }
-                    Text(summary).font(.caption).foregroundStyle(.secondary).lineLimit(1).help(summary)
-                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right").font(.caption).foregroundStyle(.secondary)
+                    if attention { Image(systemName: "exclamationmark.circle").foregroundStyle(SetbeamChrome.amberText) }
+                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down").font(.caption).foregroundStyle(.secondary)
                 }.contentShape(Rectangle())
-            }.buttonStyle(.plain).accessibilityLabel("\(title), \(summary)")
+            }.buttonStyle(ChromeButtonStyle()).accessibilityLabel("\(title), \(summary)")
                 .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
                 .help(isExpanded ? "Hide \(title.lowercased()) settings" : "Show \(title.lowercased()) settings")
             if isExpanded { content() }
         }
+    }
+}
+
+private struct OptionsIcon: View {
+    let symbol: String
+    var tint: Color?
+
+    var body: some View {
+        Image(systemName: symbol).font(.system(size: 14, weight: .medium))
+            .foregroundStyle(tint == SetbeamChrome.amber ? SetbeamChrome.onAmber : tint == nil ? .secondary : .white)
+            .frame(width: 28, height: 28)
+            .background(tint ?? .clear, in: RoundedRectangle(cornerRadius: 7))
+            .accessibilityHidden(true)
+    }
+}
+
+private struct QualityBars: View {
+    let level: Int
+    var body: some View {
+        HStack(alignment: .bottom, spacing: 2) {
+            ForEach(1...3, id: \.self) { bar in
+                RoundedRectangle(cornerRadius: 1)
+                    .opacity(bar <= level ? 1 : 0.25)
+                    .frame(width: 3, height: CGFloat(4 + bar * 4))
+            }
+        }.accessibilityHidden(true)
     }
 }

@@ -28,7 +28,7 @@ import AppKit
         model.openMonitor = { action(id: "main") }
         return Window("Setbeam", id: "main") { MainView(model: model) }
             .defaultSize(width: 900, height: 636)
-            .windowToolbarStyle(.unified)
+            .windowStyle(.hiddenTitleBar)
             .windowResizability(.contentMinSize)
             .commands { SetbeamCommands(model: model) }
     }
@@ -63,13 +63,13 @@ private struct SetbeamCommands: Commands {
                 .disabled(!model.canShowPointersOnSourceDisplay)
         }
         CommandMenu("Sharing") {
-            Button("Start Sharing") { model.startSharing() }.keyboardShortcut(.return, modifiers: .command).disabled(model.state.sharing || !model.canShare || model.busy)
+            Button("Go Live") { model.startSharing() }.keyboardShortcut(.return, modifiers: .command).disabled(model.state.sharing || !model.canShare || model.busy)
             Button(model.audiencePresentation.primaryTitle) { model.performAudienceAction() }
                 .keyboardShortcut("h", modifiers: [.command, .shift]).disabled(!model.state.sharing || !model.audiencePresentation.primaryEnabled)
             Button("Stop Sharing") { model.stopSharing() }.disabled(!model.state.sharing || model.busy)
             Divider()
             Button("Invite Viewers") { sharing(.invite) }.keyboardShortcut("1", modifiers: .command)
-            Button("Show Viewers") { sharing(.viewers) }.keyboardShortcut("2", modifiers: .command)
+            Button("Show People") { sharing(.viewers) }.keyboardShortcut("2", modifiers: .command)
             Button("Sharing Options…") { sharing(.options) }.keyboardShortcut("3", modifiers: .command)
             Button("Show Chat") { sharing(.chat) }.keyboardShortcut("4", modifiers: .command)
             Button(model.sharingInWindow ? "Show Sharing Beside Monitor" : "Open Sharing in Window") {
@@ -115,11 +115,11 @@ private struct SetbeamMenu: View {
         if model.state.sharing {
             Button(model.audiencePresentation.primaryTitle) { model.performAudienceAction() }.disabled(!model.audiencePresentation.primaryEnabled)
             Button("Stop Sharing") { model.stopSharing() }.disabled(model.busy)
-        } else { Button("Start Sharing") { model.startSharing() }.disabled(!model.canShare || model.busy) }
+        } else { Button("Go Live") { model.startSharing() }.disabled(!model.canShare || model.busy) }
         Button(model.pipVisible ? "Hide Floating Preview" : "Show Floating Preview") { model.togglePiP() }.disabled(model.preview == nil)
         Menu("Sharing") {
             Button("Invite Viewers") { show(.invite) }
-            Button("Show Viewers") { show(.viewers) }
+            Button("Show People") { show(.viewers) }
             Button(model.chatUnreadCount > 0 ? "Show Chat (\(model.chatUnreadCount) Unread)" : "Show Chat") { show(.chat) }
             Button("Copy Viewing Link") { model.copyLink() }.disabled(!model.state.sharing || !model.canInviteOtherDevices)
             Button("Show Join Codes") { model.showJoinCodeWindow() }.disabled(!model.state.sharing && model.wifiSSID.isEmpty)

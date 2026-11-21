@@ -19,3 +19,14 @@ To rebuild the runtime, use this repository's `scripts/build-runtime.sh`. Source
 Setbeam applies the bundled `patch-avfoundation.py` to FFmpeg's LGPL AVFoundation adapter. It adds exact video/audio device identity options, failing when the selected device is missing rather than selecting a different device. The unmodified archive, patch script, and build script reproduce the modified helper. Keep the two scripts together under a `scripts` directory when rebuilding from the bundled source materials.
 
 The demonstration portrait is a generated fictional image, not camera-test evidence. Its prompt and generation method are in `Fixtures/sample-image-notes.txt`. The bundled MP4 contains H.264 video and a generated test tone; the holding MP4 uses a plain background and silence. Apple frameworks are supplied by macOS.
+
+## Android TV receiver
+
+The separate Android receiver APK bundles `io.github.webrtc-sdk:android`
+144.7559.15. WebRTC uses BSD 3-Clause terms and Google's patent grant; its
+packaging project uses MIT. Included library notices and full license texts
+are bundled in the APK as `assets/third_party_notices.txt` and shown from the
+receiver's settings. [Receiver dependency provenance](receiver/docs/native-dependencies.md)
+records the source revision, artifact checksums, verification metadata and
+included libraries. The Android receiver does not bundle the Mac's FFmpeg
+or MediaMTX executables.

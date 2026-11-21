@@ -6,6 +6,7 @@ struct MainView: View {
     @ObservedObject var model: SessionModel
     @State private var popover: MonitorPopover?
     @State private var sharingExpanded = false
+    @State private var pictureHovered = false
     @State private var lastSharingSection = SharingSection.invite
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismissWindow) private var dismissWindow
@@ -17,52 +18,37 @@ struct MainView: View {
     private var showingSourceRecovery: Bool { model.setup != nil && !model.localReady }
 
     var body: some View {
-        HStack(spacing: 0) {
-            VStack(spacing: 0) {
-                MonitorCommandBar(model: model)
-                VStack(alignment: .leading, spacing: 0) {
+        VStack(spacing: 0) {
+            toolbar.zIndex(1)
+            HStack(spacing: 0) {
+                VStack(spacing: 0) {
                     GeometryReader { geometry in
                         picture.frame(width: geometry.size.width, height: geometry.size.height)
                             .onAppear { if !inlineSharing { windowPresentation.monitorWidth = geometry.size.width } }
                             .onChange(of: geometry.size) { _, size in if !inlineSharing { windowPresentation.monitorWidth = size.width } }
-                    }
-                }.background(MonitorStyle.stage).environment(\.colorScheme, .dark)
-                feedback
-            }.frame(maxWidth: .infinity, maxHeight: .infinity)
-            if inlineSharing {
-                Divider()
-                SharingPanel(model: model).frame(width: SharingPanelLayout.width)
-            }
-        }.frame(maxHeight: .infinity)
+                    }.background(MonitorStyle.stage, ignoresSafeAreaEdges: []).environment(\.colorScheme, .dark)
+                    feedback
+                }.frame(maxWidth: .infinity, maxHeight: .infinity)
+                if inlineSharing {
+                    Divider()
+                    SharingPanel(model: model).frame(width: SharingPanelLayout.width)
+                }
+            }.frame(maxHeight: .infinity)
+        }
         .frame(minWidth: inlineSharing ? 640 + SharingPanelLayout.extraWidth : 640,
             idealWidth: inlineSharing ? 900 + SharingPanelLayout.extraWidth : 900, minHeight: 420)
-        .background(Color(nsColor: .windowBackgroundColor))
-        .background(WindowPersistence(presentation: windowPresentation, model: model))
-        .toolbar {
-            ToolbarItem(placement: .navigation) { sourceButton }
-            ToolbarItem(placement: .principal) { Spacer() }
-            ToolbarItemGroup(placement: .automatic) {
-                Button { togglePopover(.sound) } label: {
-                    Label("Sound on this Mac", systemImage: model.localMuted ? "speaker.slash" : "speaker.wave.2")
-                }.help("Sound on this Mac").popover(isPresented: presentation(.sound), arrowEdge: .bottom) {
-                    MonitorSoundPopover(model: model)
-                }
-                Button { model.togglePiP() } label: {
-                    Label(model.pipVisible ? "Hide floating preview" : "Show floating preview", systemImage: model.pipVisible ? "pip.exit" : "pip.enter")
-                }.disabled(model.preview == nil)
-                    .help(model.pipVisible ? "Hide floating preview" : "Show floating preview")
-                Toggle(isOn: Binding(get: { model.sharingSection != nil }, set: { shown in
-                    if shown { model.showSharing(lastSharingSection) } else { model.closeSharing() }
-                })) {
-                    Label("Sharing", systemImage: "sidebar.trailing")
-                }.toggleStyle(.button)
-                    .help(model.sharingSection == nil ? "Show Sharing panel" : "Hide Sharing panel")
-                    .accessibilityLabel(model.sharingSection == nil ? "Show Sharing panel" : "Hide Sharing panel")
-            }
+        .background(SetbeamChrome.toolbar)
+        .allowsHitTesting(model.sheet != .connection)
+        .accessibilityHidden(model.sheet == .connection)
+        .disabled(model.sheet == .connection)
+        .overlay(alignment: .top) {
+            if model.sheet == .connection { sourceChooser }
         }
-        .sheet(item: $model.sheet) { sheet in
+        .ignoresSafeArea(.container, edges: .top)
+        .background(WindowPersistence(presentation: windowPresentation, model: model))
+        .sheet(item: nativeSheet) { sheet in
             switch sheet {
-            case .connection: ConnectionView(model: model)
+            case .connection: EmptyView()
             case .sourceDetails: SourceDetailsView(model: model).id(model.setup?.id)
             case .networkSource: NetworkSourceView(model: model)
             case .incoming: IncomingSetupView(model: model)
@@ -88,26 +74,78 @@ struct MainView: View {
         }
     }
 
+    private var nativeSheet: Binding<AppSheet?> {
+        Binding(get: { model.sheet == .connection ? nil : model.sheet }, set: { model.sheet = $0 })
+    }
+
+    private var sourceChooser: some View {
+        GeometryReader { geometry in
+            let top: CGFloat = geometry.size.height < 540 ? 64 : 84
+            ZStack(alignment: .top) {
+                Color.black.opacity(0.35).accessibilityHidden(true)
+                ConnectionView(model: model,
+                               width: min(780, geometry.size.width - 32),
+                               availableHeight: max(200, geometry.size.height - top - 104))
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                    .shadow(color: .black.opacity(0.40), radius: 24, y: 12)
+                    .padding(.top, top)
+            }
+        }
+    }
+
+    private var toolbar: some View {
+        HStack(spacing: 4) {
+            sourceButton.layoutPriority(1)
+            Spacer(minLength: 8)
+            if model.state.sharing {
+                ToolbarPeople(model: model)
+                ChromeIconButton("Chat", symbol: "bubble.left", badge: model.chatUnreadCount,
+                                 hint: model.chatUnreadCount == 0 ? "Show chat" : "\(model.chatUnreadCount) unread chat messages") {
+                    model.showSharing(.chat)
+                }.foregroundStyle(.secondary)
+                Divider().frame(height: 16).padding(.horizontal, 4)
+            }
+            ChromeIconButton("Sound on this Mac", symbol: model.localMuted ? "speaker.slash" : "speaker.wave.2") {
+                togglePopover(.sound)
+            }.disabled(model.preview == nil).foregroundStyle(.secondary)
+                .popover(isPresented: presentation(.sound), arrowEdge: .bottom) { MonitorSoundPopover(model: model) }
+            ChromeIconButton(model.pipVisible ? "Hide floating preview" : "Show floating preview",
+                             symbol: model.pipVisible ? "pip.exit" : "pip.enter") { model.togglePiP() }
+                .disabled(model.preview == nil).foregroundStyle(.secondary)
+            ChromeIconButton(model.sharingSection == nil ? "Show Sharing panel" : "Hide Sharing panel",
+                             symbol: "sidebar.trailing", selected: model.sharingSection != nil) {
+                if model.sharingSection == nil { model.showSharing(lastSharingSection) } else { model.closeSharing() }
+            }.foregroundStyle(.secondary)
+            SharingTally(model: model).padding(.leading, 8)
+        }.padding(.leading, 96).padding(.trailing, 12)
+            .frame(height: 52).background(SetbeamChrome.toolbar)
+            .overlay(alignment: .bottom) { SetbeamChrome.line.frame(height: 1) }
+    }
+
     private var sourceButton: some View {
-        Button { togglePopover(.source) } label: {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(model.title).font(.system(size: 13, weight: .semibold)).foregroundStyle(.primary)
-                HStack(spacing: 4) {
-                    Image(systemName: model.setup?.kind == .sample ? "play.rectangle" : model.setup == nil ? "rectangle.on.rectangle" : SourceCategory.initial(for: model.setup).symbol)
-                    Text(model.sourceLabel)
-                    Image(systemName: "chevron.down").font(.system(size: 8, weight: .medium))
-                }.font(.system(size: 11)).foregroundStyle(.secondary)
-            }.lineLimit(1).frame(minWidth: 120, idealWidth: 200, maxWidth: 320, alignment: .leading)
-                .padding(.vertical, 4).contentShape(Rectangle())
-        }.buttonStyle(.plain).help("\(model.title)\n\(model.sourceLabel)\nChoose a source or open its details")
-            .accessibilityLabel("Source and session. \(model.title). \(model.sourceLabel)")
+        Button {
+            if model.setup == nil { model.openSources() } else { togglePopover(.source) }
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: model.setup?.kind == .sample ? "play.rectangle" : model.setup == nil ? "rectangle.on.rectangle" : SourceCategory.initial(for: model.setup).symbol)
+                Text(model.setup == nil ? "Choose source" : model.sourceLabel).lineLimit(1)
+                Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
+            }.font(.system(size: 13, weight: model.setup == nil ? .medium : .semibold))
+                .foregroundStyle(model.setup == nil ? .secondary : .primary)
+                .padding(.horizontal, 8).frame(height: 28)
+                .background(.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 7))
+                .contentShape(Rectangle())
+        }.buttonStyle(ChromeButtonStyle()).help(model.setup == nil ? "Choose a source" : "\(model.sourceLabel) · Source and session settings")
+            .accessibilityLabel(model.setup == nil ? "Choose source" : "Source and session. \(model.sourceLabel)")
             .popover(isPresented: presentation(.source), arrowEdge: .bottom) {
                 MonitorSourcePopover(model: model, show: showSheet)
             }
     }
 
     private var picture: some View {
-        ZStack {
+        let sharing = model.audiencePresentation
+        return ZStack {
+            MonitorStyle.stage
             if showingSourceRecovery {
                 SourceRecoveryView(model: model)
             } else if model.setup != nil {
@@ -116,22 +154,39 @@ struct MainView: View {
                     connectionStage: model.connectionStage, inputKind: model.setup?.kind ?? .sample, stageTitle: model.connectionStageTitle,
                     lastPicture: model.lastFrameAt == nil ? nil : model.frameAgeLabel,
                     pointers: model.showsPointers ? model.pointerPresence : nil)
+                    .saturation(sharing.confirmedHold ? 0.55 : 1)
+                if sharing.confirmedHold { Color.black.opacity(0.36).allowsHitTesting(false).accessibilityHidden(true) }
+                if sharing.confirmedHold || sharing.phase == .sharing {
+                    pictureAction(sharing)
+                        .opacity(sharing.confirmedHold || pictureHovered ? 1 : 0)
+                        .allowsHitTesting(sharing.confirmedHold || pictureHovered)
+                        .accessibilityHidden(!sharing.confirmedHold && !pictureHovered)
+                }
             } else {
-                MonitorStyle.stage
-                VStack(spacing: 13) {
-                    Image(systemName: "rectangle.on.rectangle").font(.system(size: 38, weight: .light)).foregroundStyle(.secondary)
-                    Text("Your picture starts here").font(.title3.weight(.medium))
-                    Text("Connect a computer display or camera.").font(.callout).foregroundStyle(.secondary)
-                    Button("Choose a source") { model.openSources() }.buttonStyle(.borderedProminent).padding(.top, 3)
-                }.padding(20)
+                SourceStartView(model: model)
             }
-        }.background(MonitorStyle.stage)
+        }.onHover { pictureHovered = $0 }
             .overlay(alignment: .topLeading) {
                 if model.setup?.kind == .sample {
-                    Text("Sample media").font(.caption).foregroundStyle(.white)
-                        .padding(8).background(.black.opacity(0.75), in: RoundedRectangle(cornerRadius: 4)).padding(12)
+                    Label("SAMPLE", systemImage: "play.rectangle").font(.system(size: 10, weight: .bold)).tracking(0.7)
+                        .foregroundStyle(.white).padding(.horizontal, 8).padding(.vertical, 4)
+                        .background(.black.opacity(0.75), in: RoundedRectangle(cornerRadius: 5)).padding(12)
+                        .accessibilityLabel("Sample media")
                 }
             }
+    }
+
+    private func pictureAction(_ sharing: AudiencePresentation) -> some View {
+        Button { model.performAudienceAction() } label: {
+            Image(systemName: sharing.primarySymbol).font(.system(size: 29, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 68, height: 68)
+                .background(.black.opacity(0.53), in: Circle())
+                .overlay { Circle().strokeBorder(.white.opacity(0.2), lineWidth: 1) }
+                .contentShape(Circle())
+        }.buttonStyle(.plain).disabled(!sharing.primaryEnabled)
+            .accessibilityLabel(sharing.primaryTitle).accessibilityHint(sharing.primaryHelp)
+            .help("\(sharing.primaryTitle) · \(sharing.primaryHelp)")
     }
 
     private var feedback: some View {
@@ -207,6 +262,7 @@ private struct WindowPersistence: NSViewRepresentable {
         private let presentation: MainWindowPresentation
         private var configured = false
         private weak var model: SessionModel?
+        private var escapeMonitor: Any?
         init(presentation: MainWindowPresentation, model: SessionModel) { self.presentation = presentation; self.model = model; super.init(frame: .zero) }
         required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
         override func viewDidMoveToWindow() {
@@ -216,8 +272,20 @@ private struct WindowPersistence: NSViewRepresentable {
             model?.monitorWindow = window
             DispatchQueue.main.async { [weak self] in self?.screenChanged() }
             NotificationCenter.default.addObserver(self, selector: #selector(screenChanged), name: NSWindow.didChangeScreenNotification, object: window)
-            window.titleVisibility = .hidden
+            let toolbar = NSToolbar(identifier: "SetbeamWindowChrome")
+            toolbar.allowsUserCustomization = false
+            window.toolbar = toolbar
             window.toolbarStyle = .unified
+            window.titleVisibility = .hidden
+            window.titlebarAppearsTransparent = true
+            window.titlebarSeparatorStyle = .none
+            window.isMovableByWindowBackground = true
+            escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self, weak window] event in
+                guard event.keyCode == 53, let window, NSApp.keyWindow === window,
+                      let model = self?.model, model.sheet == .connection else { return event }
+                model.sheet = nil
+                return nil
+            }
             let name = CommandLine.arguments.contains("--integration-demo") ? "SetbeamIntegrationMain" : "SetbeamMain"
             _ = window.setFrameUsingName(name)
             window.setFrameAutosaveName(name)
@@ -226,7 +294,10 @@ private struct WindowPersistence: NSViewRepresentable {
         @objc private func screenChanged() {
             model?.sharingCanDock = presentation.canEmbedSharing && model?.sheet == nil
         }
-        deinit { NotificationCenter.default.removeObserver(self) }
+        deinit {
+            if let escapeMonitor { NSEvent.removeMonitor(escapeMonitor) }
+            NotificationCenter.default.removeObserver(self)
+        }
     }
 }
 
@@ -260,10 +331,11 @@ private final class MainWindowPresentation: ObservableObject {
 struct QRView: View {
     let payload: String
     let size: CGFloat
+    var inset: CGFloat = 16
     @State private var image: NSImage?
     var body: some View {
         Group { if let image { Image(nsImage: image).resizable().interpolation(.none).scaledToFit() } else { ProgressView() } }
-            .frame(width: size - 32, height: size - 32).padding(16).background(.white, in: RoundedRectangle(cornerRadius: 10))
+            .frame(width: size - 2 * inset, height: size - 2 * inset).padding(inset).background(.white, in: RoundedRectangle(cornerRadius: 10))
             .task(id: payload) { image = QRCode.image(payload) }
             .accessibilityLabel("QR code. Use Copy Link for an accessible viewing link.")
     }

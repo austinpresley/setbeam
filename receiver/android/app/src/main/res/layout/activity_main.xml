@@ -1,0 +1,312 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:id="@+id/receiver_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:focusable="true"
+    android:focusableInTouchMode="true">
+
+    <com.setbeam.receiver.AspectFitLayout
+        android:id="@+id/video_frame"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent">
+
+        <com.setbeam.receiver.PictureView
+            android:id="@+id/video"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
+
+        <!-- Other viewers' shared pointers, sized to the picture and below the cover. -->
+        <com.setbeam.receiver.PointerOverlay
+            android:id="@+id/pointers"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
+    </com.setbeam.receiver.AspectFitLayout>
+
+    <!-- Opaque in every phase except Live and Reconnecting, so no earlier source pixel can show. -->
+    <View
+        android:id="@+id/cover"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@android:color/black" />
+
+    <View
+        android:id="@+id/dim"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@color/dim"
+        android:visibility="gone" />
+
+    <LinearLayout
+        android:id="@+id/card"
+        android:layout_width="520dp"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:background="@drawable/card_background"
+        android:orientation="vertical"
+        android:padding="28dp">
+
+        <ImageView
+            android:id="@+id/card_icon"
+            android:layout_width="36dp"
+            android:layout_height="36dp"
+            android:contentDescription="@null"
+            android:importantForAccessibility="no"
+            android:tint="@color/tv_bright" />
+
+        <TextView
+            android:id="@+id/card_title"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:accessibilityHeading="true"
+            tools:targetApi="28"
+            android:accessibilityLiveRegion="polite"
+            android:textColor="@color/ink"
+            android:textSize="34sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/card_message"
+            style="@style/Tv.Body"
+            android:textColor="@color/ink"
+            android:textSize="21sp" />
+
+        <TextView
+            android:id="@+id/card_detail"
+            style="@style/Tv.Body" />
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/ask_again"
+                style="@style/Tv.Button"
+                android:layout_marginEnd="12dp"
+                android:drawableStart="@drawable/ic_retry"
+                android:text="@string/ask_again"
+                android:visibility="gone" />
+
+            <Button
+                android:id="@+id/open_options"
+                style="@style/Tv.Button"
+                android:drawableStart="@drawable/ic_settings"
+                android:text="@string/receiver_options" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/sample"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|end"
+        android:layout_marginHorizontal="@dimen/tv_safe_horizontal"
+        android:layout_marginVertical="@dimen/tv_safe_vertical"
+        android:background="@drawable/sample_background"
+        android:paddingHorizontal="16dp"
+        android:paddingVertical="8dp"
+        android:text="@string/sample"
+        android:textColor="#FF101318"
+        android:textSize="18sp"
+        android:textStyle="bold"
+        android:visibility="gone" />
+
+    <!-- New session-chat messages, shown only when Chat pop-ups is on. -->
+    <LinearLayout
+        android:id="@+id/chat_toasts"
+        android:layout_width="390dp"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|start"
+        android:layout_marginHorizontal="@dimen/tv_safe_horizontal"
+        android:layout_marginVertical="@dimen/tv_safe_vertical"
+        android:orientation="vertical" />
+
+    <!-- Read-only session chat. It starts below the SAMPLE MEDIA label, which must stay visible. -->
+    <LinearLayout
+        android:id="@+id/chat_panel"
+        android:layout_width="390dp"
+        android:layout_height="match_parent"
+        android:layout_gravity="end"
+        android:layout_marginTop="88dp"
+        android:layout_marginBottom="@dimen/tv_safe_vertical"
+        android:layout_marginEnd="@dimen/tv_safe_horizontal"
+        android:background="@drawable/card_background"
+        android:orientation="vertical"
+        android:padding="20dp"
+        android:visibility="gone">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/chat_title"
+            android:textColor="@color/ink"
+            android:textSize="22sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/chat_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:textColor="@color/ink_muted"
+            android:textSize="16sp" />
+
+        <ScrollView
+            android:id="@+id/chat_scroll"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_marginTop="12dp"
+            android:layout_weight="1"
+            android:focusable="true"
+            android:nextFocusDown="@id/chat_scroll"
+            android:nextFocusLeft="@id/chat_scroll"
+            android:nextFocusRight="@id/chat_scroll"
+            android:nextFocusUp="@id/chat_scroll"
+            android:scrollbars="vertical">
+
+            <TextView
+                android:id="@+id/chat_text"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:lineSpacingExtra="4dp"
+                android:textColor="@color/ink"
+                android:textSize="18sp" />
+        </ScrollView>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="@string/chat_hint"
+            android:textColor="@color/ink_muted"
+            android:textSize="16sp" />
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/diagnostics"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|start"
+        android:layout_marginHorizontal="@dimen/tv_safe_horizontal"
+        android:layout_marginVertical="@dimen/tv_safe_vertical"
+        android:background="@color/diag"
+        android:fontFamily="monospace"
+        android:padding="12dp"
+        android:textColor="@color/ink"
+        android:textSize="13sp"
+        android:visibility="gone" />
+
+    <LinearLayout
+        android:id="@+id/controls"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:layout_marginHorizontal="@dimen/tv_safe_horizontal"
+        android:layout_marginBottom="@dimen/tv_safe_vertical"
+        android:background="@drawable/card_background"
+        android:orientation="vertical"
+        android:padding="16dp"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:accessibilityHeading="true"
+                tools:targetApi="28"
+                android:text="@string/receiver_options"
+                android:textColor="@color/ink"
+                android:textSize="20sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/remote_hint"
+                android:textColor="@color/ink_muted"
+                android:textSize="16sp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/sound_toggle"
+                style="@style/Tv.Button.Controls"
+                android:drawableTop="@drawable/ic_sound_on"
+                android:nextFocusLeft="@id/sound_toggle"
+                android:nextFocusRight="@id/open_chat"
+                android:nextFocusUp="@id/sound_toggle"
+                android:nextFocusDown="@id/sound_toggle"
+                android:text="@string/sound_on" />
+
+            <Button
+                android:id="@+id/open_chat"
+                style="@style/Tv.Button.Controls"
+                android:layout_marginStart="8dp"
+                android:drawableTop="@drawable/ic_chat"
+                android:nextFocusLeft="@id/sound_toggle"
+                android:nextFocusRight="@id/popups_toggle"
+                android:nextFocusUp="@id/open_chat"
+                android:nextFocusDown="@id/open_chat"
+                android:text="@string/chat_button" />
+
+            <Button
+                android:id="@+id/popups_toggle"
+                style="@style/Tv.Button.Controls"
+                android:layout_marginStart="8dp"
+                android:drawableTop="@drawable/ic_popups_off"
+                android:nextFocusLeft="@id/open_chat"
+                android:nextFocusRight="@id/pointers_toggle"
+                android:nextFocusUp="@id/popups_toggle"
+                android:nextFocusDown="@id/popups_toggle"
+                android:text="@string/popups_off" />
+
+            <Button
+                android:id="@+id/pointers_toggle"
+                style="@style/Tv.Button.Controls"
+                android:layout_marginStart="8dp"
+                android:drawableTop="@drawable/ic_pointers_off"
+                android:nextFocusLeft="@id/popups_toggle"
+                android:nextFocusRight="@id/mac_settings"
+                android:nextFocusUp="@id/pointers_toggle"
+                android:nextFocusDown="@id/pointers_toggle"
+                android:text="@string/pointers_off" />
+
+            <Button
+                android:id="@+id/mac_settings"
+                style="@style/Tv.Button.Controls"
+                android:layout_marginStart="8dp"
+                android:drawableTop="@drawable/ic_mac"
+                android:nextFocusLeft="@id/pointers_toggle"
+                android:nextFocusRight="@id/connection_info"
+                android:nextFocusUp="@id/mac_settings"
+                android:nextFocusDown="@id/mac_settings"
+                android:text="@string/settings" />
+
+            <Button
+                android:id="@+id/connection_info"
+                style="@style/Tv.Button.Controls"
+                android:layout_marginStart="8dp"
+                android:contentDescription="@string/connection_info"
+                android:drawableTop="@drawable/ic_info"
+                android:nextFocusLeft="@id/mac_settings"
+                android:nextFocusRight="@id/connection_info"
+                android:nextFocusUp="@id/connection_info"
+                android:nextFocusDown="@id/connection_info"
+                android:text="@string/info_button" />
+        </LinearLayout>
+    </LinearLayout>
+</FrameLayout>

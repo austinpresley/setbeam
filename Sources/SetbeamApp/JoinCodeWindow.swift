@@ -83,24 +83,57 @@ private struct FloatingJoinCodes: View {
         }.background(Color(nsColor: .windowBackgroundColor))
     }
     private func export(printing: Bool) {
-        model.loadViewingWiFi()
-        let includeWiFi = selection != "Feed" && !model.wifiSSID.isEmpty
-        guard !includeWiFi || model.viewingWiFiPasswordAvailable else { problem = "The Wi-Fi password is unavailable. Re-enter it in Invite before exporting."; return }
-        let snapshotURL = selection != "Wi-Fi" && model.state.sharing ? model.viewerURL : nil
-        guard includeWiFi || snapshotURL != nil else { problem = "The selected code is unavailable. Choose another code or start sharing."; return }
-        let view = JoinCodeDocumentView(title: model.title, ssid: includeWiFi ? model.wifiSSID : "", password: includeWiFi ? model.wifiPassword : "",
-                                        url: snapshotURL, date: Date(), approval: model.viewerApproval)
+        let snapshot: JoinCodeExporter.Snapshot
+        do {
+            snapshot = try JoinCodeExporter.snapshot(model: model, includeWiFi: selection != "Feed", includeFeed: selection != "Wi-Fi")
+        } catch { problem = error.localizedDescription; return }
+        let view = snapshot.document
+        let snapshotURL = snapshot.url
         if printing {
-            let info = NSPrintInfo.shared.copy() as! NSPrintInfo
-            info.horizontalPagination = .fit; info.verticalPagination = .fit
-            info.isHorizontallyCentered = true; info.isVerticallyCentered = true
-            NSPrintOperation(view: view, printInfo: info).run()
+            JoinCodeExporter.print(view)
         } else {
             let panel = NSSavePanel(); panel.allowedContentTypes = [.pdf]; panel.nameFieldStringValue = "Setbeam-join-codes.pdf"
             guard panel.runModal() == .OK, let url = panel.url else { return }
             guard snapshotURL == nil || model.state.sharing && model.viewerURL == snapshotURL else { problem = "Sharing changed while Save was open. Save the current codes again."; return }
             do { try view.dataWithPDF(inside: view.bounds).write(to: url, options: .atomic); problem = nil }
             catch { problem = "The codes could not be saved. Choose another location and try again." }
+        }
+    }
+}
+
+/// Invite and the codes window export the same dated snapshot and validate the same inputs.
+@MainActor enum JoinCodeExporter {
+    struct Snapshot {
+        let document: JoinCodeDocumentView
+        let url: URL?
+    }
+
+    static func snapshot(model: SessionModel, includeWiFi: Bool = true, includeFeed: Bool = true) throws -> Snapshot {
+        model.loadViewingWiFi()
+        let hasWiFi = includeWiFi && !model.wifiSSID.isEmpty
+        guard !hasWiFi || model.viewingWiFiPasswordAvailable else { throw ExportProblem.passwordUnavailable }
+        let url = includeFeed && model.state.sharing ? model.viewerURL : nil
+        guard hasWiFi || url != nil else { throw ExportProblem.codeUnavailable }
+        let document = JoinCodeDocumentView(title: model.title, ssid: hasWiFi ? model.wifiSSID : "",
+            password: hasWiFi ? model.wifiPassword : "", url: url, date: Date(), approval: model.viewerApproval)
+        return Snapshot(document: document, url: url)
+    }
+
+    static func print(_ document: JoinCodeDocumentView) {
+        let info = NSPrintInfo.shared.copy() as! NSPrintInfo
+        info.horizontalPagination = .fit; info.verticalPagination = .fit
+        info.isHorizontallyCentered = true; info.isVerticallyCentered = true
+        NSPrintOperation(view: document, printInfo: info).run()
+    }
+
+    private enum ExportProblem: LocalizedError {
+        case passwordUnavailable, codeUnavailable
+
+        var errorDescription: String? {
+            switch self {
+            case .passwordUnavailable: return "The Wi-Fi password is unavailable. Re-enter it in Invite before exporting."
+            case .codeUnavailable: return "The selected code is unavailable. Choose another code or start sharing."
+            }
         }
     }
 }

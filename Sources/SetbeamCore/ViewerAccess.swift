@@ -210,7 +210,7 @@ struct ViewerAccessLedger {
                     onThisMac: record.local, revision: record.revision, lastSeen: record.lastSeen, number: record.number, name: record.name,
                     health: admitted ? ViewerHealth.observed(record.health, playing: record.playing, revision: record.revision, session: session, age: age) : .connecting,
                     admission: record.admission, color: record.color, joinedAt: record.joinedAt, shortAddress: record.shortAddress,
-                    updatesMissing: admitted && age >= Self.visibleFor)
+                    updatesMissing: admitted && age >= Self.visibleFor, mobile: record.mobile)
             }.sorted { $0.number < $1.number }
     }
 

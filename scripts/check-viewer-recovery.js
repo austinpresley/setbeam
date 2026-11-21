@@ -248,28 +248,25 @@ test('the stale-peer watchdog still reconnects while state is pushed', async () 
   await b.track(); assert.equal(b.elements.get('state').textContent, 'Live feed');
 });
 
-test('Keep screen on requests a screen Wake Lock and releases it when sharing ends', async () => {
+test('a playing picture keeps the screen on with a Wake Lock until sharing ends', async () => {
   const b = browser({eventSource: true, wakeLock: true}); await b.settle(); await b.push();
-  b.listeners['awake:click'](); await b.settle();
+  assert.equal(b.locks.length, 0, 'nothing is held before the picture plays');
+  await b.track(); await b.settle();
   assert.equal(b.locks.length, 1); assert.equal(b.locks[0].type, 'screen');
-  assert.equal(b.elements.get('awake').getAttribute('aria-pressed'), 'true');
   b.listeners['sound:click'](); await b.settle();
   assert.equal(b.locks.length, 1, 'another gesture keeps the same lock');
   await b.push({...b.state, state: 'stopped'});
   assert.equal(b.locks[0].released, true);
-  assert.equal(b.elements.get('awake').getAttribute('aria-pressed'), 'false');
-  assert.equal(b.elements.get('awake').disabled, true);
 });
 
-test('without Wake Lock a tap plays the muted fallback clip, and toggling or Stop pauses it', async () => {
-  const b = browser({keepAwakeVideo: true}); await b.settle(); await b.track();
+test('without Wake Lock playback starts the muted fallback clip, and Stop pauses it', async () => {
+  const b = browser({keepAwakeVideo: true}); await b.settle();
   const clip = b.elements.get('keepawake');
-  b.listeners['picture:click'](); await b.settle();
+  assert.equal(clip.plays, 0, 'the join and connecting steps do not hold the screen');
+  await b.track(); await b.settle();
   assert.equal(clip.plays, 1); assert.equal(clip.muted, true); assert.match(clip.src, /^data:video\/mp4;base64,/);
-  b.listeners['awake:click'](); await b.settle();
-  assert.equal(clip.paused, true); assert.equal(b.elements.get('awake').getAttribute('aria-pressed'), 'false');
-  b.listeners['fullscreen:click'](); await b.settle();
-  assert.equal(clip.plays, 2); assert.equal(clip.paused, false);
+  b.listeners['picture:click'](); await b.settle();
+  assert.equal(clip.plays, 1, 'a tap keeps the same clip');
   b.state.state = 'stopped'; await b.tick();
   assert.equal(clip.paused, true, 'an ended session releases the fallback');
 });
@@ -323,17 +320,19 @@ test('fullscreen keeps the whole player and shortcuts ignore editable fields', a
   key('f'); assert.equal(b.context.document.fullscreenElement, null);
 });
 
-test('Escape inside Connection help closes it and returns focus to Help', async () => {
-  const b = browser(); await b.settle();
-  const panel = b.context.document.getElementById('help-panel'); panel.hidden = true;
-  b.listeners['help:click']();
-  const input = b.elements.get('identity-edit'); input.focus();
-  let prevented = false;
-  b.listeners.keydown({key: 'Escape', target: {closest: () => true}, preventDefault() { prevented = true; }});
-  assert.equal(panel.hidden, true);
-  assert.equal(b.elements.get('help').getAttribute('aria-expanded'), 'false');
-  assert.equal(b.context.document.activeElement, b.elements.get('help'));
-  assert.equal(prevented, true);
+test('tooltips name each shortcut, and P and C press only visible, enabled controls', async () => {
+  const b = browser(); await b.settle(); await b.track();
+  b.listeners.fullscreenchange();
+  assert.equal(b.el('fullscreen').getAttribute('aria-label'), 'Enter full screen');
+  assert.equal(b.el('fullscreen').getAttribute('title'), 'Enter full screen (F)');
+  b.listeners['sound:click'](); await b.settle();
+  assert.equal(b.el('sound').getAttribute('aria-label'), 'Mute'); assert.equal(b.el('sound').getAttribute('title'), 'Mute (M)');
+  const key = value => b.listeners.keydown({key: value, target: {closest: () => false}, preventDefault() {}});
+  let chats = 0, points = 0;
+  b.el('chat-toggle').click = () => chats++; b.el('pointer').click = () => points++;
+  key('c'); key('P'); assert.deepEqual([chats, points], [1, 1]);
+  b.el('chat-toggle').hidden = true; b.el('pointer').disabled = true;
+  key('c'); key('p'); assert.deepEqual([chats, points], [1, 1]);
 });
 
 test('Hold closes picture in picture and detaches and mutes its source', async () => {
@@ -410,8 +409,9 @@ test('a new tab chooses one name and color before it plays, with approval off', 
   assert.equal(joinVisible(b), false); assert.equal(b.readers.length, 1, 'The picture plays after joining');
   await b.track(); await b.tick(3000);
   assert.deepEqual({name: b.heartbeats.at(-1).name, color: b.heartbeats.at(-1).color}, {name: sent.name, color: 'teal'});
-  assert.equal(b.el('identity-name').textContent, sent.name, 'Connection help shows the same identity');
-  assert.equal(b.el('identity-dot').style['--c'], '#0b7480');
+  assert.equal(b.el('identity-avatar').textContent, 'A', 'The corner avatar shows the same identity');
+  assert.equal(b.el('identity-avatar').style['--c'], '#0b7480');
+  assert.match(b.el('identity-button').getAttribute('aria-label'), /^Alex x+\. Change name or color$/);
   const reload = browser({storage: Object.fromEntries(b.storage)}); await reload.settle();
   assert.equal(joinVisible(reload), false, 'A reload keeps the identity without asking again');
   assert.deepEqual({name: reload.joins[0].name, color: reload.joins[0].color}, {name: sent.name, color: 'teal'});
@@ -680,12 +680,12 @@ test('with approval off a saved identity plays at once, and Change name or color
   assert.equal(joinVisible(b), false); assert.equal(b.context.document.activeElement, b.el('identity-button'));
   assert.deepEqual({name: b.heartbeats.at(-1).name, color: b.heartbeats.at(-1).color}, {name: 'Sam (iPad)', color: 'brown'});
   assert.equal(b.storage.get('setbeam-viewer-name'), 'Sam (iPad)'); assert.equal(b.readers.length, 1, 'Editing keeps the same peer');
-  b.listeners['identity-edit:click'](); await b.settle();
+  b.listeners['identity-button:click'](); await b.settle();
   b.el('join-name').value = 'Someone else'; b.pick('teal');
   b.listeners.keydown({key: 'Escape', target: {closest: () => true}, preventDefault() {}});
   assert.equal(joinVisible(b), false, 'Escape cancels the editor');
-  assert.equal(b.el('identity-name').textContent, 'Sam (iPad)'); assert.equal(b.storage.get('setbeam-pointer-color'), 'brown');
-  b.listeners['identity-edit:click'](); await b.settle();
+  assert.equal(b.el('identity-avatar').textContent, 'S'); assert.equal(b.storage.get('setbeam-pointer-color'), 'brown');
+  b.listeners['identity-button:click'](); await b.settle();
   assert.equal(b.el('join-name').value, 'Sam (iPad)', 'A cancelled draft is not kept');
   b.listeners['identity-button:click'](); await b.settle();
   assert.equal(joinVisible(b), false, 'The direct identity button also closes its editor');
@@ -721,7 +721,7 @@ test('a busy session waits for Try again, and a changed link replaces the waitin
   assert.equal(b.joins.at(-1).ask, true); assert.equal(b.el('state').textContent, 'Waiting to join');
   g.gone = true; await b.tick();
   assert.equal(b.el('state').textContent, 'Session unavailable');
-  assert.equal(b.el('join-title').textContent, 'This viewing link is no longer active');
+  assert.equal(b.el('join-title').textContent, 'Link unavailable');
   assert.equal(b.el('join-retry').hidden, false); assert.equal(b.count('config.json'), 0);
 });
 
@@ -753,13 +753,13 @@ test('Try again after an ask meets a retired link stays unavailable without a ne
   assert.equal(g.requests, 0); assert.equal(b.count('config.json'), 0);
 });
 
-test('under approval an admitted name is read-only in Connection help, and Hold keeps the picture page', async () => {
+test('under approval an admitted name is read-only in the editor, and Hold keeps the picture page', async () => {
   const g = gateway(); g.admission = 'admitted';
   const b = browser({eventSource: true, join: g.join, storage: {'setbeam-pass:': pass, 'setbeam-viewer-name': 'Sam'}});
   await b.settle(); await b.push({...b.state, approval: true}); await b.track();
-  assert.equal(b.el('identity-edit').textContent, 'Change color');
-  assert.match(b.el('identity-note').textContent, /fixed while the operator approves/);
-  b.listeners['identity-edit:click'](); await b.settle();
+  assert.equal(b.el('identity-button').getAttribute('aria-label'), 'Sam. Change color');
+  b.listeners['identity-button:click'](); await b.settle();
+  assert.match(b.el('join-hint').textContent, /fixed while the operator approves/);
   assert.equal(b.el('join-name').readOnly, true, 'The admitted name cannot be edited');
   b.el('join-name').value = 'Director'; b.pick('teal'); b.listeners['join-form:submit']({preventDefault() {}}); await b.settle();
   assert.deepEqual({name: b.heartbeats.at(-1).name, color: b.heartbeats.at(-1).color}, {name: 'Sam', color: 'teal'});
@@ -772,37 +772,27 @@ test('under approval an admitted name is read-only in Connection help, and Hold 
 });
 
 
-test('secondary controls disclose on request and idle without hiding focused controls', async () => {
+test('the dock fades after 3 s without movement and stays while focused', async () => {
   const b = browser(); await b.settle(); await b.track();
-  b.el('help-panel').hidden = true; b.el('pointer-panel').hidden = true;
-  assert.equal(b.el('controls').hidden, true);
-  b.listeners['controls-toggle:click']();
-  assert.equal(b.el('controls').hidden, false);
+  const idle = () => b.el('player').className.split(' ').includes('idle');
+  assert.equal(idle(), false, 'controls start in view');
+  await b.tick(3100); assert.equal(idle(), true);
+  b.listeners['stage:pointermove']({pointerType: 'mouse'}); assert.equal(idle(), false, 'movement reveals the dock');
   const peers = b.readers.length;
   b.el('controls').focus(); b.listeners['controls:focusin']();
-  await b.tick(3100); assert.equal(b.el('controls').hidden, false, 'keyboard focus pins controls');
+  b.frame(); await b.tick(3100); assert.equal(idle(), false, 'keyboard focus pins controls');
   b.context.document.activeElement = b.context.document.body;
-  await b.tick(3100); assert.equal(b.el('controls').hidden, true);
-  assert.equal(b.readers.length, peers, 'disclosure never replaces media');
+  b.frame(); await b.tick(3100); assert.equal(idle(), true);
+  b.listeners['stage:pointermove']({pointerType: 'touch'}); assert.equal(idle(), true, 'a finger on the picture is not a hover');
+  assert.equal(b.readers.length, peers, 'fading never replaces media');
 });
 
-test('pointing keeps picture gestures and the explicit controls entry remains available', async () => {
+test('pointing keeps the dock in view so the viewer can stop, and picture taps stay with pointing', async () => {
   const b = browser({pointers: true}); await b.settle(); await b.track();
-  b.el('help-panel').hidden = true; b.el('pointer-panel').hidden = true;
   b.el('picture').classList = {contains(name) { return name === 'pointing'; }};
-  b.listeners['picture:pointermove']({pointerType: 'mouse'});
   b.listeners['picture:click']({target: {closest() { return null; }}});
-  assert.equal(b.el('controls').hidden, true);
-  b.listeners['controls-toggle:click'](); assert.equal(b.el('controls').hidden, false);
-});
-
-test('a pointer click opens controls once even when focus arrives before click', async () => {
-  const b = browser(); await b.settle();
-  b.el('help-panel').hidden = true; b.el('pointer-panel').hidden = true;
-  b.el('controls-toggle').matches = () => false;
-  b.listeners['controls-toggle:focus']();
-  b.listeners['controls-toggle:click']();
-  assert.equal(b.el('controls').hidden, false, 'pointer focus must not consume the first click');
+  b.frame(); await b.tick(3100); b.frame(); await b.tick(3100);
+  assert.equal(b.el('player').className.split(' ').includes('idle'), false);
 });
 
 test('playback updates preserve chat layout and compact keyboard classes', async () => {

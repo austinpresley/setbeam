@@ -17,7 +17,9 @@ const {chromium} = require(process.env.PLAYWRIGHT_MODULE || 'playwright-core');
     await page.locator('#join-colors input[value="teal"]').check();
     await page.locator('#join-submit').click(); console.log('join submitted');
     await page.waitForFunction(()=>document.getElementById('state').textContent==='Live feed' && document.getElementById('video').currentTime>1, {timeout:30000});
-    await page.locator('#chat-toggle').click();
+    // An upright phone docks chat under the picture; elsewhere the toggle opens it.
+    if (await page.locator('#chat-toggle').isVisible()) await page.locator('#chat-toggle').click();
+    await page.locator('#chat-panel').waitFor({state:'visible'});
     await page.waitForTimeout(300);
     const previousCount=await page.locator('.chat-message').count();
     await page.locator('#chat-input').fill('<b>Viewer note</b>');
@@ -44,9 +46,15 @@ const {chromium} = require(process.env.PLAYWRIGHT_MODULE || 'playwright-core');
     assert.ok(emptyComposer.form.height<=56,'Empty phone composer should occupy one 54 px row');
     for(const target of [emptyComposer.capture,emptyComposer.send]) assert.ok(target.width>=44 && target.height>=44,'Composer touch targets remain 44 px');
     const reports=[];
+    await page.locator('#chat-input').fill('Draft survives rotation');
     for (const [name,width,height] of [['iphone-portrait',390,844],['iphone-landscape',844,390],['ipad-portrait',768,1024],['ipad-landscape',1024,768],['ipad-air-portrait',820,1180],['ipad-air-landscape',1180,820],['split-width',320,640],['short-keyboard',844,260]]) {
       await page.setViewportSize({width,height});
-      await page.locator('#chat-input').fill('Draft survives rotation');
+      await page.waitForFunction(docked => document.getElementById('player').classList.contains('chat-docked') === docked, width <= 600 && height > width);
+      if (!(await page.locator('#chat-panel').isVisible())) {
+        await page.locator('#picture').tap();
+        await page.locator('#chat-toggle').tap();
+      }
+      await page.locator('#chat-panel').waitFor({state:'visible'});
       await page.waitForTimeout(150);
       const geometry=await page.evaluate(()=>{
         const rect=id=>{const r=document.getElementById(id).getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height,right:r.right,bottom:r.bottom}};

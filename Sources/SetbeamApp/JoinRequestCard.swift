@@ -212,7 +212,7 @@ struct JoinRequestCard: View {
                 Button { center.dismiss() } label: {
                     Image(systemName: "xmark").font(.caption.weight(.semibold)).frame(width: 22, height: 22).contentShape(Rectangle())
                 }.buttonStyle(.plain).foregroundStyle(.secondary)
-                    .help("Hide. Requests stay in Viewers until you answer them.")
+                    .help("Hide. Requests stay in People until you answer them.")
                     .accessibilityLabel("Hide join requests")
             }
             ForEach(center.requests.prefix(Self.rowsShown)) { request in row(request) }
@@ -222,8 +222,8 @@ struct JoinRequestCard: View {
                 Spacer(minLength: 8)
                 let more = center.requests.count - Self.rowsShown
                 Button(more > 0 ? "\(more) more…" : "Review…") { center.reviewAll() }.buttonStyle(.link).font(.caption)
-                    .help("Open Viewers")
-                    .accessibilityLabel(more > 0 ? "Review \(more) more requests in Viewers" : "Review in Viewers")
+                    .help("Open People")
+                    .accessibilityLabel(more > 0 ? "Review \(more) more requests in People" : "Review in People")
             }
         }
         .padding(14).frame(width: Self.width, alignment: .leading)

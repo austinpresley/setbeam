@@ -1,0 +1,6 @@
+# Build output, runtime state, logs, screenshots and private keys of the local integration check.
+.build/
+runtime/
+artifacts/
+__pycache__/
+*.pyc

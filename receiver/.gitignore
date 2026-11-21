@@ -1,0 +1,15 @@
+# Receiver build output, machine paths, and signing material stay out of Git.
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+android/*.iml
+android/app/*.iml
+android/captures/
+android/.kotlin/
+*.keystore
+*.jks
+*.apk
+*.aab
+*.idsig

@@ -5,6 +5,7 @@ import SetbeamCore
 struct HardwareArtwork: View {
     let symbol: String
     var size: CGFloat = 44
+    var showsBackground = true
     var body: some View {
         Group {
             if symbol == "accsoon.master" {
@@ -24,7 +25,7 @@ struct HardwareArtwork: View {
             } else { Image(systemName: symbol).font(.system(size: size * 0.56, weight: .regular)) }
         }
             .foregroundStyle(.secondary).frame(width: size, height: size)
-            .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: size * 0.23))
+            .background(.quaternary.opacity(showsBackground ? 0.45 : 0), in: RoundedRectangle(cornerRadius: size * 0.23))
             .accessibilityHidden(true)
     }
 }

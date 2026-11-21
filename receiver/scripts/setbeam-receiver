@@ -1,0 +1,5 @@
+#!/bin/bash
+# Provision, inspect and restore one dedicated Setbeam Receiver TV device.
+# Usage: receiver/scripts/setbeam-receiver --help   (see receiver/docs/startup.md)
+set -euo pipefail
+exec /usr/bin/env python3 -I "$(cd "$(dirname "$0")" && pwd)/setbeam_receiver_provision.py" "$@"

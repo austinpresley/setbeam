@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="ink">#FFF2F4F7</color>
+    <color name="ink_muted">#FFB8C0CC</color>
+    <color name="card">#F218222B</color>
+    <color name="hold">#F21C293B</color>
+    <color name="sample">#FFF5C542</color>
+    <color name="accent">#FF2FA8A0</color>
+    <color name="dim">#B3000000</color>
+    <color name="diag">#CC000000</color>
+    <color name="tv_background">#FF0E141A</color>
+    <color name="tv_surface">#FF202B35</color>
+    <color name="tv_bright">#FF92E2DA</color>
+    <color name="tv_error">#FFFFA89D</color>
+</resources>

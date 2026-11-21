@@ -13,7 +13,7 @@ final class ViewerAttentionTests: XCTestCase {
         XCTAssertFalse(model.viewerApproval, "A pending Start must retain the approval choice it is applying.")
     }
 
-    @MainActor func testStrugglingViewersComeFirstWithoutLosingNeutralOrHealthySessions() throws {
+    @MainActor func testPlaybackWarningsKeepAdmittedRowsInSessionOrder() throws {
         var state = SessionState()
         state.beginMonitoring()
         try state.startSharing()
@@ -22,12 +22,12 @@ final class ViewerAttentionTests: XCTestCase {
                        viewer("bad", number: 3, health: .struggling), viewer("reconnecting", number: 4, health: .reconnecting)]
         model.viewers = viewers
         XCTAssertEqual(model.strugglingViewers.map(\.id), ["bad"])
-        XCTAssertEqual(model.viewersForDetails.map(\.id), ["bad", "good", "background", "reconnecting"])
+        XCTAssertEqual(model.admittedViewers.map(\.id), viewers.map(\.id))
         try state.setHold(true)
         let held = SessionModel(initialState: state)
         held.viewers = viewers
         XCTAssertTrue(held.strugglingViewers.isEmpty)
-        XCTAssertEqual(held.viewersForDetails.map(\.id), viewers.map(\.id))
+        XCTAssertEqual(held.admittedViewers.map(\.id), viewers.map(\.id))
         state.stopSharing()
         let stopped = SessionModel(initialState: state)
         stopped.viewers = viewers

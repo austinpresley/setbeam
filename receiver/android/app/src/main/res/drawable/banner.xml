@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 320x180 TV launcher banner: a beam mark on a dark field. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="320dp" android:height="180dp"
+    android:viewportWidth="320" android:viewportHeight="180">
+    <path android:fillColor="#FF14181E" android:pathData="M0,0h320v180h-320z" />
+    <path android:fillColor="#FF2FA8A0" android:pathData="M60,62 L150,90 L60,118 Z" />
+    <path android:fillColor="#FFF2F4F7" android:pathData="M164,62h96v14h-96z M164,83h72v14h-72z M164,104h96v14h-96z" />
+</vector>

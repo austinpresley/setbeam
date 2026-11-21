@@ -38,7 +38,7 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE);
   await page.screenshot({path:path.join(output,'browser-desktop.png'),fullPage:true});
   const touch=await browser.newContext({viewport:{width:390,height:844},isMobile:true,hasTouch:true});
   const phone=await touch.newPage();await phone.goto(session.viewerURL);await phone.locator('#join-name').fill('Morgan');await phone.locator('#join-submit').click();
-  await phone.waitForFunction(()=>document.querySelector('#chat-toggle').hidden===false);await phone.locator('#chat-toggle').click();
+  await phone.waitForFunction(()=>document.getElementById('player').classList.contains('chat-docked'));
   await phone.waitForFunction(()=>document.querySelectorAll('.chat-message').length>=2);
   const bubble=phone.locator('.chat-image-button').last();await bubble.scrollIntoViewIfNeeded();
   const box=await bubble.boundingBox(),cdp=await touch.newCDPSession(phone),x=box.x+box.width/2,y=box.y+box.height/2;

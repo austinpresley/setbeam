@@ -4,19 +4,17 @@
   const slate = document.getElementById('slate');
   const sound = document.getElementById('sound');
   const retry = document.getElementById('retry');
-  const awake = document.getElementById('awake');
   const awakeVideo = document.getElementById('keepawake');
   let reader, mode = 'connecting', config, revision = -1, lastTime = -1, lastFrameAt = 0;
   let receivedTrack = false, pollRunning = false, playBlocked = false, unavailable = false;
   let readerStartedAt = 0, readerGeneration = 0, hasAudio = false, everPlayed = false;
   const player = document.getElementById('player');
-  const help = document.getElementById('help');
   const pip = document.getElementById('pip');
   const fullscreen = document.getElementById('fullscreen');
   // Pushed state replaces 1.5 s polling while the stream stays healthy. Polling remains the fallback.
   let events, eventsAt = 0, eventsHeard = false, eventsRetryAt = 0, applying = Promise.resolve(), pushes = 0;
   let heartbeatAt = 0, reportedPlaying;
-  let viewerName = '', pointersOn = false;
+  let viewerName = '', pointersOn = false, networkHint = 'Stay on the same network as the operator.';
   try { viewerName = sessionStorage.getItem('setbeam-viewer-name') || ''; } catch { /* Naming also works without storage. */ }
   // One identity, a name and a color, labels this session for the operator and for shared pointers.
   // It is chosen once on the join card and saved only in this tab. Names are labels, not verified.
@@ -50,9 +48,12 @@
   // A stream must deliver its first state quickly and a keepalive about every 10 s after that.
   const streaming = () => events && events.readyState !== 2 && Date.now() - eventsAt <= (eventsHeard ? 25000 : 5000);
   function text(element, value) { if (element.textContent !== value) element.textContent = value; }
+  // Shortcut keys appear in each control's tooltip rather than in a help panel.
+  const shortcuts = {sound: 'M', fullscreen: 'F', pointer: 'P', 'chat-toggle': 'C'};
   function action(button, name) {
     if (button.getAttribute('aria-label') !== name) {
-      button.setAttribute('aria-label', name); button.setAttribute('title', name);
+      const key = shortcuts[button.id];
+      button.setAttribute('aria-label', name); button.setAttribute('title', key ? name + ' (' + key + ')' : name);
     }
   }
   function show(title, copy, symbol) {
@@ -67,17 +68,25 @@
       !!video.webkitSupportsPresentationMode?.('picture-in-picture');
   }
   // Badge label, card title, copy, symbol, and page state for each step of the join page.
+  // The card shows the viewer's avatar while choosing or waiting, and one symbol otherwise. Form titles are
+  // read by assistive technology only; the avatar, fields, and button carry the step on screen.
   const joinViews = {
-    identify: ['Joining', 'Join this feed', 'Choose a name and color so the operator knows who is watching.', 'user', 'ask'],
-    name: ['Ask to join', 'Ask to join', 'The operator admits each viewer. Choose a name they will recognize and a color.', 'user', 'ask'],
-    edit: ['', 'Your name and color', 'Change how you appear to the operator and to other viewers.', 'user', ''],
-    full: ['Session busy', 'This session is busy', 'Too many people are waiting to join. Try again shortly.', 'user', 'ask'],
-    pending: ['Waiting to join', 'Waiting for the operator', 'Keep this page open. The picture starts when the operator admits you.', 'loader', 'pending'],
-    declined: ['Not admitted', 'The operator declined this request', 'Ask the operator if you should be watching.', 'link-off', 'refused'],
-    removed: ['Removed', 'The operator removed you from this session', 'This page no longer receives the picture.', 'link-off', 'refused'],
-    unavailable: ['Session unavailable', 'This viewing link is no longer active', 'Sharing may have ended or the code changed. Ask the operator for the current code.', 'link-off', 'refused'],
-    ended: ['Sharing ended', 'Sharing ended', 'Ask the operator for a new code.', 'end', 'refused']
+    identify: ['Joining', 'Join this feed', '', 'user', 'ask', 'form'],
+    name: ['Ask to join', 'Ask to join', '', 'user', 'ask', 'form'],
+    edit: ['', 'Your name and color', '', 'user', '', 'form'],
+    full: ['Session busy', 'Session busy', 'Try again shortly.', 'user', 'ask', 'notice'],
+    pending: ['Waiting to join', 'Waiting to be let in', 'Keep this page open', 'loader', 'pending', 'wait'],
+    declined: ['Not admitted', 'Not admitted', 'Check with the operator.', 'link-off', 'refused', 'notice'],
+    removed: ['Removed', 'Removed from this session', '', 'link-off', 'refused', 'notice'],
+    unavailable: ['Session unavailable', 'Link unavailable', 'Ask for the current link or code.', 'link-off', 'refused', 'notice'],
+    ended: ['Sharing ended', 'Sharing ended', 'Ask for a new link.', 'end', 'refused', 'notice']
   };
+  // An avatar is the name's first letter on the chosen color, so the viewer sees how others see them.
+  function paintAvatar(element, name, colorName) {
+    const [background, foreground] = palette[colorName] || palette[viewerColor] || ['#77777f', '#fff'];
+    text(element, ([...(name || '').trim()][0] || '').toUpperCase());
+    element.style.setProperty('--c', background); element.style.setProperty('--t', foreground);
+  }
   // Only a session that is not admitted sees the join page; admitted viewers keep the picture.
   function joinView() {
     if (!['name', 'full', 'pending', 'declined', 'removed'].includes(access)) return undefined;
@@ -118,9 +127,10 @@
     const hadFocus = !focused || focused === document.body || section.contains(focused);
     shownJoin = view; section.hidden = !view;
     if (!view) { if (previous && focused && section.contains(focused)) document.getElementById('title').focus(); return; }
-    const [, title, copy, symbol] = joinViews[view];
+    const [, title, copy, symbol, , kind] = joinViews[view];
     const heading = document.getElementById('join-title'), joinName = document.getElementById('join-name');
-    text(heading, title); text(document.getElementById('join-copy'), copy);
+    section.className = 'join ' + kind;
+    text(heading, title); text(document.getElementById('join-copy'), copy); document.getElementById('join-copy').hidden = !copy;
     document.getElementById('join-icon').setAttribute('href', '#i-' + symbol);
     const detail = joinDetail(view), joinRetry = document.getElementById('join-retry');
     text(document.getElementById('join-detail'), detail); document.getElementById('join-detail').hidden = !detail;
@@ -129,27 +139,26 @@
     text(submit, view === 'name' ? 'Ask to join' : view === 'edit' ? 'Save' : 'Join');
     submit.disabled = asking; joinName.readOnly = asking || locked;
     document.getElementById('join-cancel').hidden = view !== 'edit';
-    document.getElementById('join-network').hidden = view === 'edit';
+    // Network advice appears only when a request could not get through.
+    const trouble = joinNote === 'error' || view === 'pending' && joinTrouble;
+    text(document.getElementById('join-network'), trouble ? networkHint : ''); document.getElementById('join-network').hidden = !trouble;
+    // Pointer choices sit with the identity they show, while this viewer is pointing.
+    document.getElementById('pointer-form').hidden = view !== 'edit' || !pointersOn;
     text(document.getElementById('join-hint'), identityHint(view));
+    document.getElementById('join-hint-button').setAttribute('title', identityHint(view));
     joinRetry.hidden = !(view === 'unavailable' || view === 'full' && approval); joinRetry.disabled = asking;
     text(document.getElementById('join-status'), joinMessage(view));
     if (view === previous) return;
     if (form && !joinDirty && focused !== joinName) { joinName.value = viewerName; draftColor = viewerColor; }
-    renderSwatches();
+    renderSwatches(); paintJoinAvatar();
     // Changing the name or color was asked for, so the editor always takes focus.
     if (view === 'edit') (locked ? swatchInputs.find(input => input.checked) || submit : joinName).focus();
     else if (hadFocus && (previous || globalThis.matchMedia?.('(pointer: fine)').matches)) (form ? joinName : heading).focus();
   }
-  // Connection help shows the one identity and offers to change it; it has no name field of its own.
+  // The avatar in the corner is the one identity; it opens the editor and has no name field of its own.
   function renderIdentity() {
-    text(document.getElementById('identity-name'), viewerName || 'No name yet');
-    document.getElementById('identity-dot').style.setProperty('--c', palette[viewerColor][0]);
     const locked = nameLocked();
-    text(document.getElementById('identity-note'), locked ? 'Names stay fixed while the operator approves viewers. You can change your color.'
-      : pointersOn ? 'The operator sees this name, and other viewers see it when you point.' : 'The operator sees this name.');
-    const edit = document.getElementById('identity-edit');
-    text(edit, locked ? 'Change color' : 'Change name or color');
-    edit.hidden = !canEdit();
+    paintAvatar(document.getElementById('identity-avatar'), viewerName, viewerColor);
     const direct = document.getElementById('identity-button');
     direct.hidden = !canEdit();
     direct.setAttribute('aria-expanded', String(editing));
@@ -159,8 +168,7 @@
   function openEditor() {
     if (!canEdit()) return;
     if (editing) { closeEditor(); return; }
-    closeHelp(); editing = true; joinDirty = false; joinNote = ''; update();
-    if (globalThis.matchMedia?.('(max-width:600px), (max-height:600px)').matches) document.getElementById('join').scrollIntoView?.({block: 'nearest'});
+    editing = true; joinDirty = false; joinNote = ''; update();
   }
   function closeEditor() { editing = false; joinNote = ''; update(); document.getElementById('identity-button').focus(); }
   function update() {
@@ -169,8 +177,9 @@
     const shown = view || (editing ? 'edit' : undefined);
     const state = view ? joinViews[view][4] : unavailable ? 'unavailable' : playBlocked && mode === 'live' ? 'blocked' : mode === 'live' && !live ? waiting : mode;
     label.className = 'state ' + state;
-    const collaborationClasses = ['chat-open', 'keyboard-tight'].filter(name => player.classList?.contains(name)).join(' ');
-    player.className = 'player ' + state + (view ? ' join-open' : editing ? ' identity-open' : '') + (collaborationClasses ? ' ' + collaborationClasses : '');
+    const collaborationClasses = ['chat-open', 'chat-docked', 'keyboard-tight'].filter(name => player.classList?.contains(name)).join(' ');
+    player.className = 'player ' + state + (view ? ' join-open' : editing ? ' identity-open' : '') + (controlsShown ? '' : ' idle') +
+      (collaborationClasses ? ' ' + collaborationClasses : '');
     sound.hidden = !hasAudio; sound.disabled = !live;
     pip.hidden = !pipSupported(); pip.disabled = !live;
     retry.hidden = !(playBlocked && mode === 'live') && !unavailable;
@@ -179,33 +188,34 @@
     if (shown || shownJoin) renderJoin(shown);
     // The join page replaces the picture slate until the session is admitted.
     if (view) text(label, joinViews[view][0]);
-    else if (unavailable) { text(label, 'Session unavailable'); show('This viewing link is unavailable', 'Ask the operator for the current code.', 'link-off'); }
-    else if (mode === 'holding') { text(label, 'On hold'); show('On hold', 'Your picture returns when sharing resumes.', 'pause'); }
-    else if (mode === 'stopped') { text(label, 'Sharing ended'); show('Sharing ended', 'Ask the operator for a new code.', 'end'); }
-    else if (playBlocked && mode === 'live') { text(label, 'Ready to play'); show('Your picture is ready', 'Tap to watch.', 'play'); }
+    else if (unavailable) { text(label, 'Session unavailable'); show('Link unavailable', 'Ask for the current link or code.', 'link-off'); }
+    else if (mode === 'holding') { text(label, 'On hold'); show('On hold', '', 'pause'); }
+    else if (mode === 'stopped') { text(label, 'Sharing ended'); show('Sharing ended', 'Ask for a new link.', 'end'); }
+    else if (playBlocked && mode === 'live') { text(label, 'Ready to play'); show('Tap to watch', '', 'play'); }
     else if (live) { text(label, 'Live feed'); slate.hidden = true; }
-    else { text(label, everPlayed ? 'Reconnecting' : 'Connecting'); show('Waiting for the picture', everPlayed ? 'Keep this page open. Stay on the viewing network.' : 'Waiting for the picture.', 'loader'); }
+    // Network advice appears only after the picture drops, not before the first picture.
+    else { text(label, everPlayed ? 'Reconnecting' : 'Connecting'); show(everPlayed ? 'Reconnecting' : 'Connecting', everPlayed ? networkHint : '', 'loader'); }
     video.muted = mode !== 'live' || unavailable || sound.getAttribute('aria-pressed') !== 'true';
     renderIdentity();
-    if (editing) positionIdentityEditor();
     const ended = mode === 'stopped' || unavailable || refused();
     if (ended && keepAwake) releaseAwake();
-    awake.disabled = ended;
+    // The screen stays on once the picture plays, until the session ends.
+    else if (!ended && live && !keepAwake) engageAwake();
     if (streaming() && live !== reportedPlaying) heartbeat();
     // Pointing ends with the session: removal, refusal, Stop, and an unavailable link all close it.
     const pointable = pointersOn && access === 'admitted' && !unavailable && mode !== 'stopped';
     pointers?.update({enabled: pointable, live: pointable && mode === 'live', revision});
     chat?.update({admitted: access === 'admitted', active: !ended, live: playing(), revision});
   }
+  // On a large screen the controls float over the picture and fade after 3 s without movement. Keyboard focus,
+  // an open editor, and pointing keep them in view. On a phone held upright they sit below the picture.
   const controls = document.getElementById('controls');
-  const controlsToggle = document.getElementById('controls-toggle');
-  let controlsShown = false, controlsTimer;
-  const controlsPinned = () => editing || controls.contains(document.activeElement) ||
-    !document.getElementById('help-panel').hidden || !document.getElementById('pointer-panel').hidden;
+  let controlsShown = true, controlsTimer;
+  const pictureIsPointing = () => document.getElementById('picture').classList?.contains?.('pointing');
+  const controlsPinned = () => editing || controls.contains(document.activeElement) || pictureIsPointing();
   function displayControls(shown) {
-    controlsShown = shown; controls.hidden = !shown;
-    controlsToggle.setAttribute('aria-expanded', String(shown));
-    action(controlsToggle, shown ? 'Hide viewer controls' : 'Show viewer controls');
+    if (controlsShown === shown) return;
+    controlsShown = shown; update();
   }
   function scheduleControls() {
     clearTimeout(controlsTimer);
@@ -214,29 +224,12 @@
     }, 3000);
   }
   function revealControls() { displayControls(true); scheduleControls(); }
-  controlsToggle.addEventListener('click', () => {
-    if (controlsShown && !controlsPinned()) { clearTimeout(controlsTimer); displayControls(false); }
-    else revealControls();
-  });
-  controlsToggle.addEventListener('focus', () => {
-    // Pointer focus precedes click; revealing here would make that same click close it.
-    if (controlsToggle.matches?.(':focus-visible')) revealControls();
-  });
   controls.addEventListener('focusin', revealControls);
   controls.addEventListener('focusout', scheduleControls);
-  controls.addEventListener('pointermove', revealControls);
-  const pictureIsPointing = () => document.getElementById('picture').classList?.contains?.('pointing');
-  document.getElementById('picture').addEventListener('pointermove', event => {
-    if (event.pointerType !== 'touch' && !pictureIsPointing()) revealControls();
+  document.getElementById('stage').addEventListener('pointermove', event => {
+    if (event.pointerType !== 'touch') revealControls();
   });
-  displayControls(false);
-  function positionIdentityEditor() {
-    const picture = document.getElementById('picture');
-    if (typeof picture.getBoundingClientRect !== 'function') return;
-    const outer = player.getBoundingClientRect(), content = picture.getBoundingClientRect();
-    player.style.setProperty('--identity-right', Math.max(6, outer.right - content.right + 6) + 'px');
-  }
-  window.addEventListener('resize', positionIdentityEditor);
+  scheduleControls();
   document.getElementById('pointer').addEventListener('click', () => { if (editing) closeEditor(); }, {capture: true});
   function exitPip() {
     try {
@@ -302,11 +295,11 @@
     video.requestVideoFrameCallback(nextFrame);
   } else { video.addEventListener('timeupdate', frame); }
 
-  // Keep the viewer's screen on after a tap. Wake Lock needs a secure context; plain-HTTP LAN
-  // pages fall back to a tiny muted looping clip; some mobile browsers keep the screen on while it plays.
+  // Keep the viewer's screen on once the picture plays or after a tap. Wake Lock needs a secure context;
+  // otherwise a tiny muted looping clip plays, which keeps the screen on in some mobile browsers.
   function engageAwake() {
     if (keepAwake || mode === 'stopped' || unavailable) return;
-    keepAwake = true; acquireAwake(); awake.setAttribute('aria-pressed', 'true');
+    keepAwake = true; acquireAwake();
   }
   function acquireAwake() {
     if (!keepAwake || document.hidden) return;
@@ -328,7 +321,7 @@
   function releaseAwake() {
     keepAwake = false;
     const lock = wakeLock; wakeLock = undefined; lock?.release().catch(() => {});
-    awakeVideo.pause(); awake.setAttribute('aria-pressed', 'false');
+    awakeVideo.pause();
   }
 
   function toggleSound() {
@@ -338,14 +331,13 @@
     document.getElementById('sound-icon').setAttribute('href', enabled ? '#i-volume' : '#i-volume-x');
     engageAwake(); update(); play();
   }
-  function closeHelp() { document.getElementById('help-panel').hidden = true; help.setAttribute('aria-expanded', 'false'); }
   function fullscreenState() {
     const expanded = document.fullscreenElement === player || video.webkitDisplayingFullscreen;
     action(fullscreen, expanded ? 'Exit full screen' : 'Enter full screen');
     document.getElementById('fullscreen-icon').setAttribute('href', expanded ? '#i-min' : '#i-max');
   }
   function toggleFullscreen() {
-    engageAwake(); closeHelp();
+    engageAwake();
     if (document.fullscreenElement) { document.exitFullscreen().catch(() => {}); return; }
     if (video.webkitDisplayingFullscreen) { video.webkitExitFullscreen(); return; }
     const native = () => { try { video.webkitEnterFullscreen?.(); } catch {} };
@@ -370,29 +362,26 @@
   video.addEventListener('webkitbeginfullscreen', fullscreenState); video.addEventListener('webkitendfullscreen', fullscreenState);
   sound.addEventListener('click', toggleSound);
   retry.addEventListener('click', () => { engageAwake(); if (unavailable) { unavailable = false; config = undefined; poll(); } else { play(); } });
-  awake.addEventListener('click', () => { if (keepAwake) releaseAwake(); else engageAwake(); });
   document.getElementById('picture').addEventListener('click', event => {
     engageAwake();
     if (!event?.target?.closest?.('button') && !pictureIsPointing()) revealControls();
   });
   document.getElementById('picture').addEventListener('dblclick', event => { if (!event.target.closest('button')) toggleFullscreen(); });
   fullscreen.addEventListener('click', toggleFullscreen);
-  help.addEventListener('click', () => {
-    const panel = document.getElementById('help-panel'); panel.hidden = !panel.hidden;
-    help.setAttribute('aria-expanded', String(!panel.hidden)); revealControls();
+  // A click outside the identity editor closes it, as Escape and Cancel do.
+  document.addEventListener('click', event => {
+    if (!editing || !event?.target?.closest) return;
+    if (!event.target.closest('#join') && !event.target.closest('#identity-button')) closeEditor();
   });
-  document.addEventListener('click', event => { if (!help.contains(event.target) && !document.getElementById('help-panel').contains(event.target)) closeHelp(); });
+  const press = id => { const button = document.getElementById(id); if (!button.hidden && !button.disabled) button.click?.(); };
   document.addEventListener('keydown', event => {
     if (event.key === 'Escape' && editing) { event.preventDefault(); closeEditor(); return; }
-    if (event.key === 'Escape' && !document.getElementById('help-panel').hidden) {
-      event.preventDefault(); closeHelp(); help.focus(); return;
-    }
-    if (!event.defaultPrevented && event.key === 'Escape' && controlsShown && document.getElementById('pointer-panel').hidden) {
-      event.preventDefault(); displayControls(false); controlsToggle.focus(); displayControls(false); return;
-    }
     if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey || event.repeat || event.target.closest?.('input,textarea,select,[contenteditable]')) return;
-    if (event.key.toLowerCase() === 'm') { event.preventDefault(); toggleSound(); }
-    if (event.key.toLowerCase() === 'f') { event.preventDefault(); toggleFullscreen(); }
+    const key = event.key.toLowerCase();
+    if (key === 'm') { event.preventDefault(); toggleSound(); }
+    if (key === 'f') { event.preventDefault(); toggleFullscreen(); }
+    if (key === 'p') { event.preventDefault(); press('pointer'); }
+    if (key === 'c') { event.preventDefault(); press('chat-toggle'); }
   });
   async function request(url, options = {}) {
     const controller = new AbortController();
@@ -521,14 +510,21 @@
   }
   const joinName = document.getElementById('join-name');
   joinName.value = viewerName;
-  joinName.addEventListener('input', () => { joinDirty = true; });
+  // The card's avatar follows the draft name and color as they change.
+  function paintJoinAvatar() { paintAvatar(document.getElementById('join-avatar'), shownJoin === 'pending' ? viewerName : joinName.value, draftColor); }
+  joinName.addEventListener('input', () => { joinDirty = true; paintJoinAvatar(); });
+  const hintButton = document.getElementById('join-hint-button');
+  hintButton.addEventListener('click', () => {
+    const open = hintButton.getAttribute('aria-expanded') !== 'true';
+    hintButton.setAttribute('aria-expanded', String(open)); document.getElementById('join-hint').hidden = !open;
+  });
   const swatchInputs = [];
   for (const name of colorNames) {
     const option = document.createElement('label'); option.className = 'swatch'; option.title = name[0].toUpperCase() + name.slice(1);
     const input = document.createElement('input'); input.type = 'radio'; input.name = 'viewer-color'; input.value = name;
     input.setAttribute('aria-label', option.title);
     const dot = document.createElement('span'); dot.style.setProperty('--c', palette[name][0]);
-    input.addEventListener('change', () => { if (input.checked) { draftColor = name; joinDirty = true; } });
+    input.addEventListener('change', () => { if (input.checked) { draftColor = name; joinDirty = true; paintJoinAvatar(); } });
     option.append(input, dot); document.getElementById('join-colors').append(option); swatchInputs.push(input);
   }
   function renderSwatches() { for (const input of swatchInputs) input.checked = input.value === draftColor; }
@@ -551,7 +547,6 @@
     if (changed) { heartbeat(); pointers?.identityChanged?.(); }
   });
   document.getElementById('join-cancel').addEventListener('click', closeEditor);
-  document.getElementById('identity-edit').addEventListener('click', openEditor);
   document.getElementById('identity-button').addEventListener('click', openEditor);
   document.getElementById('join-retry').addEventListener('click', () => {
     if (asking) return;
@@ -563,8 +558,7 @@
   function describe(state) {
     text(document.getElementById('title'), state.title); document.title = state.title + ' · Setbeam';
     document.getElementById('sample').hidden = !state.sample;
-    const network = state.wifiSSID ? 'Stay on ' + state.wifiSSID + '.' : 'Stay on the same network as the operator.';
-    text(document.getElementById('network-hint'), network); text(document.getElementById('join-network'), network);
+    networkHint = state.wifiSSID ? 'Stay on ' + state.wifiSSID + '.' : 'Stay on the same network as the operator.';
   }
   async function applyState(state) {
     const previous = mode; mode = state.state;

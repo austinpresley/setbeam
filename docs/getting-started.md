@@ -29,9 +29,9 @@ The default source build is also ad-hoc signed and not notarized.
 
 ## Connect a source
 
-Open the source control at the top left and choose a detected source or your last working setup. **Enter Stream Address** in the chooser opens RTSP setup directly. The CineView guide offers the Accsoon SEE incoming-stream route. These controls describe the current developer build; earlier published builds use the older menus. For this computer's display, choose **Displays** and select the display name/resolution. Allow Setbeam in Screen Recording when requested, then retry. Setbeam excludes its own windows and includes your cursor. This source has no sound. If the display disconnects, Setbeam waits for that same display.
+Choose **Screen**, **Camera**, **Window**, or **Wireless** on the empty monitor. Click the last-source button to reconnect privately, or **Sample** to try the labeled demo. The source control at the top left opens the chooser or the current source’s actions. The **Stream address** tile under Wireless opens RTSP setup. The CineView guide offers the Accsoon SEE incoming-stream route. These controls describe the current developer build; earlier published builds use the older menus. For this computer's display, choose **Screen** and select the display by name or resolution. Allow Setbeam in Screen Recording when requested, then retry. Setbeam excludes its own windows and includes your cursor. This source has no sound. If the display disconnects, Setbeam waits for that same display.
 
-To share one application window instead, such as Capture One, choose it under **Application windows** in the same chooser. Windows are listed with their application, title, and an updating preview once Setbeam has Screen Recording access; opening the chooser never asks for it. Only that window is shared, without sound, wherever it moves and even when other windows cover it. Its size when chosen sets the picture size; after a resize the whole window is fitted inside that picture without cropping. Minimizing it, hiding its application, or closing it pauses the picture until that same window is shown again. If its application quits, choose the window again: Setbeam never switches to another window or the whole display. After relaunch, Setbeam restores the window privately only while its application is still running.
+To share one application window instead, such as Capture One, choose it under **Windows** in the same chooser. Windows are listed with their application, title, and an updating preview once Setbeam has Screen Recording access; opening the chooser never asks for it. Only that window is shared, without sound, wherever it moves and even when other windows cover it. Its size when chosen sets the picture size; after a resize the whole window is fitted inside that picture without cropping. Minimizing it, hiding its application, or closing it pauses the picture until that same window is shown again. If its application quits, choose the window again: Setbeam never switches to another window or the whole display. The last-source button restores the same window only while its application is still running.
 
 For the physically tested Accsoon CineView Master 4K on firmware 3.30:
 
@@ -39,7 +39,7 @@ For the physically tested Accsoon CineView Master 4K on firmware 3.30:
 2. Join the Wi-Fi network named on the transmitter's screen.
 3. Choose the detected model and network in Setbeam.
 
-Once Setbeam confirms a sustained picture and fresh local playback, it remembers the setup. The next launch restores private monitoring with sharing and Hold off. Complete network addresses and incoming credentials use Keychain.
+Once Setbeam confirms a sustained picture and fresh local playback, it remembers the setup. On the next launch, click the last-source button to restore private monitoring with sharing and Hold off. Complete network addresses and incoming credentials use Keychain.
 
 For the ported Hollyland Pyro H connection:
 
@@ -64,21 +64,22 @@ Native audible output remains unverified. On the development Mac, the audio devi
 
 ## Invite viewers
 
-Click **Start Sharing** above the picture. Open the **Sharing** toolbar control,
-then choose **Invite**, or use **Sharing → Invite Viewers**. Viewers can scan the
-code or open a copied link. Click either small QR code or **Enlarge Codes…** to
-show larger Wi-Fi and viewing codes side by side. **Done** or Escape closes
-them. **Sharing → Show Large Join Codes…** opens the same view.
+Click **Go Live** in the toolbar. Open the **Sharing** toolbar control,
+then choose **Invite**, or use **Sharing → Invite Viewers**. When a Wi-Fi code
+is configured, scan it first, then scan the Watch code. Viewers can also open
+the copied link. Click either QR code or the Enlarge icon for larger codes.
+**Done** or Escape closes them. **Sharing → Show Large Join Codes…** opens the
+same view. The Print icon opens a dated print preview.
 
-**Viewers** shows requests first and playback problems before other joined
-sessions. The circles in **Asking to join** and **Joined** use each viewer's
-chosen color, including later color changes. Hover a circle to see its color
-name. Names and colors are labels chosen by viewers, not verified identities.
-Joined counts browser sessions; playback health appears separately. With viewer approval on, admitted sessions remain listed until you remove them or stop sharing. **No recent update** means playback is unconfirmed; the session still has access and its Remove action remains available.
+**People** lists join requests above the admitted viewers. Use the check and
+cross to admit or decline a request. You can also answer directly from the
+waiting avatar in the toolbar. Avatar rings reflect reported playback health.
+Hover a row to reveal Remove when viewer approval is on. Names and colors are
+chosen by viewers. An admitted browser session stays listed until you remove
+it or stop sharing, including if its playback becomes unconfirmed.
 
-The main window has one local picture. Sharing contains Invite, Viewers, Options
-and Chat without a second live thumbnail. Clicking sharing status opens or
-focuses this Sharing home and preserves the last selected tab.
+The main window has one local picture. Sharing tabs are Invite, People, Chat,
+and Options. The Sharing toolbar button remembers the last selected tab.
 Sharing can sit beside the monitor or in its own window. The independent window
 keeps its own audience controls; opening or closing it never changes media.
 
@@ -88,7 +89,7 @@ Viewers need network access to the Mac. Ethernet can serve viewers while Wi-Fi r
 
 Each viewer receives a separate copy of the picture. With several phones on one Wi-Fi network, open **Sharing → Sharing Options** and choose a lighter **Picture quality** (12, 6, or 3 Mbps per viewer). Your local monitor is unaffected. Open viewer pages reconnect at the new rate.
 
-For Capture One or other still-image review, set the viewers' **Frame rate** to **1 fps** in Sharing Options. Keep **Picture quality** at Best when image detail matters more than motion. FPS changes keep the same image dimensions and bitrate allowance, and external-source local monitoring keeps its original cadence. **Match source** restores the incoming rate, up to 30 fps.
+For Capture One or other still-image review, set the viewers' **Frame rate** to **1 fps** from the ellipsis in Sharing Options. Keep **Picture quality** at Best when image detail matters more than motion. FPS changes keep the same image dimensions and bitrate allowance, and external-source local monitoring keeps its original cadence. **Auto** restores the incoming rate, up to 30 fps.
 
 When using **This Mac's screen** or an application window, **Capture frame rate** in Source Details independently controls the local capture rate. Choose **1 fps** there as well to reduce capture work, or leave **Match display** for the display's rate, up to 30 fps. Both FPS choices are remembered; relaunch still starts privately.
 
@@ -96,21 +97,25 @@ Viewer pages and signaling use local HTTP. Use a trusted local network and keep 
 
 ## Hold, resume, or stop
 
-The labeled controls above the local picture stay available while the Sharing
-panel is closed. **Hold** replaces the audience's source picture with a holding
-screen and suppresses source audio in the outgoing media. Local monitoring
-continues against the same dark surround in light and dark appearance.
-The main picture keeps monitoring the source during Hold. The sharing status
-confirms when viewers receive the holding output. A requested change remains
-**Applying Hold** or **Resuming sharing** until its output is confirmed. A
-failure offers **Retry Hold** or **Retry Resume** for the intended change.
-**Resume Sharing** restores the feed through the same viewer page.
+Click **Go Live** to start sharing. Hover over the picture and click the pause
+button, or choose **Hold** from the **LIVE** tally. Hold replaces the audience’s
+picture and suppresses source audio. The Mac keeps monitoring the source.
+Setbeam shows **Applying Hold** until it confirms the holding picture and
+silence, then switches the tally to **HOLD**. Click the large play button or
+choose **Resume Sharing** from the tally to restore the feed through the same
+viewer page. **Stop Sharing** is in the tally menu.
 **Stop Sharing** ends audience access while leaving your local monitor available. If a viewer permission change cannot be confirmed, Setbeam stops sharing and retires that viewing link. Your private monitor continues. Start sharing again to retry; permissions must apply before the outgoing picture starts.
 
-On the viewer page, sound stays directly available. The three-dot control opens
-secondary actions, which also appear on pointer movement or keyboard focus.
-Focused controls and open editors stay visible. Pointing keeps its picture
-gestures; use the three-dot control while actively pointing.
+On the viewer page the picture fills the window. One row of icons holds sound,
+pointing, chat, picture in picture, and full screen. On a computer or tablet the
+row floats over the picture and fades after a few seconds without movement. The
+LIVE or HOLD tally, the Sample label, and a muted-sound reminder stay in view.
+Keyboard focus and active pointing keep the row in view. Tooltips name the
+shortcuts: M for sound, F for full screen, P for pointing, and C for chat.
+On a phone held upright, the icons sit below the picture and chat stays open
+underneath. Each viewer's avatar in the corner opens their name and color, plus
+pointer options while they point. One tap on the pointer starts or stops
+pointing. The screen stays on while the picture plays.
 
 ## Recover a connection
 
@@ -118,7 +123,7 @@ The selected source and open viewer pages retry after interruptions. Temporary v
 
 If a transmitter power cycle leaves the Mac on another Wi-Fi network, you can turn on **Rejoin automatically** for the saved transmitter in Source Details and enter its Wi-Fi password. It is off by default and asks for Location access, which macOS requires before an app can find a Wi-Fi network by name. Setbeam does not switch networks while viewers depend on the Mac's Wi-Fi.
 
-If the Mac receives a different IP address, viewers need the updated viewing code. Stopping sharing or quitting ends the audience session. Reopening the app restores private monitoring.
+If the Mac receives a different IP address, viewers need the updated viewing code. Stopping sharing or quitting ends the audience session. After quitting, select the last source to resume private monitoring.
 
 To see what happened during a dropout, choose **Show Session Log** in Settings → Diagnostics. The log records connection, recovery, and sharing events with timestamps. It leaves out stream addresses, keys, and viewing links.
 
@@ -187,8 +192,7 @@ saved password. If a saved password is unavailable, re-enter it before exporting
 that Wi-Fi code. Feed-only export remains available independently.
 
 Opening Setbeam from Applications or the Dock brings back the main monitor,
-including when it was closed or minimized. Reopening leaves current monitoring and sharing alone. Cold launch restores
-monitoring privately. The menu-bar menu puts Open Setbeam first and
+including when it was closed or minimized. Reopening leaves current monitoring and sharing alone. After quitting, use the last-source button to reconnect privately. The menu-bar menu puts Open Setbeam first and
 keeps sharing controls, floating preview and pending join requests close at hand.
 
 

@@ -9,6 +9,10 @@
     let admitted = false, active = false, live = false, revision = -1, open = false, posting = false, polling = false;
     let attachment, replyTo, requestID, timer, generation = 0, lastJSON = '';
     let readThrough = 0, lastActivity = 0;
+    // On a phone held upright the conversation fills the space below the picture, so it stays open there.
+    const dockQuery = globalThis.matchMedia?.('(max-width:600px) and (orientation:portrait)');
+    const docked = () => !!dockQuery?.matches;
+    let dockedOpen = false;
     function activity(id) {
       if (!Number.isSafeInteger(id) || id < 0) return;
       lastActivity = id; if (open) readThrough = Math.max(readThrough, id);
@@ -52,7 +56,7 @@
       if (open) { activity(lastActivity); lastJSON = ''; poll(); timer = setInterval(poll, 2000); }
     }
     function reset() {
-      generation++; admitted = false; active = false; show(false); toggle.hidden = true;
+      generation++; admitted = false; active = false; show(false); toggle.hidden = true; dockedOpen = false; player.classList.toggle('chat-docked', false);
       cancelPress();closeActions();closeImage();rovingID=undefined;log.tabIndex=0;
       rows.clear(); log.replaceChildren(); blobs.forEach(URL.revokeObjectURL); blobs.clear(); loadingFrames.clear();
       clearAttachment(); input.value = ''; sizeDraft(); replyTo = undefined; lastJSON = ''; draftState();
@@ -286,7 +290,7 @@
         if(!row){
           const article=document.createElement('article');article.className='chat-message';article.dataset.id=message.id;article.tabIndex=-1;
           article.setAttribute('aria-haspopup','menu');article.setAttribute('aria-roledescription','message');
-          article.innerHTML='<div class="chat-byline" aria-hidden="true"><svg class="chat-avatar" viewBox="0 0 24 24"><path d="m5 3 14 8-6.2 1.5L9.6 19z"/></svg><strong></strong><span class="chat-role"></span><time></time></div><div class="chat-bubble"><p class="chat-quote"></p><p class="chat-text"></p><button class="chat-image-button" type="button" tabindex="-1" hidden><img class="chat-frame" alt="" draggable="false"><span class="chat-image-caption">Image<span class="chat-sample">Sample media</span></span></button></div><div class="chat-reactions" aria-hidden="true"></div><button class="chat-more" type="button" tabindex="-1" aria-label="Message actions" aria-haspopup="menu" aria-expanded="false">•••</button>';
+          article.innerHTML='<div class="chat-byline" aria-hidden="true"><span class="chat-avatar"></span><strong></strong><span class="chat-role"></span><time></time></div><div class="chat-bubble"><p class="chat-quote"></p><p class="chat-text"></p><button class="chat-image-button" type="button" tabindex="-1" hidden><img class="chat-frame" alt="" draggable="false"><span class="chat-image-caption">Image<span class="chat-sample">Sample media</span></span></button></div><div class="chat-reactions" aria-hidden="true"></div><button class="chat-more" type="button" tabindex="-1" aria-label="Message actions" aria-haspopup="menu" aria-expanded="false">•••</button>';
           row={article,message,bubble:article.querySelector('.chat-bubble'),more:article.querySelector('.chat-more'),imageButton:article.querySelector('.chat-image-button'),chips:article.querySelector('.chat-reactions')};
           rows.set(message.id,row);log.append(article);bindMessage(row);
         }
@@ -295,7 +299,8 @@
         row.article.classList.toggle('own',own);row.article.classList.toggle('group-start',start);
         row.article.querySelector('.chat-byline').hidden=!start||own;
         const palette=globalThis.SetbeamPointers?.COLORS||{};
-        row.article.querySelector('.chat-avatar').style.color=palette[message.color]?.[0]||'#a9b7cb';
+        const avatar=row.article.querySelector('.chat-avatar'),colors=palette[message.color]||['#a9b7cb','#111'];
+        avatar.style.setProperty('--c',colors[0]);avatar.style.setProperty('--t',colors[1]);text(avatar,([...(message.name||'').trim()][0]||'').toUpperCase());
         text(row.article.querySelector('strong'),message.name);row.article.querySelector('strong').title=message.name;
         text(row.article.querySelector('.chat-role'),message.operatorMessage?'✓':'');
         const time=new Date(message.sentAt*1000).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'});
@@ -379,7 +384,9 @@
         if (!menu.hidden) { event.preventDefault();closeActions(true);return; }
         if(imageDialog.open){event.preventDefault();closeImage();return;}
         if(copyDialog.open){event.preventDefault();closeCopy();return;}
-        if(!$('chat-information').hidden){event.preventDefault();$('chat-information').hidden=true;$('chat-info').setAttribute('aria-expanded','false');return;} event.preventDefault(); show(false); toggle.focus(); }
+        if(!$('chat-information').hidden){event.preventDefault();$('chat-information').hidden=true;$('chat-info').setAttribute('aria-expanded','false');return;}
+        if (docked()) return;
+        event.preventDefault(); show(false); toggle.focus(); }
     });
     function viewport() {
       const view = globalThis.visualViewport;
@@ -392,12 +399,20 @@
     globalThis.visualViewport?.addEventListener('resize', viewport);
     globalThis.visualViewport?.addEventListener('scroll', viewport);
     globalThis.addEventListener('resize', viewport); viewport();
+    // Turning the phone sideways returns the picture's full height; chat opened by docking closes there.
+    function dock() {
+      const on = docked() && admitted && active;
+      player.classList.toggle('chat-docked', on); toggle.hidden = !admitted || !active || on;
+      if (on && !open) { show(true); dockedOpen = true; }
+      else if (!on && dockedOpen) { dockedOpen = false; if (open) show(false); }
+    }
+    dockQuery?.addEventListener?.('change', dock);
     return {activity, update(next) {
       if (!next.admitted || !next.active) { if (admitted || active) reset(); return; }
       admitted = next.admitted; active = next.active; live = next.live;
       if (revision !== next.revision || !live) clearAttachment();
-      revision = next.revision; toggle.hidden = false; draftState();
-      player.classList.toggle('chat-open', open);
+      revision = next.revision; draftState();
+      player.classList.toggle('chat-open', open); dock();
     }};
   }
   globalThis.SetbeamChat = {attach};

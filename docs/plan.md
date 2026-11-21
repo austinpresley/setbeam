@@ -1,5 +1,65 @@
 # Setbeam execution plan
 
+## Dedicated Google TV receiver, 2026-11-17
+
+Austin authorized an Opus 5.5 High implementation team to build a native
+Android TV/Google TV receiver for an inexpensive onn 4K device. After one-time
+network and host setup, the intended routine is power on, open the receiver,
+ask the paired Mac, and play only after the Mac operator admits it.
+
+Reuse the existing ask-only short address, viewer admission and read-only
+WebRTC output. Discover only an operator-enabled short address and retain
+the configured Mac identity; never select an arbitrary nearby session or
+broadcast viewing credentials. Hold, removal, Stop and source recovery keep
+their existing meaning. Persist refusal for the current share across a
+receiver restart. New shares require approval again. Trusted-device automatic
+admission is deferred.
+
+Build the native receiver, a reversible startup configuration tool, and local
+protocol/access/recovery checks. Qualify automatic Home startup, cold power
+restoration, standby wake, Wi-Fi recovery, sustained 4K H.264 decoding and true
+4K HDMI output on an exact physical model and firmware before claiming
+hardware support. Emulator evidence is software evidence only. All builds,
+tests and package checks run locally; hosted CI remains disabled.
+
+Startup setup must measure the actual HOME resolution. Consumer Google TV's
+system launcher can outrank a chosen third-party default. The provisioning tool
+refuses HOME changes below Android 14 rather than claiming exact restoration
+without a readable prior holder. On those builds use `--no-set-home` and test
+the receiver's boot-start path with an explicit background-start permission,
+or the documented launcher fallback. Neither path is qualified on onn hardware.
+
+The developer implementation is complete. Native and startup changes have
+independent Opus sign-off; local checks and real-stack Google TV emulator
+checks pass, including no-input playback after graceful and hard reboots and
+a decoded 4K buffer with a 1080p interface. The working emulator path uses the
+boot receiver and explicitly saved background-start permission, not HOME
+replacement. [Verification](verification-tv-receiver.md) records the builds,
+corrections and remaining exact-device qualification.
+
+On 2026-11-18 Austin requested clean TV playback and approved standard-remote
+navigation. Receiver 0.1.1 removed the persistent title/Live badge; the title is
+available in diagnostics. Receiver 0.1.2 adds an OK menu for Connection info
+and Mac settings, with Left/Right selection, Back dismissal, and a 10-second
+idle timeout. Status cards expose the same menu through Receiver options.
+Playback continues beneath the menu. [Clean-playback verification](verification-tv-receiver-clean-playback.md)
+and [remote-menu verification](verification-tv-receiver-remote-menu.md) record
+the updated APKs and local software checks.
+
+Receiver 0.2.0 (2026-11-18, requested as a full build-out) adds the read-only
+viewer features an admitted session already has: session chat (panel and
+optional pop-ups) and other viewers' shared pointers. It adds a Sound choice,
+a setup list of Macs on the network, and icons on the menu. The receiver
+never posts chat or sends a pointer, and both clear with any loss of
+admission. [0.2.0 verification](verification-tv-receiver-0.2.0.md) records
+the checks. Physical qualification is still the remaining TV work.
+
+Receiver 0.2.1 (2026-11-19) makes setup discovery-first and fits the remote
+controls into one row. It adds a one-press connection to discovered Macs,
+moves manual entry and startup to their own screens, and shortens the status
+messages. [TV setup and controls verification](verification-tv-receiver-usability.md)
+records the comparative captures and local checks.
+
 Date: 2026-10-20. Austin authorized a fork of `titleunknown/holly-share`, the name `setbeam`, a working copy in Project Vault's Projects directory, and continued implementation in this thread. The earlier suggestion to start an independent repository is superseded by that explicit fork request.
 
 ## Viewer access fixes and public update, build 40

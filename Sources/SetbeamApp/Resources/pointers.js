@@ -29,24 +29,29 @@
 
   function attach(viewer) {
     const $ = id => document.getElementById(id);
-    const picture = $('picture'), video = $('video'), layer = $('pointer-layer'), button = $('pointer'), panel = $('pointer-panel');
+    const picture = $('picture'), video = $('video'), layer = $('pointer-layer'), button = $('pointer');
     const share = $('pointer-share'), showOthers = $('pointer-show'), status = $('pointer-status');
     // The viewer's one name and color, chosen on the join card, label this pointer.
     const color = () => Object.hasOwn(COLORS, viewer.color?.()) ? viewer.color() : 'blue';
     let enabled = false, live = false, wanted = false, joined = false, socket, retryAt = 0, retryDelay = 1000, denied = '';
     let serverRevision = -1, lastSent, pending, sendTimer, pingTimer, sweepTimer, sharing = true, ownExpires = 0, ownPoint;
     const marks = new Map();
-    let lastRevision, lastInputs = '';
+    let lastRevision, lastInputs = '', statusTimer;
 
-    function say(value) { if (status.textContent !== value) status.textContent = value; }
+    // Status appears briefly over the picture: the first-use hint, then only changes and problems.
+    function say(value) {
+      if (status.textContent === value) return;
+      status.textContent = value; status.hidden = !value;
+      clearTimeout(statusTimer);
+      if (value) statusTimer = setTimeout(() => { status.hidden = true; }, 4000);
+    }
     function refresh() {
       button.hidden = !enabled;
-      button.setAttribute('aria-pressed', String(joined && wanted));
-      $('pointer-join').textContent = wanted ? 'Stop pointing' : 'Start pointing';
+      button.setAttribute('aria-pressed', String(wanted));
+      action(wanted ? 'Stop pointing' : 'Point at the picture');
       $('pointer-share-row').hidden = !wanted; $('pointer-show-row').hidden = !wanted;
       picture.classList.toggle('pointing', joined && wanted && sharing && live);
       layer.hidden = !showOthers.checked;
-      if (!enabled) { panel.hidden = true; button.setAttribute('aria-expanded', 'false'); }
       if (denied === 'name') say('Choose a name before pointing.');
       else if (denied === 'full') say('Too many people are pointing right now.');
       else if (denied) say('Pointing is unavailable for this page.');
@@ -201,23 +206,19 @@
     window.addEventListener('resize', layout); video.addEventListener('resize', layout); video.addEventListener('loadedmetadata', layout);
     document.addEventListener('fullscreenchange', layout);
 
-    button.addEventListener('click', () => {
-      panel.hidden = !panel.hidden; button.setAttribute('aria-expanded', String(!panel.hidden));
-      if (!panel.hidden) { refresh(); $('pointer-join').focus(); }
-    });
-    document.addEventListener('click', event => {
-      if (!panel.hidden && !panel.contains(event.target) && !button.contains(event.target)) { panel.hidden = true; button.setAttribute('aria-expanded', 'false'); }
-    });
-    document.addEventListener('keydown', event => {
-      if (event.key === 'Escape' && !panel.hidden) { event.preventDefault(); panel.hidden = true; button.setAttribute('aria-expanded', 'false'); button.focus(); }
-    });
-    $('pointer-form').addEventListener('submit', event => {
-      event.preventDefault();
+    function action(name) {
+      if (button.getAttribute('aria-label') === name) return;
+      button.setAttribute('aria-label', name); button.setAttribute('title', name + ' (P)');
+    }
+    // One tap starts pointing and another stops it.
+    function toggle() {
       if (wanted) { wanted = false; denied = ''; hide(); close(); refresh(); return; }
       // A session without a name chooses one on the join card first; pointing never asks for a second name.
-      if (!viewer.name()) { denied = 'name'; refresh(); panel.hidden = true; button.setAttribute('aria-expanded', 'false'); viewer.editIdentity?.(); return; }
+      if (!viewer.name()) { denied = 'name'; refresh(); viewer.editIdentity?.(); return; }
       wanted = true; denied = ''; retryAt = 0; retryDelay = 1000; open(); refresh();
-    });
+    }
+    button.addEventListener('click', toggle);
+    $('pointer-form').addEventListener('submit', event => { event.preventDefault(); toggle(); });
     share.addEventListener('change', () => {
       if (!share.checked) { pending = undefined; clearTimeout(sendTimer); sendTimer = undefined; hide(); }
       sharing = share.checked; refresh();

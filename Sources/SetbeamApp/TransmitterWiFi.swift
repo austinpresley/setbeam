@@ -42,6 +42,7 @@ final class RejoinPermit: @unchecked Sendable {
     private let location = CLLocationManager()
 
     var interfaceName: String? { CWWiFiClient.shared().interface()?.interfaceName }
+    var connectedName: String? { CWWiFiClient.shared().interface()?.ssid() }
     var locationAllowed: Bool { location.authorizationStatus == .authorizedAlways }
     var locationDenied: Bool { [.denied, .restricted].contains(location.authorizationStatus) }
     func requestLocation() { if location.authorizationStatus == .notDetermined { location.requestWhenInUseAuthorization() } }

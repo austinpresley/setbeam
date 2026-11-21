@@ -62,6 +62,23 @@ thumbnail, including in its separate window. The existing sharing commands and
 status still distinguish private monitoring, live output, transitions and Hold.
 A floating monitor stays an explicit optional action.
 
+## Simpler Mac monitor and Sharing panel
+
+The empty monitor offers Screen, Camera, Window, and Wireless, plus the last
+working source and Sample when available. A cold launch waits for a choice.
+The wireless chooser shows the transmitter route and recorded hardware evidence
+on each card. The recovery checklist shows the step that needs attention.
+
+The main toolbar has one sharing tally. Go Live starts sharing. LIVE opens
+Hold and Stop Sharing. Confirmed Hold changes the tally to amber and reveals
+the central play control over the local picture. Transitions and failed
+operations keep their own state until Setbeam can confirm the outgoing feed.
+
+The docked Sharing panel opens to icon tabs. Invite places Wi-Fi and Watch
+codes in scan order. People places pending requests above admitted viewers.
+Options keeps common choices in view and reveals Apply Output after a draft
+changes. Icon controls carry names for keyboard and assistive technology.
+
 Build 37 supersedes the row treatment with grouped bubbles and contextual
 reply/reaction actions across native and browser chat. Shared images are compact attachments that enlarge on request. Keep the
 draft and its capture, identity and Send controls together in one composer.

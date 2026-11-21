@@ -1,8 +1,16 @@
 import Foundation
 
 enum SharingSection: String, CaseIterable, Identifiable {
-    case invite = "Invite", viewers = "Viewers", options = "Options", chat = "Chat"
+    case invite = "Invite", viewers = "People", chat = "Chat", options = "Options"
     var id: String { rawValue }
+    var symbol: String {
+        switch self {
+        case .invite: return "qrcode"
+        case .viewers: return "person.2"
+        case .chat: return "bubble.left"
+        case .options: return "slider.horizontal.3"
+        }
+    }
 }
 
 enum SettingsSection: String { case permissions, diagnostics }

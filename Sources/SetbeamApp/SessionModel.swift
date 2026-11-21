@@ -28,6 +28,10 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
     @Published private(set) var shortAddressEnabled: Bool
     @Published private(set) var shortAddress: ShortAddressListener.State = .stopped
     private let shortAddressListener = ShortAddressListener()
+    /// Advertises `_setbeam._tcp` for native receivers, only while the short address answers.
+    private let receiverDiscovery = ReceiverDiscoveryPublisher()
+    private var receiverDiscoveryState: ReceiverDiscoveryState = .stopped
+    private let receiverDiscoveryID: String
     /// Changes with each viewing link, so a request from an earlier link can never be admitted into this one.
     private(set) var viewingLink = 0
     /// Requests to join, announced once each with a card that keeps this Mac's other apps in front.
@@ -54,6 +58,7 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
     let sourceBrowser: SourceBrowser
     @Published var pipVisible = false
     @Published var sheet: AppSheet?
+    private(set) var sourceCategory: SourceCategory?
     @Published var sourceDetailsDirty = false
     var protectsSourceDraft: Bool { sheet == .sourceDetails && sourceDetailsDirty }
     @Published var sharingSection: SharingSection?
@@ -212,12 +217,22 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
         localAddressEnabled = defaults.object(forKey: "localAddressEnabled") as? Bool ?? true
         localAddressLabel = defaults.string(forKey: "localAddressName").flatMap { try? LocalAddressName.validated($0).get() } ?? LocalAddressName.defaultLabel
         shortAddressEnabled = defaults.bool(forKey: "shortAddressEnabled")
+        if let saved = defaults.string(forKey: "receiverDiscoveryID"), ReceiverAdvertisement.isInstallationID(saved) {
+            receiverDiscoveryID = saved
+        } else {
+            let fresh = ReceiverAdvertisement.newInstallationID()
+            receiverDiscoveryID = fresh
+            if !integration { defaults.set(fresh, forKey: "receiverDiscoveryID") }
+        }
         localAddressPublisher.onChange = { [weak self] state in
             // Deliver in order; the publisher reports each change once on its own queue.
             DispatchQueue.main.async { MainActor.assumeIsolated { self?.localAddressChanged(state) } }
         }
         shortAddressListener.onChange = { [weak self] state in
             DispatchQueue.main.async { MainActor.assumeIsolated { self?.shortAddressChanged(state) } }
+        }
+        receiverDiscovery.onChange = { [weak self] state in
+            DispatchQueue.main.async { MainActor.assumeIsolated { self?.receiverDiscoveryChanged(state) } }
         }
         joinRequests.model = self
         audienceControl.observe(state)
@@ -289,10 +304,6 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
     var strugglingViewers: [ViewerActivity] {
         guard state.sharing, !state.holding else { return [] }
         return viewers.filter { $0.health == .struggling }
-    }
-    var viewersForDetails: [ViewerActivity] {
-        let first = Set((pendingViewers + strugglingViewers).map(\.id))
-        return pendingViewers + strugglingViewers + viewers.filter { !first.contains($0.id) }
     }
     var openedViewers: Int { admittedViewers.count }
     var otherDeviceViewers: Int { viewers.filter { $0.playing && !$0.onThisMac }.count }
@@ -540,9 +551,7 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
         observers.append(center.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.refreshCaptureDevices(); self?.localPlayer.retry(); self?.audiencePlayer.retry() }
         })
-        if integration { connect(SourceSetup(kind: .sample, name: "Sample feed"), remember: false) }
-        else if let saved = provenSetup { restore(saved) }
-        else if showsPermissionsAtLaunch { defaults.set(true, forKey: "permissionsIntroduced"); sheet = .permissions }
+        if integration { openSample() }
         pollTask = Task { [weak self] in
             var tick = 0
             while !Task.isCancelled {
@@ -606,9 +615,12 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
         return true
     }
     func showJoinCodes() { present(.join) { loadViewingWiFi() } }
-    func openSources() {
-        guard present(.connection) else { return }
-        refreshCaptureDevices(); Task { await refreshWireless() }
+    func openSources(category: SourceCategory? = nil) {
+        guard present(.connection, prepare: { sourceCategory = category }) else { return }
+        refreshCaptureDevices()
+    }
+    func openSample() {
+        connect(SourceSetup(kind: .sample, name: "Sample feed"), remember: false)
     }
     /// The source kinds chosen in Permissions, so reopening it explains the same access.
     var permissionUses: PermissionUses {
@@ -622,8 +634,6 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
             defaults.set(["screen": newValue.screen, "camera": newValue.camera, "transmitter": newValue.transmitter, "sharing": newValue.sharing], forKey: "permissionUses")
         }
     }
-    /// First run explains access before any source asks for it. A Mac with a working setup has already been through it.
-    var showsPermissionsAtLaunch: Bool { !integration && provenSetup == nil && !defaults.bool(forKey: "permissionsIntroduced") }
     func refreshWireless() async {
         do { wirelessDevices = try await runtime.discoverWireless(); wirelessDiscoveryProblem = nil }
         catch { wirelessDiscoveryProblem = error.localizedDescription }
@@ -1163,7 +1173,7 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
     /// Removes the name and stops answering the short address at once. Every caller also ends or rotates
     /// the viewing link, which retires the short-address path, so waiting pages see sharing end, not a refusal.
     private func retireLocalAddress() {
-        localAddressPublisher.stop(); shortAddressListener.stop()
+        receiverDiscovery.stop(); localAddressPublisher.stop(); shortAddressListener.stop()
     }
     func setShortAddress(enabled: Bool) {
         guard enabled != shortAddressEnabled else { return }
@@ -1182,6 +1192,7 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
     /// The gateway accepts new short-address requests while it is open. Port 80 answers only once the
     /// name is active, and only connections to the viewing address.
     private func updateShortAddress() {
+        defer { updateReceiverDiscovery() }
         let open = shortAddressOpen
         gateway.setShortAddress(open: open)
         guard open, let label = localAddress.activeLabel, let port = gatewayPort, let path = gateway.shortAddressPath else {
@@ -1191,6 +1202,7 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
     }
     func shortAddressChanged(_ value: ShortAddressListener.State) {
         shortAddress = value
+        updateReceiverDiscovery()
         let detail: [String: Any]
         switch value {
         case .stopped: detail = ["state": "stopped"]
@@ -1199,6 +1211,26 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
         case .unavailable(let problem): detail = ["state": "unavailable", "problem": problem.rawValue]
         }
         SessionLog.shared.record("short.address", detail)
+    }
+    /// Receivers can discover the short address exactly while typing it works. The listener's own state is
+    /// read directly, so a stop takes effect before its asynchronous change notice arrives.
+    private func updateReceiverDiscovery() {
+        receiverDiscovery.publish(shuttingDown ? nil : ReceiverAdvertisement.current(
+            shortAddressOpen: shortAddressOpen, listener: shortAddressListener.state, localAddress: localAddress,
+            askPath: gateway.shortAddressPath, interface: viewerInterface, installationID: receiverDiscoveryID))
+    }
+    func receiverDiscoveryChanged(_ value: ReceiverDiscoveryState) {
+        guard value != receiverDiscoveryState else { return }
+        receiverDiscoveryState = value
+        let detail: [String: Any]
+        switch value {
+        case .stopped: detail = ["state": "stopped"]
+        case .registering: detail = ["state": "registering"]
+        case .active(let name): detail = ["state": "active", "renamed": name != localAddress.activeLabel]
+        case .unavailable(let problem): detail = ["state": "unavailable", "problem": String(describing: problem)]
+        }
+        SessionLog.shared.record("receiver.discovery", detail)
+        writeExperienceState()
     }
     /// The typed name that opens the short address now, if any.
     var shortAddressHost: String? {
@@ -1263,6 +1295,14 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
             }
         } else { viewingWiFiPasswordAvailable = true }
         loadedWiFiSSID = wifiSSID
+    }
+    /// A hidden Wi-Fi name is inconclusive. An inactive Wi-Fi interface is a known miss.
+    var isOnSourceWiFi: Bool? {
+        if let expected = setup?.sourceWiFi, !expected.isEmpty, let actual = transmitterWiFi.connectedName {
+            return expected == actual
+        }
+        if let name = transmitterWiFi.interfaceName, !networks.contains(where: { $0.interface == name }) { return false }
+        return nil
     }
     func openWiFiSettings() { NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.wifi-settings-extension")!) }
     func openPrivacySettings() { NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_\(screenPermissionDenied || setup?.kind.isMacCapture == true ? "ScreenCapture" : "Camera")")!) }
@@ -1344,7 +1384,7 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
             "localAddressEnabled": localAddressEnabled, "localAddressName": localAddressLabel,
             "localAddressActive": localAddress.activeLabel ?? "", "localAddressStatus": localAddressStatus.text,
             "shortAddressEnabled": shortAddressEnabled, "shortAddressOpen": shortAddressOpen, "shortAddressActive": shortAddressHost ?? "",
-            "shortAddressStatus": shortAddressStatus.text, "sharingPanel": sharingSection?.rawValue ?? "",
+            "shortAddressStatus": shortAddressStatus.text, "receiverDiscovery": receiverDiscoveryState.label, "sharingPanel": sharingSection?.rawValue ?? "",
             "sharingInWindow": sharingInWindow, "sharingFocusRequest": sharingFocusRequest, "sheet": sheet?.rawValue ?? "", "joinRequestCard": joinRequests.isShowing,
             "joinRequestsShown": joinRequests.requests.count, "joinRequestAlerts": joinRequests.alerts])
     }
@@ -1369,5 +1409,17 @@ struct WindowReturnRetry {
         guard now.timeIntervalSince(returned) >= 3 else { return false }
         returnedAt = nil
         return true
+    }
+}
+
+private extension ReceiverDiscoveryState {
+    /// A plain value for the integration state file. Never carries a code or credential.
+    var label: String {
+        switch self {
+        case .stopped: return "stopped"
+        case .registering: return "registering"
+        case .active(let name): return "active:\(name)"
+        case .unavailable: return "unavailable"
+        }
     }
 }

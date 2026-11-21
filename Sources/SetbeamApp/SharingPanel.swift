@@ -7,25 +7,16 @@ struct SharingPanel: View {
     var detached = false
     var body: some View {
         VStack(spacing: 0) {
-            if detached { MonitorCommandBar(model: model); Divider() }
-            VStack(alignment: .leading, spacing: 12) {
-                if !detached { HStack {
-                    Text("Sharing").font(.headline)
-                    Spacer()
-                    Button { model.showSharingInWindow() } label: { Image(systemName: "arrow.up.right.square") }
-                        .buttonStyle(.plain).help("Open Sharing in a separate window").accessibilityLabel("Open Sharing in a separate window")
-                    Button { model.closeSharing() } label: { Image(systemName: "xmark") }
-                        .buttonStyle(.plain).help("Close Sharing panel").accessibilityLabel("Close Sharing panel")
-                } }
-                Picker("Sharing section", selection: Binding(get: { model.sharingSection ?? .invite }, set: { model.showSharing($0) })) {
-                    ForEach(SharingSection.allCases) { section in Text(section == .chat && model.chatUnreadCount > 0 ? "Chat (\(min(99, model.chatUnreadCount)))" : section.rawValue).tag(section) }
-                }.pickerStyle(.segmented).labelsHidden().accessibilityLabel("Sharing section")
-                if detached, let error = model.error {
-                    Label { Text(error).foregroundStyle(.primary) }
-                        icon: { Image(systemName: "exclamationmark.circle").foregroundStyle(.orange) }.font(.caption)
-                }
-            }.padding(20)
+            if detached {
+                HStack { Spacer(); SharingTally(model: model) }.padding(12).background(SetbeamChrome.toolbar)
+                Divider()
+            }
+            tabs
             Divider()
+            if detached, let error = model.error {
+                Label(error, systemImage: "exclamationmark.circle").font(.caption)
+                    .padding(8).foregroundStyle(SetbeamChrome.amberText)
+            }
             if model.sharingSection == .chat {
                 SessionChatView(model: model).frame(maxHeight: .infinity).layoutPriority(1)
             }
@@ -39,14 +30,14 @@ struct SharingPanel: View {
                         case .options: SharingOptionsView(model: model)
                         case .chat: EmptyView()
                         }
-                    }.padding(20).frame(maxWidth: .infinity, alignment: .leading).id("sharing-top")
+                    }.padding(16).frame(maxWidth: .infinity, alignment: .leading).id("sharing-top")
                 }
                 .onChange(of: model.sharingSection) { _, _ in scroll.scrollTo("sharing-top", anchor: .top) }
                 .onChange(of: model.sharingOptionsTarget) { _, _ in scroll.scrollTo("viewing-network", anchor: .top) }
             }
             }
         }.frame(minWidth: SharingPanelLayout.width, maxWidth: .infinity, maxHeight: .infinity)
-            .background(Color(nsColor: .windowBackgroundColor))
+            .background(SetbeamChrome.panel)
             .accessibilityElement(children: .contain).accessibilityLabel("Sharing")
             .accessibilityIdentifier("sharingPanel")
             .onAppear {
@@ -56,6 +47,40 @@ struct SharingPanel: View {
                 }
             }
     }
+
+    private var tabs: some View {
+        HStack(spacing: 4) {
+            HStack(spacing: 2) {
+                ForEach(SharingSection.allCases) { section in
+                    let badge = section == .viewers ? model.pendingViewers.count : section == .chat ? model.chatUnreadCount : 0
+                    let selected = section == (model.sharingSection ?? .invite)
+                    Button { model.showSharing(section) } label: {
+                        Image(systemName: section.symbol).font(.system(size: 16))
+                            .frame(maxWidth: .infinity, minHeight: 32)
+                            .foregroundStyle(selected ? .primary : .secondary)
+                            .background(selected ? SetbeamChrome.raised : .clear, in: RoundedRectangle(cornerRadius: 6))
+                            .shadow(color: selected ? .black.opacity(0.13) : .clear, radius: 1, y: 1)
+                            .contentShape(Rectangle())
+                            .overlay(alignment: .topTrailing) {
+                                if badge > 0 {
+                                    ChromeBadge(count: badge, color: section == .viewers ? SetbeamChrome.amber : SetbeamChrome.red,
+                                                foreground: section == .viewers ? SetbeamChrome.onAmber : .white)
+                                        .padding(.trailing, 2)
+                                }
+                            }
+                    }.buttonStyle(ChromeButtonStyle())
+                        .help(section.rawValue).accessibilityLabel(section.rawValue)
+                        .accessibilityValue(badge == 0 ? "" : "\(badge) \(section == .viewers ? "waiting" : "unread")")
+                        .accessibilityAddTraits(selected ? .isSelected : [])
+                }
+            }.padding(2).background(SetbeamChrome.segment, in: RoundedRectangle(cornerRadius: 8))
+            if !detached {
+                ChromeIconButton("Open Sharing in a separate window", symbol: "arrow.up.right.square", size: 28) { model.showSharingInWindow() }
+                ChromeIconButton("Close Sharing panel", symbol: "xmark", size: 28) { model.closeSharing() }
+            }
+        }.padding(.horizontal, 12).padding(.vertical, 12)
+    }
+
 }
 
 struct SharingWindowView: View {
@@ -73,83 +98,145 @@ struct SharingWindowView: View {
 
 struct SharingViewersView: View {
     @ObservedObject var model: SessionModel
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
+        VStack(alignment: .leading, spacing: 16) {
             if !model.pendingViewers.isEmpty {
-                viewerGroup("Asking to join · \(model.pendingViewers.count)", viewers: model.pendingViewers)
-                Text("Names and colors are chosen by viewers and are not verified.").font(.caption).foregroundStyle(.secondary)
+                HStack {
+                    count(model.pendingViewers.count, symbol: "hand.raised", name: "waiting to join", tint: SetbeamChrome.amberText)
+                    Spacer()
+                    Image(systemName: "info.circle").foregroundStyle(.secondary)
+                        .help("Names and colors are chosen by viewers. Each request is a browser session.")
+                        .accessibilityLabel("Names and colors are chosen by viewers and are not verified.")
+                }
+                ForEach(model.pendingViewers) { viewer in ViewerRequestRow(model: model, viewer: viewer) }
                 Divider()
             }
             if model.admittedViewers.isEmpty {
                 Label(model.state.sharing ? "No viewers yet" : "Sharing is off", systemImage: "person.2").font(.headline)
-                Text(model.state.sharing ? "Invite viewers with the link or QR code. Fresh playback appears here." : "Your monitor stays private. Start sharing when you are ready to invite viewers.")
-                    .font(.callout).foregroundStyle(.secondary)
                 Button("Invite Viewers") { model.showSharing(.invite) }.buttonStyle(.link)
             } else {
-                viewerGroup("Joined · \(model.admittedViewers.count)", viewers: model.viewersForDetails.filter { $0.admission == .admitted })
-                if model.pendingViewers.isEmpty {
-                    Text("Each row is a browser session. Names and colors are chosen by viewers and are not verified.").font(.caption).foregroundStyle(.secondary)
+                HStack(spacing: 16) {
+                    count(model.admittedViewers.count, symbol: "person.2", name: "joined", tint: .primary)
+                    count(model.admittedViewers.filter { $0.playing && $0.health != .struggling }.count,
+                          symbol: "play.fill", name: "playing without reported problems", tint: SetbeamChrome.greenText)
+                    if !model.strugglingViewers.isEmpty {
+                        count(model.strugglingViewers.count, symbol: "cellularbars", name: "struggling", variableValue: 0.25, tint: SetbeamChrome.amberText)
+                    }
                 }
+                VStack(spacing: 0) {
+                    ForEach(model.admittedViewers) { viewer in ViewerActivityRow(model: model, viewer: viewer) }
+                }.padding(.horizontal, -8)
             }
         }
     }
-    private func viewerGroup(_ title: String, viewers: [ViewerActivity]) -> some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack {
-                Text(title).font(.headline)
-                Spacer(minLength: 8)
-                if viewers.first?.admission == .admitted {
-                    Text("\(model.verifiedViewers) playing").font(.caption).foregroundStyle(.secondary)
-                }
-            }
-            ForEach(viewers) { viewer in
-                ViewerActivityRow(viewer: viewer, canRemove: model.viewerApproval && viewer.admission == .admitted,
-                    stackedAdmissionActions: true,
-                    audiencePresentation: model.audiencePresentation,
-                    shortAddressHost: model.shortAddressHost,
-                    admit: { model.admitViewer(viewer) }, decline: { model.declineViewer(viewer) }, remove: { model.removeViewer(viewer) })
-                    .padding(viewer.admission == .pending ? 12 : 0)
-                    .background {
-                        if viewer.admission == .pending { RoundedRectangle(cornerRadius: 8).fill(.quaternary.opacity(0.35)) }
-                    }
-            }
-        }
+
+    private func count(_ count: Int, symbol: String, name: String, variableValue: Double? = nil, tint: Color) -> some View {
+        Label { Text("\(count)") } icon: { Image(systemName: symbol, variableValue: variableValue) }
+            .font(.callout.weight(.semibold)).monospacedDigit()
+            .foregroundStyle(tint).help("\(count) \(name)").accessibilityLabel("\(count) \(name)")
     }
 }
 
 struct SharingInviteView: View {
     @ObservedObject var model: SessionModel
     @State private var editingWiFi = false
-    var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            if !model.canInviteOtherDevices {
-                ViewingNetworkRequiredView(model: model)
-            } else {
-                HStack {
-                    Text("Join the feed").font(.headline)
-                    Spacer()
-                    Button("Enlarge Codes…") { model.showJoinCodes() }
-                        .disabled(model.protectsSourceDraft || !model.state.sharing && model.wifiSSID.isEmpty)
-                        .help(model.protectsSourceDraft ? "Save or cancel Source Details to enlarge codes" : "Show larger Wi-Fi and viewing QR codes")
-                }
-                InvitationCodesView(model: model, codeSize: 128, editingWiFi: $editingWiFi)
-                if model.state.sharing {
-                    InvitationLinkActions(model: model)
-                    if model.localAddressEnabled { InvitationAddressView(model: model) }
-                    if model.wifiSSID.isEmpty {
-                        Text(model.viewingInstructions).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                    }
-                } else {
-                    Text("The viewing code appears when you start sharing.").font(.callout).foregroundStyle(.secondary)
-                }
-            }
-            if model.wifiSSID.isEmpty || !model.canInviteOtherDevices {
-                DisclosureGroup(model.viewingWiFiDraft != nil ? "Wi-Fi Draft…" : model.wifiSSID.isEmpty ? "Add Viewing Wi-Fi…" : "Edit Viewing Wi-Fi…", isExpanded: $editingWiFi) {
-                    ViewingWiFiEditor(model: model) { editingWiFi = false }.padding(.top, 12)
-                }
-            }
+    @State private var printProblem: String?
+    @State private var addressExpanded = false
 
-        }.onAppear { editingWiFi = model.viewingWiFiDraft != nil }
+    var body: some View {
+        VStack(spacing: 20) {
+            Button { model.present(.rename) } label: {
+                HStack(spacing: 8) {
+                    Text(model.title).font(.system(size: 15, weight: .semibold)).lineLimit(2)
+                    Image(systemName: "pencil").font(.caption).foregroundStyle(.secondary)
+                }.contentShape(Rectangle())
+            }.buttonStyle(.plain).disabled(model.protectsSourceDraft)
+                .help("Rename session · \(model.title)").accessibilityLabel("Rename session, \(model.title)")
+            if model.canInviteOtherDevices {
+                InvitationCodesView(model: model, codeSize: 112)
+                actions
+                if !model.state.sharing {
+                    Text("The viewing code appears when you go live.").font(.caption).foregroundStyle(.secondary)
+                } else if model.wifiSSID.isEmpty {
+                    Text(model.viewingInstructions).font(.caption).foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                if model.state.sharing && model.localAddressEnabled { localAddress }
+            } else {
+                ViewingNetworkRequiredView(model: model)
+                Button("Edit Viewing Wi-Fi…") { editingWiFi.toggle() }.buttonStyle(.link)
+            }
+            if let printProblem { Text(printProblem).font(.caption).foregroundStyle(SetbeamChrome.amberText) }
+            if editingWiFi { ViewingWiFiEditor(model: model) { editingWiFi = false } }
+        }.frame(maxWidth: .infinity)
+            .padding(.top, 8)
+            .onAppear { editingWiFi = model.viewingWiFiDraft != nil }
+    }
+
+    private var actions: some View {
+        HStack(spacing: 8) {
+            inviteButton(model.copiedLink ? "Link copied" : "Copy link", symbol: model.copiedLink ? "checkmark" : "doc.on.doc",
+                         hint: model.copiedLink ? "Link copied" : model.copyLinkHelp) { model.copyLink() }
+                .disabled(model.invitationURL == nil)
+            inviteButton("Enlarge codes", symbol: "arrow.up.left.and.arrow.down.right") { model.showJoinCodes() }
+                .disabled(model.protectsSourceDraft || !canShowCodes)
+            inviteButton("Print codes", symbol: "printer") { printCodes() }
+                .disabled(!canShowCodes)
+            inviteButton("Edit viewing Wi-Fi", symbol: "wifi", selected: editingWiFi) { editingWiFi.toggle() }
+        }
+    }
+
+    private var canShowCodes: Bool { model.viewerURL != nil || !model.wifiSSID.isEmpty }
+
+    private func inviteButton(_ title: String, symbol: String, selected: Bool = false, hint: String? = nil,
+                              action: @escaping () -> Void) -> some View {
+        ChromeIconButton(title, symbol: symbol, size: 52, height: 40, iconSize: 18, selected: selected, hint: hint, action: action)
+            .background(SetbeamChrome.raised, in: RoundedRectangle(cornerRadius: 9))
+            .overlay { RoundedRectangle(cornerRadius: 9).strokeBorder(SetbeamChrome.line, lineWidth: 1).allowsHitTesting(false) }
+    }
+
+    private func printCodes() {
+        do {
+            let snapshot = try JoinCodeExporter.snapshot(model: model)
+            printProblem = nil
+            JoinCodeExporter.print(snapshot.document)
+        } catch { printProblem = error.localizedDescription }
+    }
+
+    private var localAddress: some View {
+        let status = model.localAddressStatus
+        let activeHost = model.localViewerURL?.host
+        let displayHost = activeHost ?? LocalAddressName.host(model.localAddressLabel)
+        let ready = activeHost != nil
+        let tint: Color = status.attention ? SetbeamChrome.amberText : ready ? SetbeamChrome.greenText : .secondary
+        return VStack(alignment: .leading, spacing: 8) {
+            Button { addressExpanded.toggle() } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "globe").foregroundStyle(.secondary)
+                    Text(displayHost).font(.system(.callout, design: .monospaced))
+                        .lineLimit(1).truncationMode(.middle)
+                    Spacer(minLength: 0)
+                    Image(systemName: status.attention ? "exclamationmark.triangle" : ready ? "checkmark" : "ellipsis")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(tint)
+                        .padding(.horizontal, 6).padding(.vertical, 3)
+                        .background(tint.opacity(0.13), in: Capsule())
+                }.padding(.horizontal, 12).frame(minHeight: 32)
+                    .background(SetbeamChrome.raised, in: RoundedRectangle(cornerRadius: 8))
+                    .overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(SetbeamChrome.line, lineWidth: 1) }
+                    .contentShape(Rectangle())
+            }.buttonStyle(ChromeButtonStyle()).help(status.text)
+                .accessibilityLabel("Local address, \(displayHost)")
+                .accessibilityValue(addressExpanded ? "Expanded" : "Collapsed")
+            if addressExpanded || status.attention || model.shortAddressEnabled && model.shortAddressStatus.attention {
+                InvitationAddressView(model: model)
+                if model.localViewerURL != nil {
+                    Button(model.copiedIPLink ? "IP address link copied" : "Copy IP address link") { model.copyIPLink() }
+                        .buttonStyle(.link).font(.caption).help("Use when a viewer cannot open .local names")
+                }
+            }
+        }.padding(.top, 12)
     }
 }
 
@@ -159,7 +246,6 @@ struct InvitationCodesView: View {
     let codeSize: CGFloat
     var presentation = false
     var vertical = false
-    var editingWiFi: Binding<Bool>?
     var body: some View {
         if presentation {
             let layout = vertical ? AnyLayout(VStackLayout(spacing: 24)) : AnyLayout(HStackLayout(alignment: .top, spacing: 24))
@@ -178,39 +264,28 @@ struct InvitationCodesView: View {
                 }
             }.frame(maxWidth: .infinity)
         } else {
-            VStack(alignment: .leading, spacing: 20) {
+            HStack(alignment: .top, spacing: 8) {
                 if !model.wifiSSID.isEmpty {
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Text("1. Join Wi-Fi").font(.headline)
-                            Spacer()
-                            if let editingWiFi {
-                                Button("Edit…") { editingWiFi.wrappedValue.toggle() }.font(.caption).help("Edit viewing Wi-Fi join details")
-                            }
-                        }
-                        HStack(spacing: 12) {
-                            wifiCode
-                            Text(model.wifiSSID).font(.callout).lineLimit(4).help(model.wifiSSID)
-                        }
-                        if let editingWiFi, editingWiFi.wrappedValue {
-                            ViewingWiFiEditor(model: model) { editingWiFi.wrappedValue = false }.padding(.top, 8)
-                        }
-                    }
+                    VStack(spacing: 8) {
+                        wifiCode
+                        Label(model.wifiSSID, systemImage: "wifi").lineLimit(1).help(model.wifiSSID)
+                            .accessibilityLabel("First, join \(model.wifiSSID)")
+                    }.frame(width: codeSize)
+                    Image(systemName: "arrow.right").font(.system(size: 16))
+                        .foregroundStyle(.tertiary).padding(.top, 48).accessibilityHidden(true)
                 }
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(model.wifiSSID.isEmpty ? "Watch the feed" : "2. Watch the feed").font(.headline)
-                    HStack(spacing: 12) {
-                        feedCode
-                        Text(model.state.sharing ? (model.viewerApproval ? "Scan and ask to join." : "Scan to join the feed.") : "Appears when you share.")
-                            .font(.callout).foregroundStyle(.secondary)
-                    }
-                }
-            }
+                VStack(spacing: 8) {
+                    feedCode
+                    Label("Watch", systemImage: "play.rectangle")
+                        .accessibilityLabel(model.wifiSSID.isEmpty ? "Watch the feed" : "Then watch the feed")
+                }.frame(width: codeSize)
+            }.font(.caption2).foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity)
         }
     }
     @ViewBuilder private var wifiCode: some View {
         if model.viewingWiFiPasswordAvailable {
-            code(QRView(payload: QRCode.wifi(ssid: model.wifiSSID, password: model.wifiPassword), size: codeSize),
+            code(QRView(payload: QRCode.wifi(ssid: model.wifiSSID, password: model.wifiPassword), size: codeSize, inset: presentation ? 16 : 8),
                  label: "Wi-Fi join QR code for \(model.wifiSSID)")
         } else {
             Text("Password unavailable. Re-enter viewing Wi-Fi details in Invite.").font(.caption).foregroundStyle(.secondary)
@@ -219,7 +294,7 @@ struct InvitationCodesView: View {
     }
     @ViewBuilder private var feedCode: some View {
         if model.state.sharing, let url = model.viewerURL {
-            code(QRView(payload: url.absoluteString, size: codeSize), label: "Viewing QR code")
+            code(QRView(payload: url.absoluteString, size: codeSize, inset: presentation ? 16 : 8), label: "Viewing QR code")
         } else {
             Image(systemName: "lock").foregroundStyle(.secondary).frame(width: codeSize, height: codeSize)
                 .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 8)).accessibilityLabel("Sharing is off")
@@ -231,26 +306,6 @@ struct InvitationCodesView: View {
             Button { model.showJoinCodes() } label: { content }
                 .buttonStyle(.plain).accessibilityLabel("Enlarge \(label)")
                 .help(model.protectsSourceDraft ? "Save or cancel Source Details to enlarge codes" : "Click to enlarge the QR codes").disabled(model.protectsSourceDraft)
-        }
-    }
-}
-
-struct InvitationLinkActions: View {
-    @ObservedObject var model: SessionModel
-    @State private var showingFallback = false
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Button { model.copyLink() } label: {
-                Label(model.copiedLink ? "Link Copied" : "Copy Viewing Link", systemImage: "document.on.document")
-                    .frame(maxWidth: .infinity)
-            }.disabled(model.viewerURL == nil).help(model.copyLinkHelp)
-            if model.localViewerURL != nil {
-                DisclosureGroup("IP address fallback", isExpanded: $showingFallback) {
-                    Button(model.copiedIPLink ? "IP Address Link Copied" : "Copy IP Address Link") { model.copyIPLink() }
-                        .buttonStyle(.link).font(.caption).help("Use the IP address if a viewer cannot open .local names")
-                        .padding(.top, 8)
-                }.font(.caption)
-            }
         }
     }
 }

@@ -27,14 +27,16 @@ import WebKit
         web.load(URLRequest(url: url))
         try await until("!!globalThis.SetbeamChat && !!document.getElementById('join-name')")
         _ = try await evaluate("document.getElementById('join-name').value='WebKit viewer'; document.getElementById('join-colors').querySelector('input[value=purple]').click(); document.getElementById('join-submit').click(); true")
-        try await until("document.getElementById('chat-toggle').hidden === false")
+        try await until("document.getElementById('chat-toggle').hidden === false || document.getElementById('player').classList.contains('chat-docked')")
         try await until("document.getElementById('video').currentTime > 0.5", seconds: 30)
-        _ = try await evaluate("document.getElementById('chat-toggle').click(); document.getElementById('chat-input').value='WebKit draft survives rotation'; document.getElementById('chat-input').dispatchEvent(new Event('input',{bubbles:true})); true")
+        _ = try await evaluate("(t=>{if(!t.hidden)t.click()})(document.getElementById('chat-toggle')); document.getElementById('chat-input').value='WebKit draft survives rotation'; document.getElementById('chat-input').dispatchEvent(new Event('input',{bubbles:true})); true")
         try FileManager.default.createDirectory(atPath: output, withIntermediateDirectories: true)
         var reports: [[String: Any]] = []
         for (name, width, height) in [("webkit-iphone-portrait",390,844),("webkit-iphone-landscape",844,390),("webkit-ipad-mini-portrait",768,1024),("webkit-ipad-mini-landscape",1024,768),("webkit-ipad-portrait",820,1180),("webkit-ipad-landscape",1180,820),("webkit-short-keyboard",844,260)] {
             window.setContentSize(NSSize(width: width, height: height)); web.frame = NSRect(x: 0, y: 0, width: width, height: height)
             _ = try await evaluate("window.dispatchEvent(new Event('resize')); true")
+            try await Task.sleep(nanoseconds: 150_000_000)
+            _ = try await evaluate("(p=>{if(p.hidden){(t=>{if(!t.hidden)t.click()})(document.getElementById('chat-toggle'))}})(document.getElementById('chat-panel')); true")
             try await Task.sleep(nanoseconds: 150_000_000)
             let report = try await evaluate("(()=>{const r=document.getElementById('chat-send').getBoundingClientRect();return {width:innerWidth,height:innerHeight,scrollWidth:document.documentElement.scrollWidth,font:parseFloat(getComputedStyle(document.getElementById('chat-input')).fontSize),sendBottom:r.bottom,draft:document.getElementById('chat-input').value}})()") as! [String: Any]
             guard (report["scrollWidth"] as! Int) <= width + 1, (report["font"] as! Double) >= 16,

@@ -21,29 +21,64 @@ struct TransmitterCard: View {
     let transmitter: TransmitterModel
     let status: String
     let found: Bool
+    let selected: Bool
     let open: () -> Void
+    static let height: CGFloat = 200
+
     var body: some View {
         Button(action: open) {
-            HStack(alignment: .top, spacing: 12) {
-                HardwareArtwork(symbol: transmitter.artwork)
+            VStack(alignment: .leading, spacing: 0) {
+                HardwareArtwork(symbol: transmitter.artwork, size: 92, showsBackground: false)
+                    .frame(maxWidth: .infinity, minHeight: 116)
+                    .background(SetbeamChrome.artwork)
                 VStack(alignment: .leading, spacing: 4) {
+                    Text(transmitter.name).font(.callout.weight(.semibold)).lineLimit(1)
                     Text(transmitter.brand).font(.caption).foregroundStyle(.secondary)
-                    Text(transmitter.name).font(.callout.weight(.medium)).foregroundStyle(.primary)
-                    Label(status, systemImage: found ? "checkmark.circle" : "wifi").font(.caption)
-                        .foregroundStyle(found ? Color.accentColor : .secondary).lineLimit(2)
-                    Label {
-                        Text(transmitter.evidence).foregroundStyle(transmitter.physicallyTested ? Color.secondary : Color.primary)
-                    } icon: {
-                        Image(systemName: transmitter.physicallyTested ? "checkmark.circle" : "exclamationmark.circle")
-                            .foregroundStyle(transmitter.physicallyTested ? Color.secondary : Color.orange)
-                    }.font(.caption).fixedSize(horizontal: false, vertical: true)
-                }
-                Spacer(minLength: 0)
-                Text("Open Setup…").font(.callout).foregroundStyle(Color.accentColor)
-            }.padding(.vertical, 16).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
-        }.buttonStyle(SourceChoiceStyle()).overlay(alignment: .bottom) { Divider() }
-            .help("Set up \(transmitter.brand) \(transmitter.name). \(transmitter.evidence).")
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 4) { availability; evidence }.fixedSize()
+                        HStack(spacing: 4) { availability; evidence }
+                    }.padding(.top, 4)
+                }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
+            }.frame(minHeight: Self.height, alignment: .top)
+                .background(SetbeamChrome.raised).clipShape(RoundedRectangle(cornerRadius: 12))
+                .contentShape(RoundedRectangle(cornerRadius: 12))
+        }.buttonStyle(TransmitterCardStyle(selected: selected))
+            .help("Set up \(transmitter.brand) \(transmitter.name). \(status). \(transmitter.evidence).")
             .accessibilityLabel("Set up \(transmitter.brand) \(transmitter.name). \(status). \(transmitter.evidence).")
+            .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+
+    private var availability: some View {
+        SetbeamChip(status, symbol: "wifi", tint: found ? SetbeamChrome.greenText : .secondary)
+    }
+    private var evidence: some View {
+        SetbeamChip(transmitter.physicallyTested ? "Tested · 3.30" : "Untested",
+                    symbol: transmitter.physicallyTested ? "checkmark.shield" : "flask",
+                    tint: transmitter.physicallyTested ? SetbeamChrome.blueText : SetbeamChrome.amberText)
+    }
+}
+
+private struct TransmitterCardStyle: ButtonStyle {
+    let selected: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        Card(configuration: configuration, selected: selected)
+    }
+
+    private struct Card: View {
+        let configuration: Configuration
+        let selected: Bool
+        @State private var hovering = false
+        @Environment(\.isFocused) private var focused
+
+        var body: some View {
+            let highlighted = selected || hovering || focused || configuration.isPressed
+            configuration.label.overlay {
+                RoundedRectangle(cornerRadius: 12)
+                    .strokeBorder(highlighted ? SetbeamChrome.blue : SetbeamChrome.line, lineWidth: highlighted ? 2 : 1)
+                    .allowsHitTesting(false)
+            }.onHover { hovering = $0 }
+        }
     }
 }
 

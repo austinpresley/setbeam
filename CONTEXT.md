@@ -60,7 +60,10 @@ The corner card Setbeam shows when a viewer asks to join, with Admit and Decline
 _Avoid_: Notification, for this card; macOS notifications are not used.
 
 **Sharing panel**:
-The optional Invite, Viewers, Options, and Chat panel beside the local monitor. It can open as a separate window on a small screen. Opening, switching, or closing it does not start or stop sharing.
+The optional Invite, People, Chat, and Options panel beside the local monitor. It can open as a separate window on a small screen. Opening, switching, or closing it does not start or stop sharing.
+
+**Sharing tally**:
+The main toolbar control labeled Go Live before sharing, LIVE when the outgoing feed is available, and HOLD when the holding picture and silence are confirmed. While sharing, it opens the audience commands, including Stop Sharing.
 
 **Source Details**:
 Settings for the selected input, including capture frame rate, explicit capture sound, saved setup, and transmitter rejoin. Viewer output settings belong to Sharing Options.

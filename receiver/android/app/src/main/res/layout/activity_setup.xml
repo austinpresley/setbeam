@@ -1,0 +1,222 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:id="@+id/setup_scroll"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/tv_background"
+    android:clipToPadding="false"
+    android:fillViewport="true"
+    android:paddingHorizontal="@dimen/tv_safe_horizontal"
+    android:paddingVertical="@dimen/tv_safe_vertical">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:drawableStart="@drawable/ic_mac"
+            android:drawablePadding="10dp"
+            android:drawableTint="@color/tv_bright"
+            android:gravity="center_vertical"
+            android:text="@string/app_name"
+            android:textColor="@color/ink_muted"
+            android:textSize="18sp" />
+
+        <TextView
+            android:id="@+id/setup_title"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="18dp"
+            android:accessibilityHeading="true"
+            tools:targetApi="28"
+            android:textColor="@color/ink"
+            android:textSize="38sp"
+            android:textStyle="bold" />
+
+        <LinearLayout
+            android:id="@+id/choose_mac"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+            <TextView
+                android:id="@+id/paired_mac"
+                style="@style/Tv.Body"
+                android:visibility="gone" />
+
+            <TextView
+                android:id="@+id/nearby_status"
+                style="@style/Tv.Body"
+                android:accessibilityLiveRegion="polite"
+                android:text="@string/setup_nearby_looking" />
+
+            <TextView
+                android:id="@+id/discovery_help"
+                style="@style/Tv.Body"
+                android:text="@string/setup_discovery_help" />
+
+            <LinearLayout
+                android:id="@+id/nearby"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical" />
+
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="24dp"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/edit_pairing"
+                    style="@style/Tv.Button"
+                    android:drawableStart="@drawable/ic_keyboard"
+                    android:nextFocusRight="@id/startup_options"
+                    android:text="@string/setup_manual" />
+
+                <Button
+                    android:id="@+id/startup_options"
+                    style="@style/Tv.Button"
+                    android:layout_marginStart="12dp"
+                    android:drawableStart="@drawable/ic_settings"
+                    android:nextFocusLeft="@id/edit_pairing"
+                    android:text="@string/setup_startup" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/manual_pairing"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:id="@+id/host_label"
+                style="@style/Tv.Body"
+                android:labelFor="@+id/host"
+                android:text="@string/setup_host" />
+
+            <EditText
+                android:id="@+id/host"
+                style="@style/Tv.Field"
+                android:autofillHints="url"
+                android:imeOptions="actionNext"
+                android:inputType="textUri"
+                android:maxLength="200"
+                android:nextFocusDown="@id/name"
+                android:nextFocusForward="@id/name" />
+
+            <TextView
+                style="@style/Tv.Body"
+                android:text="@string/setup_address_example"
+                android:textSize="16sp" />
+
+            <TextView
+                android:id="@+id/name_label"
+                style="@style/Tv.Body"
+                android:labelFor="@+id/name"
+                android:text="@string/setup_name" />
+
+            <EditText
+                android:id="@+id/name"
+                style="@style/Tv.Field"
+                android:autofillHints="name"
+                android:imeOptions="actionDone"
+                android:inputType="textCapWords"
+                android:maxLength="80"
+                android:nextFocusDown="@id/save"
+                android:nextFocusUp="@id/host" />
+
+            <Button
+                android:id="@+id/save"
+                style="@style/Tv.Button"
+                android:layout_marginTop="16dp"
+                android:nextFocusUp="@id/name"
+                android:text="@string/setup_save" />
+
+            <TextView
+                style="@style/Tv.Body"
+                android:text="@string/setup_intro" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/startup_panel"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <CheckBox
+                android:id="@+id/boot"
+                style="@style/Tv.CheckBox"
+                android:nextFocusDown="@id/home"
+                android:text="@string/setup_boot" />
+
+            <TextView
+                android:id="@+id/boot_detail"
+                style="@style/Tv.Body" />
+
+            <Button
+                android:id="@+id/allow_startup"
+                style="@style/Tv.Button"
+                android:layout_marginTop="10dp"
+                android:nextFocusDown="@id/home"
+                android:nextFocusUp="@id/boot"
+                android:text="@string/setup_allow_startup"
+                android:visibility="gone" />
+
+            <CheckBox
+                android:id="@+id/home"
+                style="@style/Tv.CheckBox"
+                android:layout_marginTop="14dp"
+                android:nextFocusDown="@id/tv_settings"
+                android:nextFocusUp="@id/boot"
+                android:text="@string/setup_home" />
+
+            <TextView
+                android:id="@+id/home_detail"
+                style="@style/Tv.Body" />
+
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="24dp"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/tv_settings"
+                    style="@style/Tv.Button"
+                    android:nextFocusUp="@id/home"
+                    android:text="@string/setup_tv_settings" />
+
+                <Button
+                    android:id="@+id/notices"
+                    style="@style/Tv.Button"
+                    android:layout_marginStart="12dp"
+                    android:nextFocusUp="@id/home"
+                    android:text="@string/notices" />
+
+                <Button
+                    android:id="@+id/forget"
+                    style="@style/Tv.Button"
+                    android:layout_marginStart="12dp"
+                    android:nextFocusUp="@id/home"
+                    android:text="@string/setup_forget"
+                    android:visibility="gone" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/error"
+            style="@style/Tv.Body"
+            android:accessibilityLiveRegion="polite"
+            android:textColor="@color/tv_error"
+            android:visibility="gone" />
+
+    </LinearLayout>
+</ScrollView>

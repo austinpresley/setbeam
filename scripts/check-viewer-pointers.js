@@ -34,7 +34,7 @@ function page(options = {}) {
   // A 4:3 picture in a 16:9 page area: 1600x900 at (100, 50), so the picture is 1200x900 at x=300.
   get('picture').rect = options.box || {left: 100, top: 50, width: 1600, height: 900};
   Object.assign(get('video'), {videoWidth: options.videoWidth || 1440, videoHeight: options.videoHeight || 1080});
-  get('pointer').hidden = true; get('pointer-panel').hidden = true; get('pointer-show').checked = true; get('pointer-share').checked = true;
+  get('pointer').hidden = true; get('pointer-show').checked = true; get('pointer-share').checked = true;
   class FakeSocket {
     constructor(url) { this.url = url; this.sent = []; this.readyState = 0; sockets.push(this); }
     send(text) { this.sent.push(JSON.parse(text)); }
@@ -211,15 +211,21 @@ test('a refusal stops reconnecting and a dropped channel retries with backoff', 
 test('pointing has no name or color field of its own, and a changed identity is announced again', () => {
   const p = page({locked: true, name: 'Approved Sam'});
   p.controller.update({enabled: true, live: true, revision: 7});
+  // One tap on the pointer button starts pointing; there is no panel with a name or color of its own.
   p.get('pointer').dispatch('click');
-  assert.ok(!p.elements.has('pointer-name') && !p.elements.has('pointer-colors'), 'The panel reuses the viewer\'s identity');
-  const first = p.start();
+  assert.ok(!p.elements.has('pointer-name') && !p.elements.has('pointer-colors'), 'Pointing reuses the viewer\'s identity');
+  assert.equal(p.get('pointer').getAttribute('aria-pressed'), 'true');
+  const first = p.sockets.at(-1); first.open(); first.message({t: 'welcome', n: 2, r: 7});
+  assert.equal(p.get('pointer-status').hidden, false, 'The first-use hint appears over the picture');
   assert.equal(p.get('pointer-status').textContent, 'Pointing as Approved Sam. Move over the picture or tap it.');
   p.state.color = 'brown'; p.controller.identityChanged();
   assert.equal(first.closed, true);
   const next = p.sockets.at(-1); next.open();
   assert.deepEqual(next.sent[0], {t: 'hello', pass: 'f'.repeat(48), name: 'Approved Sam', color: 'brown'});
   assert.equal(Object.keys(p.api.COLORS).length, 12, 'Twelve preset colors');
+  p.advance(4100); assert.equal(p.get('pointer-status').hidden, true, 'The hint leaves after a few seconds');
+  p.get('pointer').dispatch('click');
+  assert.equal(p.get('pointer').getAttribute('aria-pressed'), 'false'); assert.equal(p.get('pointer').getAttribute('aria-label'), 'Point at the picture');
 });
 
 test('late snapshots from an earlier picture or during Hold are ignored (A2, B1)', () => {

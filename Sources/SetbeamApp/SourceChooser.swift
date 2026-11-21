@@ -5,19 +5,21 @@ import SetbeamCore
 
 struct ConnectionView: View {
     @ObservedObject var model: SessionModel
+    let width: CGFloat
+    let availableHeight: CGFloat
     @ObservedObject private var browser: SourceBrowser
     @StateObject private var displayPreviews = DisplaySourcePreviews()
     @StateObject private var windowPreviews: WindowSourcePreviews
-    @State private var category: SourceCategory?
+    @State private var category: SourceCategory
     @State private var query = ""
     @State private var guide: TransmitterModel?
     @State private var contentHeight: CGFloat = 0
-    @State private var headerHeight: CGFloat = 140
     @FocusState private var searchFocused: Bool
 
-    init(model: SessionModel) {
-        self.model = model; browser = model.sourceBrowser
-        _category = State(initialValue: SourceCategory.initial(for: model.setup ?? model.provenSetup))
+    init(model: SessionModel, width: CGFloat, availableHeight: CGFloat) {
+        self.model = model; self.width = width; self.availableHeight = availableHeight
+        browser = model.sourceBrowser
+        _category = State(initialValue: model.sourceCategory ?? SourceCategory.initial(for: model.setup ?? model.provenSetup))
         let bundles = model.windowListBundle.map { Set($0.split(separator: ",").map(String.init)) }
         _windowPreviews = StateObject(wrappedValue: bundles == nil ? WindowSourcePreviews() : WindowSourcePreviews(list: {
             try await MacWindow.shareable().filter { bundles?.contains($0.window.bundleIdentifier ?? "") == true }.map { ($0.window, $0.handle) }
@@ -26,76 +28,72 @@ struct ConnectionView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 16) {
-                HStack {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Choose a Source").font(.title2.weight(.semibold))
-                        Text("Choose what to monitor on this Mac.").font(.callout).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Button("Close") { model.sheet = nil }.keyboardShortcut(.cancelAction)
-                }
+            HStack(spacing: 8) {
+                ForEach(SourceCategory.allCases) { item in categoryButton(item) }
+                Spacer(minLength: 4)
                 if model.state.sharing {
-                    Label("Changing source puts viewers on Hold. Resume after checking the new picture.", systemImage: "pause.circle")
-                        .font(.callout).foregroundStyle(.primary).fixedSize(horizontal: false, vertical: true)
-                        .padding(12).frame(maxWidth: .infinity, alignment: .leading)
-                        .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+                    Label("Viewers hold", systemImage: "pause.fill")
+                        .font(.caption.weight(.semibold)).foregroundStyle(SetbeamChrome.amberText)
+                        .padding(.horizontal, 8).padding(.vertical, 4)
+                        .background(SetbeamChrome.amber.opacity(0.16), in: Capsule())
+                        .help("Changing source puts viewers on Hold. Resume after checking the new picture.")
+                        .accessibilityLabel("Changing source puts viewers on Hold")
                 }
-                if let saved = model.provenSetup, saved.kind != .sample { lastConnection(saved) }
-            }.padding(20).background {
-                GeometryReader { proxy in Color.clear.preference(key: SourceChooserHeaderHeight.self, value: proxy.size.height) }
-            }
+                ChromeIconButton("Close source chooser", symbol: "xmark") { model.sheet = nil }
+            }.padding(16)
             Divider()
-            HStack(spacing: 0) {
-                sidebar
-                Divider()
-                categoryContent
-            }.frame(height: bodyHeight)
+            categoryContent.frame(height: bodyHeight)
         }
-        // The approved design needs a category column plus two legible window cards.
-        .frame(width: 920)
-        .onPreferenceChange(SourceChooserHeaderHeight.self) { headerHeight = $0 }
-        .task { model.refreshCaptureDevices(); browser.start { model.canDiscoverPyroH } }
-        .task(id: model.screenDisplays.map(\.id) + [monitoredDisplayID ?? "", category?.rawValue ?? ""]) {
+        .frame(width: width)
+        .background(SetbeamChrome.raised)
+        .accessibilityElement(children: .contain).accessibilityLabel("Choose a source")
+        .task { model.refreshCaptureDevices() }
+        .task(id: category) {
+            guard category == .wireless else { return }
+            browser.start { model.canDiscoverPyroH }
+            await model.refreshWireless()
+        }
+        .task(id: model.screenDisplays.map(\.id) + [monitoredDisplayID ?? "", category.rawValue]) {
             while !Task.isCancelled {
                 await displayPreviews.refresh(displays: category == .displays ? model.screenDisplays : [], monitoredDisplayID: monitoredDisplayID)
-                do { try await Task.sleep(nanoseconds: 2_000_000_000) } catch { return }
+                do { try await Task.sleep(for: .seconds(2)) } catch { return }
             }
         }
         .task(id: category) {
             while !Task.isCancelled {
                 await windowPreviews.refresh(permitted: displayPreviews.permissionGranted, monitored: monitoredWindow, captureVisible: category == .windows)
-                do { try await Task.sleep(nanoseconds: 2_000_000_000) } catch { return }
+                do { try await Task.sleep(for: .seconds(2)) } catch { return }
             }
         }
-        .onChange(of: category) { _, _ in guide = nil; query = ""; searchFocused = false; contentHeight = 0 }
+        .onChange(of: category) { _, value in
+            guide = nil; query = ""; searchFocused = false; contentHeight = 0
+            if value != .wireless { browser.stop(); model.stopWirelessScan() }
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) { _ in model.refreshCaptureDevices() }
         .onDisappear { displayPreviews.clear(); windowPreviews.clear(); browser.stop(); model.stopWirelessScan() }
     }
 
     private var bodyHeight: CGFloat {
-        let available = max(280, (NSScreen.main?.visibleFrame.height ?? 900) - headerHeight - 80)
-        // Window thumbnails keep the approved two-column canvas; short categories size to their rows.
-        let measured = contentHeight > 0 ? contentHeight + 40 + (category == .displays ? 28 : 0) : guide != nil ? 600 : 320
-        let requested = category == .windows ? 688 : max(320, measured)
-        return min(requested, available)
+        let extra: CGFloat = category == .windows ? 80 : category == .displays ? 32 : 0
+        let measured = contentHeight > 0 ? contentHeight + 40 + extra : 240
+        return min(max(category == .windows ? 300 : 224, measured), availableHeight)
     }
 
-    private var sidebar: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            List(selection: Binding<SourceCategory?>(get: { category }, set: { selection in
-                if let selection { category = selection }
-            })) {
-                ForEach(SourceCategory.allCases) { item in
-                    Label(item.name, systemImage: item.symbol).padding(.vertical, 8).tag(item)
-                }
-            }.listStyle(.sidebar).scrollDisabled(true).frame(height: 196)
-            Divider().padding(.horizontal, 20)
-            Button("Enter Stream Address…") { model.openNetworkSource() }
-                .buttonStyle(.link).padding(.horizontal, 20).padding(.vertical, 12)
-                .help("Connect to a network video source using its full RTSP address")
-            Spacer(minLength: 0)
-        }.frame(width: 212).background(.quaternary.opacity(0.25))
+    private func categoryButton(_ item: SourceCategory) -> some View {
+        Button { category = item } label: {
+            VStack(spacing: 4) {
+                Image(systemName: item.symbol)
+                    .symbolRenderingMode(.monochrome)
+                    .font(.system(size: 22))
+                    .frame(width: 32, height: 28)
+                Text(item.tabName).font(.caption.weight(.medium))
+            }
+            .foregroundStyle(category == item ? Color.white : .secondary)
+            .frame(width: 88, height: 56)
+            .background(category == item ? SetbeamChrome.blue : .clear, in: RoundedRectangle(cornerRadius: 10))
+            .contentShape(Rectangle())
+        }.buttonStyle(SourceChoiceStyle()).help(item.name)
+            .accessibilityAddTraits(category == item ? .isSelected : [])
     }
 
     @ViewBuilder private var categoryContent: some View {
@@ -115,13 +113,14 @@ struct ConnectionView: View {
             ScrollViewReader { scroll in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 12) {
-                        switch category ?? .windows {
+                        switch category {
                         case .displays: displaySection
                         case .cameras: cameraSection
                         case .windows: windowSection
                         case .wireless: wirelessSection
                         }
-                    }.frame(maxWidth: .infinity, alignment: .leading).padding(.trailing, 4).id("source-top")
+                        if let saved = model.provenSetup, saved.kind != .sample { lastConnection(saved) }
+                    }.frame(maxWidth: .infinity, alignment: .leading).id("source-top")
                         .background {
                             GeometryReader { proxy in Color.clear.preference(key: SourceChooserContentHeight.self, value: proxy.size.height) }
                         }
@@ -219,12 +218,24 @@ struct ConnectionView: View {
         if let guide {
             TransmitterGuideView(model: model, browser: browser, transmitter: guide) { self.guide = nil }
         } else {
-            Text("Wireless transmitters").font(.headline)
-            ForEach(TransmitterModel.allCases) { transmitter in
-                let status = transmitterStatus(transmitter)
-                TransmitterCard(transmitter: transmitter, status: status.text, found: status.found) { guide = transmitter }
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 3), spacing: 12) {
+                ForEach(TransmitterModel.allCases) { transmitter in
+                    let status = transmitterStatus(transmitter)
+                    let selected = transmitter == .cineViewMaster4K ? model.setup?.kind == .accsoon : model.setup?.networkProfile == .pyroH
+                    TransmitterCard(transmitter: transmitter, status: status.text, found: status.found, selected: selected) { guide = transmitter }
+                }
+                Button { model.openNetworkSource() } label: {
+                    VStack(spacing: 8) {
+                        Image(systemName: "link").font(.system(size: 30))
+                        Text("Stream address").font(.callout.weight(.medium))
+                        Text("rtsp://").font(.system(.caption, design: .monospaced))
+                    }.foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, minHeight: TransmitterCard.height)
+                        .contentShape(Rectangle())
+                }.buttonStyle(SourceChoiceStyle())
+                    .overlay { RoundedRectangle(cornerRadius: 12).strokeBorder(.secondary.opacity(0.45), style: StrokeStyle(lineWidth: 1, dash: [4, 4])).allowsHitTesting(false) }
+                    .help("Enter the RTSP address of a network stream")
             }
-            Button("Open Wi-Fi Settings") { model.openWiFiSettings() }.buttonStyle(.link)
             if !browser.sources.isEmpty {
                 Text("Network streams").font(.headline)
                 ForEach(browser.sources) { device in
@@ -239,12 +250,12 @@ struct ConnectionView: View {
     private func transmitterStatus(_ transmitter: TransmitterModel) -> (text: String, found: Bool) {
         switch transmitter {
         case .cineViewMaster4K:
-            if model.setup?.kind == .accsoon && model.state.monitoring { return (model.localReady ? "Current source · Monitoring" : "Current source · Waiting for picture", model.localReady) }
+            if model.setup?.kind == .accsoon && model.state.monitoring { return (model.localReady ? "Monitoring" : "Waiting", model.localReady) }
             let count = model.wirelessDevices.filter(\.recognized).count
-            return count == 0 ? ("Set up… · Join its Wi-Fi", false) : ("Found on this Wi-Fi · Open setup…", true)
+            return count == 0 ? ("Join Wi-Fi", false) : ("Found", true)
         case .pyroH:
-            if model.setup?.networkProfile == .pyroH && model.state.monitoring { return (model.localReady ? "Current source · Monitoring" : "Current source · Waiting for picture", model.localReady) }
-            return browser.pyroHSources.isEmpty ? ("Set up… · Join its Wi-Fi", false) : ("Stream found · Open setup…", true)
+            if model.setup?.networkProfile == .pyroH && model.state.monitoring { return (model.localReady ? "Monitoring" : "Waiting", model.localReady) }
+            return browser.pyroHSources.isEmpty ? ("Join Wi-Fi", false) : ("Found", true)
         }
     }
 
@@ -398,11 +409,6 @@ private struct SourceChooserScrollHeight: ViewModifier {
             content.onPreferenceChange(SourceChooserContentHeight.self) { height = $0 }
         }
     }
-}
-
-private struct SourceChooserHeaderHeight: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
 }
 
 struct SourceChoiceStyle: ButtonStyle {

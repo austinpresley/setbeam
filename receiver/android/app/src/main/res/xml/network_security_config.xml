@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Setbeam's current viewer transport is plain HTTP on the local network: the short address
+     on port 80 and numeric gateway and WHEP addresses that change per share, so they cannot be
+     listed as domains. Media itself is DTLS-SRTP. HTTPS hosts keep the system trust store;
+     certificate validation is never disabled. -->
+<network-security-config xmlns:tools="http://schemas.android.com/tools">
+    <base-config cleartextTrafficPermitted="true" tools:ignore="InsecureBaseConfiguration">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

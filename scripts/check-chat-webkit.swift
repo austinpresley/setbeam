@@ -32,8 +32,8 @@ import WebKit
         web.load(URLRequest(url: url))
         try await until("!!globalThis.SetbeamChat && !!document.getElementById('join-name')")
         _ = try await evaluate("document.getElementById('join-name').value='WebKit participant';document.getElementById('join-submit').click();true")
-        try await until("document.getElementById('chat-toggle').hidden===false")
-        _ = try await evaluate("document.getElementById('chat-toggle').click();true")
+        try await until("document.getElementById('chat-toggle').hidden===false || document.getElementById('player').classList.contains('chat-docked')")
+        _ = try await evaluate("(t=>{if(!t.hidden)t.click()})(document.getElementById('chat-toggle'));true")
         try await until("document.querySelectorAll('.chat-message').length>=2")
         guard try await evaluate("window.isSecureContext===false && typeof navigator.clipboard==='undefined'") as? Bool == true else {
             throw NSError(domain: "ChatWebKitQA", code: 3, userInfo: [NSLocalizedDescriptionKey: "The LAN page unexpectedly has a secure clipboard API"])
