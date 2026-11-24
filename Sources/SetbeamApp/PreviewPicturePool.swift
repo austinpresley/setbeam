@@ -35,7 +35,7 @@ final class PreviewPicturePool {
             guard let lease = allocations.reserve() else { return nil }
             CVBufferSetAttachment(pixelBuffer, allocationKey, lease, .shouldNotPropagate)
         }
-        CVPixelBufferLockBaseAddress(pixelBuffer, [])
+        guard CVPixelBufferLockBaseAddress(pixelBuffer, []) == kCVReturnSuccess else { return nil }
         frame.payload.withUnsafeBytes { bytes in
             guard let source = bytes.baseAddress else { return }
             for plane in 0..<2 {
@@ -48,8 +48,46 @@ final class PreviewPicturePool {
             }
         }
         CVPixelBufferUnlockBaseAddress(pixelBuffer, [])
-        let matrix = frame.matrix == 1 ? kCVImageBufferYCbCrMatrix_ITU_R_709_2 : frame.matrix == 9 ? kCVImageBufferYCbCrMatrix_ITU_R_2020 : kCVImageBufferYCbCrMatrix_ITU_R_601_4
+        let matrix: CFString
+        switch frame.matrix {
+        case 1: matrix = kCVImageBufferYCbCrMatrix_ITU_R_709_2
+        case 7: matrix = kCVImageBufferYCbCrMatrix_SMPTE_240M_1995
+        case 9: matrix = kCVImageBufferYCbCrMatrix_ITU_R_2020
+        default: matrix = kCVImageBufferYCbCrMatrix_ITU_R_601_4
+        }
         CVBufferSetAttachment(pixelBuffer, kCVImageBufferYCbCrMatrixKey, matrix, .shouldPropagate)
+        let aspect: [CFString: Int] = [
+            kCVImageBufferPixelAspectRatioHorizontalSpacingKey: frame.aspectNumerator,
+            kCVImageBufferPixelAspectRatioVerticalSpacingKey: frame.aspectDenominator
+        ]
+        CVBufferSetAttachment(pixelBuffer, kCVImageBufferPixelAspectRatioKey, aspect as CFDictionary, .shouldPropagate)
+
+        let primaries: CFString?
+        switch frame.colorPrimaries {
+        case 1: primaries = kCVImageBufferColorPrimaries_ITU_R_709_2
+        case 5: primaries = kCVImageBufferColorPrimaries_EBU_3213
+        case 6, 7: primaries = kCVImageBufferColorPrimaries_SMPTE_C
+        case 9: primaries = kCVImageBufferColorPrimaries_ITU_R_2020
+        case 11: primaries = kCVImageBufferColorPrimaries_DCI_P3
+        case 12: primaries = kCVImageBufferColorPrimaries_P3_D65
+        default: primaries = nil
+        }
+        let transfer: CFString?
+        switch frame.transferFunction {
+        case 1, 6: transfer = kCVImageBufferTransferFunction_ITU_R_709_2
+        case 7: transfer = kCVImageBufferTransferFunction_SMPTE_240M_1995
+        case 8: transfer = kCVImageBufferTransferFunction_Linear
+        case 13: transfer = kCVImageBufferTransferFunction_sRGB
+        case 14, 15: transfer = kCVImageBufferTransferFunction_ITU_R_2020
+        case 16: transfer = kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ
+        case 18: transfer = kCVImageBufferTransferFunction_ITU_R_2100_HLG
+        default: transfer = nil
+        }
+        // Reused surfaces must lose tags the next frame does not supply.
+        for (key, value) in [(kCVImageBufferColorPrimariesKey, primaries), (kCVImageBufferTransferFunctionKey, transfer)] {
+            if let value { CVBufferSetAttachment(pixelBuffer, key, value, .shouldPropagate) }
+            else { CVBufferRemoveAttachment(pixelBuffer, key) }
+        }
         let size = NSSize(width: Double(frame.width) * Double(frame.aspectNumerator) / Double(frame.aspectDenominator), height: Double(frame.height))
         return PreviewPicture(pixelBuffer: pixelBuffer, size: size)
     }

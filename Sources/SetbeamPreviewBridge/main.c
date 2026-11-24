@@ -6,6 +6,7 @@
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libavutil/imgutils.h>
+#include <libavutil/pixdesc.h>
 #include <libavutil/channel_layout.h>
 #include <libswresample/swresample.h>
 #include <libswscale/swscale.h>
@@ -136,15 +137,33 @@ int main(int argc,char **argv) {
                 if(!pixels){result=AVERROR(ENOMEM);goto finish;}
                 scale=sws_getCachedContext(scale,frame->width,frame->height,frame->format,width,height,AV_PIX_FMT_NV12,SWS_BILINEAR,NULL,NULL,NULL);
                 if(!scale){result=AVERROR(ENOMEM);goto finish;}
-                int full=frame->color_range==AVCOL_RANGE_JPEG;
-                int matrix=frame->colorspace==AVCOL_SPC_BT709?1:frame->colorspace==AVCOL_SPC_BT2020_NCL?9:5;
-                const int *coefficients=sws_getCoefficients(matrix==1?SWS_CS_ITU709:matrix==9?SWS_CS_BT2020:SWS_CS_ITU601);
-                sws_setColorspaceDetails(scale,coefficients,full,coefficients,full,0,1<<16,1<<16);
+                const AVPixFmtDescriptor *description=av_pix_fmt_desc_get(frame->format);
+                int rgb=description && (description->flags & AV_PIX_FMT_FLAG_RGB);
+                const AVCodecParameters *metadata=video.stream->codecpar;
+                enum AVColorRange range=frame->color_range==AVCOL_RANGE_UNSPECIFIED?metadata->color_range:frame->color_range;
+                enum AVColorSpace colorspace=frame->colorspace==AVCOL_SPC_UNSPECIFIED?metadata->color_space:frame->colorspace;
+                int full=range==AVCOL_RANGE_JPEG;
+                int matrix=5,coefficient_id=SWS_CS_ITU601;
+                if(colorspace==AVCOL_SPC_BT709){matrix=1;coefficient_id=SWS_CS_ITU709;}
+                if(colorspace==AVCOL_SPC_SMPTE240M){matrix=7;coefficient_id=SWS_CS_SMPTE240M;}
+                if(colorspace==AVCOL_SPC_BT2020_NCL){matrix=9;coefficient_id=SWS_CS_BT2020;}
+                const int *coefficients=sws_getCoefficients(coefficient_id);
+                result=sws_setColorspaceDetails(scale,coefficients,rgb||full,coefficients,full,0,1<<16,1<<16);
+                if(result<0)goto finish;
                 uint8_t *planes[4]={0};int strides[4]={0};av_image_fill_arrays(planes,strides,pixels,AV_PIX_FMT_NV12,width,height,1);
-                sws_scale(scale,(const uint8_t *const *)frame->data,frame->linesize,0,frame->height,planes,strides);
-                AVRational aspect=frame->sample_aspect_ratio.num>0?frame->sample_aspect_ratio:video.stream->sample_aspect_ratio;
+                result=sws_scale(scale,(const uint8_t *const *)frame->data,frame->linesize,0,frame->height,planes,strides);
+                if(result<0)goto finish;
+                AVRational aspect=av_guess_sample_aspect_ratio(input,video.stream,frame);
                 if(aspect.num<=0||aspect.den<=0)aspect=(AVRational){1,1};
-                result=record(VIDEO,full,pts,duration,width,height,0,0,aspect,matrix,pixels,pixels_size);
+                /* Keep display aspect when NV12 padding or thumbnail rounding changes raster aspect. */
+                av_reduce(&aspect.num,&aspect.den,(int64_t)aspect.num*frame->width*height,
+                          (int64_t)aspect.den*frame->height*width,65536);
+                if(aspect.num<=0||aspect.den<=0)aspect=(AVRational){1,1};
+                /* SBPF v1 puts AVColorPrimaries and AVColorTransferCharacteristic in unused video flag bytes. */
+                enum AVColorPrimaries primaries=frame->color_primaries==AVCOL_PRI_UNSPECIFIED?metadata->color_primaries:frame->color_primaries;
+                enum AVColorTransferCharacteristic transfer=frame->color_trc==AVCOL_TRC_UNSPECIFIED?metadata->color_trc:frame->color_trc;
+                int flags=full | ((primaries & 255)<<8) | ((transfer & 255)<<16);
+                result=record(VIDEO,flags,pts,duration,width,height,0,0,aspect,matrix,pixels,pixels_size);
             } else {
                 /* One fixed interleaved format keeps the IPC and native audio queues bounded. */
                 if(!resample||audio_rate!=frame->sample_rate||audio_format!=frame->format||av_channel_layout_compare(&audio_layout,&frame->ch_layout)) {

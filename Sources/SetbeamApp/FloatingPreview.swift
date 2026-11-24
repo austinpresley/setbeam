@@ -11,6 +11,7 @@ import SwiftUI
     private var viewers: FloatingViewerPanel?
     private var sourceObservation: AnyCancellable?
     private weak var previousKey: NSWindow?
+    private var refitAfterDrag = false
 
     init(model: SessionModel) { self.model = model }
     var keyboardActive: Bool { panel?.isKeyWindow == true }
@@ -31,6 +32,11 @@ import SwiftUI
             let overlay = FloatingPreviewControls(model: model, close: { [weak self] in self?.close() })
             view.onHover = { [weak overlay] inside in overlay?.setHover(inside) }
             view.onAspect = { [weak self] size in self?.updateAspect(size) }
+            view.onWindowDragEnded = { [weak self] in
+                guard let self, self.refitAfterDrag else { return }
+                self.refitAfterDrag = false
+                self.refitToScreen()
+            }
             view.onPictureInteraction = { [weak overlay] in overlay?.cancelActions() }
             view.onKeyboardExit = { [weak self] in self?.leaveKeyboard() }
             overlay.holdVisualChanged = { [weak view] held in view?.setHoldVisual(held) }
@@ -103,7 +109,16 @@ import SwiftUI
     }
     func windowDidMove(_ notification: Notification) { viewers?.position() }
     func windowDidResize(_ notification: Notification) { viewers?.position() }
-    func windowDidChangeScreen(_ notification: Notification) { viewers?.position() }
+    func windowDidChangeScreen(_ notification: Notification) {
+        if picture?.isDraggingWindow == true { refitAfterDrag = true }
+        else { refitToScreen() }
+        viewers?.position()
+    }
+
+    private func refitToScreen() {
+        guard let panel else { return }
+        updateAspect(picture?.pictureSize ?? panel.contentAspectRatio)
+    }
 
     private func updateAspect(_ size: NSSize) {
         guard let panel, size.width > 0, size.height > 0 else { return }
@@ -144,6 +159,7 @@ import SwiftUI
     var onAspect: ((NSSize) -> Void)?
     var onKeyboardExit: (() -> Void)?
     var onPictureInteraction: (() -> Void)?
+    var onWindowDragEnded: (() -> Void)?
     private var picture: PreviewPicture?
     private let pictureView = PictureLayerView(gravity: .resize)
     private let imagePlane = PreviewImagePlane()
@@ -154,6 +170,8 @@ import SwiftUI
     private var dragPoint: CGPoint?
     private var windowDrag: (pointer: CGPoint, origin: CGPoint)?
     private var windowResize: PreviewWindowResize?
+    var isDraggingWindow: Bool { windowDrag != nil || windowResize != nil }
+    var pictureSize: NSSize? { picture?.size }
     private let recovery: NSView
     /// Covers exactly the zoomed picture rectangle, so pointers follow zoom and pan.
     private let pointers: NSView
@@ -284,7 +302,9 @@ import SwiftUI
         dragPoint = point; inspectionChanged()
     }
     override func mouseUp(with event: NSEvent) {
+        let wasDraggingWindow = isDraggingWindow
         windowDrag = nil; windowResize = nil
+        if wasDraggingWindow { onWindowDragEnded?() }
         if dragPoint != nil { dragPoint = nil; NSCursor.pop() }
     }
     override func keyDown(with event: NSEvent) {

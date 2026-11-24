@@ -94,3 +94,102 @@ final class PreviewMemoryTests: XCTestCase {
         XCTAssertEqual(delivered, 100, "An offscreen monitor must leave buffers available to the visible monitor.")
     }
 }
+
+@MainActor private final class TestPictureRenderer: PictureLayerRenderer {
+    var ready = true
+    var failed = false
+    var samples: [CMSampleBuffer] = []
+    var flushes = 0
+    var onFlush: (() -> Void)?
+
+    func enqueue(_ sample: CMSampleBuffer) { samples.append(sample) }
+    func clear(completion: @escaping @Sendable () -> Void) {
+        flushes += 1
+        samples.removeAll()
+        onFlush?()
+        completion()
+    }
+}
+
+@MainActor private final class VisiblePreviewTestWindow: NSWindow {
+    override var isVisible: Bool { true }
+    override var occlusionState: NSWindow.OcclusionState { .visible }
+}
+
+extension PreviewMemoryTests {
+    @MainActor func testEachVisibleLayerAcceptsIndependentlyAndReplaysLatestAfterFlush() async throws {
+        _ = NSApplication.shared
+        let window = VisiblePreviewTestWindow(contentRect: NSRect(x: 0, y: 0, width: 320, height: 180),
+            styleMask: .borderless, backing: .buffered, defer: true)
+        window.isReleasedWhenClosed = false
+        let mainRenderer = TestPictureRenderer(), floatingRenderer = TestPictureRenderer()
+        let main = PictureLayerView(renderer: mainRenderer)
+        let floating = PictureLayerView(renderer: floatingRenderer)
+        window.contentView = NSView(frame: .zero)
+        window.contentView?.addSubview(main)
+        window.contentView?.addSubview(floating)
+
+        let pool = PreviewPicturePool()
+        let first = try XCTUnwrap(pool.makePicture(frame()))
+        let last = try XCTUnwrap(pool.makePicture(frame()))
+        floatingRenderer.ready = false
+        for view in [main, floating] { view.show(first); view.show(last) }
+        XCTAssertEqual(main.acceptedFrames, 2)
+        XCTAssertEqual(floating.acceptedFrames, 0)
+
+        floatingRenderer.onFlush = { [weak floatingRenderer] in floatingRenderer?.ready = true }
+        let deadline = ContinuousClock.now + .seconds(2)
+        while floating.acceptedFrames == 0 && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertEqual(floatingRenderer.flushes, 1)
+        XCTAssertEqual(floating.acceptedFrames, 1)
+        XCTAssertTrue(floatingRenderer.samples.first === last.displaySample)
+        XCTAssertEqual(mainRenderer.flushes, 0)
+
+        floating.isHidden = true
+        XCTAssertEqual(floatingRenderer.flushes, 2)
+        floating.show(first)
+        floating.isHidden = false
+        let replay = ContinuousClock.now + .seconds(2)
+        while floating.acceptedFrames < 2 && ContinuousClock.now < replay {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertEqual(floating.acceptedFrames, 2)
+        XCTAssertTrue(floatingRenderer.samples.first === first.displaySample)
+
+        floatingRenderer.ready = false
+        floatingRenderer.onFlush = nil
+        floating.show(last)
+        try await Task.sleep(for: .milliseconds(750))
+        XCTAssertEqual(floatingRenderer.flushes, 4, "One stall must have a bounded flush budget.")
+        XCTAssertEqual(floating.acceptedFrames, 2)
+        window.close()
+    }
+
+    func testAspectAndColorTagsReachTheSampleAndDoNotCarryOver() throws {
+        let pool = PreviewPicturePool()
+        let base = frame()
+        let tagged = PreviewPacket(kind: .video, flags: 1 | (9 << 8) | (16 << 16), timestamp: 0, duration: base.duration,
+            width: base.width, height: base.height, channels: 0, sampleRate: 0,
+            aspectNumerator: 4, aspectDenominator: 3, matrix: 9, payload: base.payload)
+        try autoreleasepool {
+            let picture = try XCTUnwrap(pool.makePicture(tagged))
+            XCTAssertEqual(picture.size.width / picture.size.height, 64.0 / 27, accuracy: 0.001)
+            XCTAssertEqual(CVPixelBufferGetPixelFormatType(picture.pixelBuffer), kCVPixelFormatType_420YpCbCr8BiPlanarFullRange)
+            let format = try XCTUnwrap(CMSampleBufferGetFormatDescription(try XCTUnwrap(picture.displaySample)))
+            let dimensions = CMVideoFormatDescriptionGetPresentationDimensions(format, usePixelAspectRatio: true, useCleanAperture: true)
+            XCTAssertEqual(dimensions.width / dimensions.height, 64.0 / 27, accuracy: 0.001)
+            XCTAssertEqual(CMFormatDescriptionGetExtension(format, extensionKey: kCMFormatDescriptionExtension_ColorPrimaries) as? String,
+                kCVImageBufferColorPrimaries_ITU_R_2020 as String)
+            XCTAssertEqual(CMFormatDescriptionGetExtension(format, extensionKey: kCMFormatDescriptionExtension_TransferFunction) as? String,
+                kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ as String)
+        }
+        let unknown = PreviewPacket(kind: .video, flags: 1, timestamp: 0, duration: base.duration,
+            width: base.width, height: base.height, channels: 0, sampleRate: 0,
+            aspectNumerator: 1, aspectDenominator: 1, matrix: 1, payload: base.payload)
+        let picture = try XCTUnwrap(pool.makePicture(unknown))
+        XCTAssertNil(CVBufferCopyAttachment(picture.pixelBuffer, kCVImageBufferColorPrimariesKey, nil))
+        XCTAssertNil(CVBufferCopyAttachment(picture.pixelBuffer, kCVImageBufferTransferFunctionKey, nil))
+    }
+}

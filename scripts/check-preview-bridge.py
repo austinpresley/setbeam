@@ -13,6 +13,7 @@ from preview_timing import validate_live_timing
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--tools", type=Path, default=Path("Vendor/bin"))
+parser.add_argument("--check-color-metadata", action="store_true", help="Exercise video flags added after build 43.")
 args = parser.parse_args()
 tools = args.tools.resolve()
 
@@ -20,7 +21,8 @@ with tempfile.TemporaryDirectory(prefix="Setbeam-preview-check-") as temporary:
     media = Path(temporary) / "1080p60.mp4"
     subprocess.run([str(tools / "ffmpeg"), "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=1920x1080:rate=60",
         "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "1", "-c:v", "h264_videotoolbox",
-        "-realtime", "true", "-pix_fmt", "yuv420p", "-c:a", "aac", str(media)], check=True, timeout=30)
+        "-realtime", "true", "-pix_fmt", "yuv420p", "-aspect", "4:3", "-colorspace", "bt709",
+        "-color_range", "tv", "-movflags", "+write_colr", "-c:a", "aac", str(media)], check=True, timeout=30)
 
     def decode(options, source=media, maximum_video=None):
         records = []
@@ -36,10 +38,11 @@ with tempfile.TemporaryDirectory(prefix="Setbeam-preview-check-") as temporary:
                 size, flags = struct.unpack_from("<II", header, 8)
                 pts, duration = struct.unpack_from("<qq", header, 16)
                 width, height, channels, rate = struct.unpack_from("<IIII", header, 32)
+                sar_n, sar_d, _, matrix = struct.unpack_from("<IIII", header, 48)
                 assert size <= 8192 * 8192 * 3 // 2, "unbounded packet"
                 payload = child.stdout.read(size)
                 assert len(payload) == size, "truncated payload"
-                records.append(dict(kind=kind, flags=flags, pts=pts, duration=duration, width=width, height=height, channels=channels, rate=rate, size=size))
+                records.append(dict(kind=kind, flags=flags, pts=pts, duration=duration, width=width, height=height, channels=channels, rate=rate, size=size, sar_n=sar_n, sar_d=sar_d, matrix=matrix))
                 if maximum_video and sum(record["kind"] == 1 for record in records) >= maximum_video:
                     child.terminate(); break
             assert child.wait(timeout=10) == 0, child.stderr.read().decode()
@@ -67,6 +70,20 @@ with tempfile.TemporaryDirectory(prefix="Setbeam-preview-check-") as temporary:
     print("PASS: one timestamped native decode preserves 1920x1080 at 60 fps with synchronized-source PCM; bounded protocol and silent 384/8 thumbnail pass")
     print(json.dumps(dict(videoFrames=len(video), audioPackets=len(audio), firstVideoPTS=video[0]["pts"], lastVideoPTS=video[-1]["pts"],
         firstAudioPTS=audio[0]["pts"], lastAudioPTS=audio[-1]["pts"], thumbnailFrames=len(small)), sort_keys=True))
+
+    if args.check_color_metadata:
+        # The bundled VideoToolbox encoder can omit primaries and transfer in its
+        # VUI. Tag the generated MP4's nclx box to exercise container fallback.
+        tagged_media = Path(temporary) / "tagged.mp4"
+        fixture = bytearray(media.read_bytes())
+        nclx = fixture.index(b"\x00\x00\x00\x13colrnclx") + 12
+        fixture[nclx:nclx + 4] = struct.pack(">HH", 1, 1)
+        tagged_media.write_bytes(fixture)
+        tagged = [record for record in decode(["--silent", "--width", "382", "--fps", "8"], tagged_media) if record["kind"] == 1]
+        assert tagged and all(frame["width"] == 382 and frame["height"] == 214 for frame in tagged), tagged
+        assert all(frame["width"] * frame["sar_n"] * 3 == frame["height"] * frame["sar_d"] * 4 for frame in tagged), tagged
+        assert all(frame["flags"] == 0x010100 and frame["matrix"] == 1 for frame in tagged), tagged
+        print("PASS: resized NV12 preserves 4:3 display aspect and tagged BT.709 video-range metadata")
 
     # Exercise the real loopback transport. RTSP's 90 kHz packet clock differs
     # from decoder frame time bases, which a file-only test cannot expose.

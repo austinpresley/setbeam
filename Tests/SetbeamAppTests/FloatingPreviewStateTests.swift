@@ -145,6 +145,15 @@ final class FloatingPreviewStateTests: XCTestCase {
         XCTAssertEqual(fit.frame.height / fit.frame.width, 640.0 / 360, accuracy: 0.001)
         XCTAssertEqual(fit.minimum.width, 220)
     }
+    func testPreviewRefitsWhenDroppedOnASmallerDisplay() throws {
+        let moved = CGRect(x: -300, y: 80, width: 960, height: 540)
+        let destination = CGRect(x: -720, y: 60, width: 720, height: 420)
+        let fit = try XCTUnwrap(PreviewWindowLayout(source: CGSize(width: 1920, height: 1080), frame: moved, screen: destination))
+        XCTAssertTrue(destination.contains(fit.frame))
+        XCTAssertEqual(fit.frame.width, destination.width)
+        XCTAssertEqual(fit.frame.height, 405)
+        XCTAssertEqual(fit.frame.maxX, destination.maxX)
+    }
     func testExtremeSourceShapesFitAUsableWindowAndTheCompletePicture() throws {
         let screen = CGRect(x: -1000, y: 80, width: 1000, height: 620)
         for source in [CGSize(width: 100, height: 2000), CGSize(width: 4000, height: 100)] {

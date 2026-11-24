@@ -22,7 +22,7 @@ final class PreviewPlaybackTests: XCTestCase {
         put(UInt64(packet.width), 32, 4); put(UInt64(packet.height), 36, 4)
         put(UInt64(packet.channels), 40, 4); put(UInt64(packet.sampleRate), 44, 4)
         put(UInt64(packet.aspectNumerator), 48, 4); put(UInt64(packet.aspectDenominator), 52, 4)
-        put(packet.kind == .video ? 1 : 2, 56, 4); put(UInt64(packet.matrix), 60, 4)
+        put(UInt64(packet.kind == .streams ? 0 : packet.kind.rawValue), 56, 4); put(UInt64(packet.matrix), 60, 4)
         return header + packet.payload
     }
     func testFragmentedInterleavedPacketsRetainDimensionsCadenceAndCommonTimestamps() throws {
@@ -34,6 +34,22 @@ final class PreviewPlaybackTests: XCTestCase {
         XCTAssertEqual(actual[2].seconds - actual[0].seconds, 1.0 / 60, accuracy: 0.000001)
         XCTAssertEqual(actual[0].seconds - actual[1].seconds, 0.01, accuracy: 0.000001)
     }
+    func testCoalescedStreamRecordsAndSlicedChunks() throws {
+        let streams = PreviewPacket(kind: .streams, flags: 1, timestamp: 0, duration: 0, width: 0, height: 0,
+            channels: 0, sampleRate: 0, aspectNumerator: 0, aspectDenominator: 1, matrix: 0, payload: Data())
+        let frame = video(0, width: 1920, height: 1080)
+        let bytes = Data([255]) + encoded(streams) + encoded(frame) + encoded(streams)
+        let parser = PreviewPacketParser()
+        var actual: [PreviewPacket] = [], recordStarts = 0
+        for index in stride(from: 1, to: bytes.count, by: 65_536) {
+            try parser.consume(bytes[index..<min(index + 65_536, bytes.count)], beganRecord: { recordStarts += 1 }) {
+                actual.append($0)
+            }
+        }
+        XCTAssertEqual(actual, [streams, frame, streams])
+        XCTAssertEqual(recordStarts, 3)
+    }
+
     func testInvalidVersionOversizedLengthAndInvalidFormatsFailClosed() {
         for mutation in [4, 8, 32, 56] {
             var record = encoded(video(0)); record[mutation] = 255
@@ -65,11 +81,35 @@ final class PreviewPlaybackTests: XCTestCase {
     func testAudioUsesSourceTimeAndRejectsStaleSoundInsteadOfReplayingIt() {
         var inbox = PreviewInbox()
         for pts: Int64 in [0, 20_000, 40_000, 60_000] { inbox.append(audio(pts)) }
-        let due = inbox.takeAudio(through: 0.045, staleBefore: 0.035)
-        XCTAssertEqual(due.map(\.timestamp), [20_000, 40_000])
+        let first = inbox.offerAudio(through: 0.045, staleBefore: 0.035)!
+        XCTAssertEqual(first.packet.timestamp, 20_000)
+        XCTAssertEqual(inbox.offerAudio(through: 0.045, staleBefore: 0.035)?.packet.timestamp, 20_000)
+        XCTAssertTrue(inbox.finishAudio(first, staleBefore: 0.035))
+        let second = inbox.offerAudio(through: 0.045, staleBefore: 0.035)!
+        XCTAssertEqual(second.packet.timestamp, 40_000)
+        XCTAssertTrue(inbox.finishAudio(second, staleBefore: 0.035))
+        XCTAssertNil(inbox.offerAudio(through: 0.045, staleBefore: 0.035))
         XCTAssertEqual(inbox.droppedAudio, 1)
         XCTAssertEqual(inbox.audio.first?.timestamp, 60_000)
     }
+    func testAudioOffersExpireOnEvictionResetAndMute() throws {
+        var inbox = PreviewInbox()
+        inbox.append(audio(0))
+        let evicted = try XCTUnwrap(inbox.offerAudio(through: 0.25, staleBefore: -1))
+        inbox.append(audio(1_000_000))
+        XCTAssertFalse(inbox.finishAudio(evicted, staleBefore: -1))
+
+        let reset = try XCTUnwrap(inbox.offerAudio(through: 1.25, staleBefore: 0.9))
+        let epoch = inbox.audioEpoch
+        inbox.invalidateAudio()
+        inbox.append(audio(1_000_000))
+        XCTAssertNotEqual(inbox.audioEpoch, epoch)
+        XCTAssertFalse(inbox.finishAudio(reset, staleBefore: 0.9))
+        let stale = try XCTUnwrap(inbox.offerAudio(through: 1.25, staleBefore: 0.9))
+        XCTAssertFalse(inbox.finishAudio(stale, staleBefore: 1.1))
+        XCTAssertTrue(inbox.audio.isEmpty)
+    }
+
     func testSourceTimestampRestartFlushesBothQueues() {
         var inbox = PreviewInbox()
         inbox.append(video(10_000_000)); inbox.append(audio(10_000_000)); inbox.append(video(0))
@@ -123,7 +163,10 @@ final class PreviewPlaybackTests: XCTestCase {
             while !(await runtime.snapshot()).sourceAvailable && Date() < deadline { try await Task.sleep(nanoseconds: 100_000_000) }
             let source = await runtime.snapshot()
             XCTAssertTrue(source.sourceAvailable)
-            try player.start(url: await runtime.localRTSP())
+            let url = await runtime.localRTSP()
+            try player.start(url: url)
+            let generation = try XCTUnwrap(player.decoderGeneration)
+            XCTAssertNil(player.freshPicture(for: generation))
             player.checkHealth(sourceAvailable: true)
             let playbackDeadline = Date().addingTimeInterval(10)
             while player.diagnostics.presentedFrames < 12 && Date() < playbackDeadline { try await Task.sleep(nanoseconds: 50_000_000) }
@@ -141,7 +184,21 @@ final class PreviewPlaybackTests: XCTestCase {
             XCTAssertGreaterThan(after.presentedFrames - before.presentedFrames, 45)
             XCTAssertLessThan(try XCTUnwrap(errors.max()), 0.08, "Native presentation must remain near the shared A/V clock after RTSP probing settles.")
             XCTAssertLessThanOrEqual(after.videoQueueFrames, PreviewInbox.maximumVideoFrames)
-            player.stop(); await runtime.shutdown()
+            XCTAssertNotNil(player.freshPicture(for: generation))
+            player.retry()
+            let replacement = try XCTUnwrap(player.decoderGeneration)
+            XCTAssertNotEqual(replacement, generation)
+            XCTAssertNil(player.freshPicture(for: generation))
+            XCTAssertNil(player.freshPicture(for: replacement))
+            let resumed = Date().addingTimeInterval(10)
+            while player.freshPicture(for: replacement) == nil && Date() < resumed {
+                try await Task.sleep(nanoseconds: 50_000_000)
+            }
+            XCTAssertNotNil(player.freshPicture(for: replacement))
+            player.stop()
+            XCTAssertNil(player.decoderGeneration)
+            XCTAssertNil(player.freshPicture(for: replacement))
+            await runtime.shutdown()
         } catch { player.stop(); await runtime.shutdown(); throw error }
     }
 }

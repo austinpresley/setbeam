@@ -16,6 +16,9 @@ struct PreviewPacket: Equatable {
     let aspectDenominator: Int
     let matrix: UInt32
     let payload: Data
+    // SBPF v1 leaves these video flag bytes zero in older helpers.
+    var colorPrimaries: UInt32 { (flags >> 8) & 0xff }
+    var transferFunction: UInt32 { (flags >> 16) & 0xff }
     var seconds: Double { Double(timestamp) / 1_000_000 }
     var durationSeconds: Double { Double(duration) / 1_000_000 }
 }
@@ -25,49 +28,80 @@ enum PreviewProtocolError: Error { case invalidHeader, invalidPayload, oversized
 /// Called on the one stdout pipe. Invalid or oversized data fails closed instead
 /// of scanning arbitrary pixel bytes for another header.
 final class PreviewPacketParser {
-    private var buffer = Data()
+    private var header = Data()
+    private var payload = Data()
+    private var payloadSize: Int?
     private(set) var failed = false
     static let maximumPayload = 8192 * 8192 * 3 / 2
 
-    func consume(_ data: Data, receive: (PreviewPacket) -> Void) throws {
+    func consume(_ data: Data, beganRecord: () -> Void = {}, receive: (PreviewPacket) -> Void) throws {
         guard !failed else { throw PreviewProtocolError.invalidHeader }
         do {
-            // FileHandle supplies small chunks. Reject unreasonable callers before allocating.
-            guard data.count <= Self.maximumPayload + 64, buffer.count + data.count <= Self.maximumPayload + 128 * 1024 else { throw PreviewProtocolError.oversizedPacket }
-            buffer.append(data)
-            var offset = 0
-            while buffer.count - offset >= 64 {
-                let header = buffer.dropFirst(offset).prefix(64)
-                func u32(_ index: Int) -> UInt32 {
-                    (0..<4).reduce(0) { $0 | UInt32(header[header.startIndex + index + $1]) << ($1 * 8) }
+            guard data.count <= Self.maximumPayload + 64 else { throw PreviewProtocolError.oversizedPacket }
+            var offset = data.startIndex
+            while offset < data.endIndex {
+                if payloadSize == nil {
+                    if header.isEmpty { beganRecord() }
+                    let count = min(64 - header.count, data.endIndex - offset)
+                    header.append(data[offset..<(offset + count)])
+                    offset += count
+                    guard header.count == 64 else { return }
+                    payloadSize = try validateHeader()
                 }
-                func i64(_ index: Int) -> Int64 {
-                    Int64(bitPattern: (0..<8).reduce(UInt64(0)) { $0 | UInt64(header[header.startIndex + index + $1]) << ($1 * 8) })
-                }
-                guard Array(header.prefix(6)) == [83, 66, 80, 70, 1, 0], header[header.startIndex + 7] == 0,
-                      let kind = PreviewPacket.Kind(rawValue: UInt16(header[header.startIndex + 6])) else { throw PreviewProtocolError.invalidHeader }
-                let size = Int(u32(8)), width = Int(u32(32)), height = Int(u32(36))
-                guard size <= Self.maximumPayload else { throw PreviewProtocolError.oversizedPacket }
-                switch kind {
-                case .video:
-                    guard (2...8192).contains(width), (2...8192).contains(height), width % 2 == 0, height % 2 == 0,
-                          size == width * height * 3 / 2, u32(56) == 1,
-                          (1...65536).contains(u32(48)), (1...65536).contains(u32(52)) else { throw PreviewProtocolError.invalidPayload }
-                case .audio:
-                    guard u32(40) == 2, u32(44) == 48_000, u32(56) == 2,
-                          size > 0, size <= 48_000 * 8 / 2, size % 8 == 0 else { throw PreviewProtocolError.invalidPayload }
-                case .streams:
-                    guard size == 0 else { throw PreviewProtocolError.invalidPayload }
-                }
-                guard buffer.count - offset >= size + 64 else { break }
-                let packet = PreviewPacket(kind: kind, flags: u32(12), timestamp: i64(16), duration: i64(24),
-                    width: width, height: height, channels: Int(u32(40)), sampleRate: Int(u32(44)),
-                    aspectNumerator: Int(u32(48)), aspectDenominator: Int(u32(52)), matrix: u32(60),
-                    payload: Data(buffer[(offset + 64)..<(offset + 64 + size)]))
-                receive(packet); offset += 64 + size
+                guard let size = payloadSize else { return }
+                let count = min(size - payload.count, data.endIndex - offset)
+                payload.append(data[offset..<(offset + count)])
+                offset += count
+                guard payload.count == size else { return }
+
+                // Move the assembled payload into the packet. The next record starts with
+                // empty storage even if a consumer still owns the previous packet.
+                let packet = PreviewPacket(kind: try kind(), flags: u32(12), timestamp: i64(16), duration: i64(24),
+                    width: Int(u32(32)), height: Int(u32(36)), channels: Int(u32(40)), sampleRate: Int(u32(44)),
+                    aspectNumerator: Int(u32(48)), aspectDenominator: Int(u32(52)), matrix: u32(60), payload: payload)
+                payload = Data()
+                header.removeAll(keepingCapacity: true)
+                payloadSize = nil
+                receive(packet)
             }
-            if offset > 0 { buffer.removeSubrange(..<offset) }
-        } catch { failed = true; buffer.removeAll(); throw error }
+        } catch {
+            failed = true
+            header = Data()
+            payload = Data()
+            payloadSize = nil
+            throw error
+        }
+    }
+
+    private func kind() throws -> PreviewPacket.Kind {
+        guard let kind = PreviewPacket.Kind(rawValue: UInt16(header[6])) else { throw PreviewProtocolError.invalidHeader }
+        return kind
+    }
+
+    private func validateHeader() throws -> Int {
+        guard header.prefix(6).elementsEqual([83, 66, 80, 70, 1, 0]), header[7] == 0 else { throw PreviewProtocolError.invalidHeader }
+        let size = Int(u32(8)), width = Int(u32(32)), height = Int(u32(36))
+        guard size <= Self.maximumPayload else { throw PreviewProtocolError.oversizedPacket }
+        switch try kind() {
+        case .video:
+            guard (2...8192).contains(width), (2...8192).contains(height), width % 2 == 0, height % 2 == 0,
+                  size == width * height * 3 / 2, u32(56) == 1,
+                  (1...65536).contains(u32(48)), (1...65536).contains(u32(52)) else { throw PreviewProtocolError.invalidPayload }
+        case .audio:
+            guard u32(40) == 2, u32(44) == 48_000, u32(56) == 2,
+                  size > 0, size <= 48_000 * 8 / 2, size % 8 == 0 else { throw PreviewProtocolError.invalidPayload }
+        case .streams:
+            guard size == 0 else { throw PreviewProtocolError.invalidPayload }
+        }
+        return size
+    }
+
+    private func u32(_ index: Int) -> UInt32 {
+        (0..<4).reduce(0) { $0 | UInt32(header[index + $1]) << ($1 * 8) }
+    }
+
+    private func i64(_ index: Int) -> Int64 {
+        Int64(bitPattern: (0..<8).reduce(UInt64(0)) { $0 | UInt64(header[index + $1]) << ($1 * 8) })
     }
 }
 
@@ -76,6 +110,9 @@ final class PreviewPacketParser {
 struct PreviewInbox {
     private(set) var video: [PreviewPacket] = []
     private(set) var audio: [PreviewPacket] = []
+    private(set) var audioEpoch: UInt64 = 0
+    private var audioHead: UInt64 = 0
+    private var audioBytes = 0
     private(set) var droppedVideo = 0
     private(set) var droppedAudio = 0
     private(set) var videoBytes = 0
@@ -88,7 +125,9 @@ struct PreviewInbox {
     private(set) var overrun = false
     static let maximumVideoFrames = 6
     static let maximumVideoBytes = 32 * 1024 * 1024
+    static let maximumAudioPackets = 64
     static let maximumAudioSeconds = 0.4
+    static let maximumAudioBytes = 48_000 * 8 / 2
 
     mutating func append(_ packet: PreviewPacket) {
         switch packet.kind {
@@ -105,8 +144,10 @@ struct PreviewInbox {
             }
         case .audio:
             audio.append(packet)
-            while audio.count > 64 || audio.count > 1 && audio.last!.seconds + audio.last!.durationSeconds - audio.first!.seconds > Self.maximumAudioSeconds {
-                audio.removeFirst(); droppedAudio += 1
+            audioBytes += packet.payload.count
+            while audio.count > Self.maximumAudioPackets || audioBytes > Self.maximumAudioBytes ||
+                audio.count > 1 && packet.seconds + packet.durationSeconds - audio.first!.seconds > Self.maximumAudioSeconds {
+                removeAudioHead(dropped: true)
             }
         }
     }
@@ -118,19 +159,47 @@ struct PreviewInbox {
         }
         return current
     }
-    mutating func takeAudio(through seconds: Double, staleBefore: Double) -> [PreviewPacket] {
-        var result: [PreviewPacket] = []
-        while let first = audio.first, first.seconds <= seconds {
-            audio.removeFirst()
-            if first.seconds + first.durationSeconds < staleBefore { droppedAudio += 1 }
-            else { result.append(first) }
-        }
-        return result
+    struct AudioOffer {
+        fileprivate let head: UInt64
+        let packet: PreviewPacket
     }
+
+    mutating func offerAudio(through seconds: Double, staleBefore: Double) -> AudioOffer? {
+        while let first = audio.first, first.seconds + first.durationSeconds < staleBefore {
+            removeAudioHead(dropped: true)
+        }
+        guard let first = audio.first, first.seconds <= seconds else { return nil }
+        return AudioOffer(head: audioHead, packet: first)
+    }
+
+    /// The producer can evict the head while the renderer builds a sample.
+    mutating func finishAudio(_ offer: AudioOffer, staleBefore: Double, dropped: Bool = false) -> Bool {
+        guard offer.head == audioHead, !audio.isEmpty else { return false }
+        let stale = offer.packet.seconds + offer.packet.durationSeconds < staleBefore
+        removeAudioHead(dropped: dropped || stale)
+        return !dropped && !stale
+    }
+
+    private mutating func removeAudioHead(dropped: Bool) {
+        audioBytes -= audio.removeFirst().payload.count
+        audioHead &+= 1
+        if dropped { droppedAudio += 1 }
+    }
+
+    mutating func invalidateAudio() {
+        audioEpoch &+= 1
+        audioHead &+= UInt64(audio.count)
+        droppedAudio += audio.count
+        audio.removeAll()
+        audioBytes = 0
+    }
+
     mutating func acknowledgeDiscontinuity() { discontinuity = false; overrun = false }
     mutating func clearMedia() {
-        droppedVideo += video.count; droppedAudio += audio.count
-        video.removeAll(); audio.removeAll(); videoBytes = 0
+        invalidateAudio()
+        droppedVideo += video.count
+        video.removeAll()
+        videoBytes = 0
     }
 }
 

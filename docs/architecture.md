@@ -81,27 +81,36 @@ and decodes the private local RTSP relay once. A versioned, bounded pipe carries
 NV12 video and stereo Float32 PCM with source presentation timestamps. Each
 picture is copied into a pooled IOSurface pixel buffer that the main window,
 floating preview, and setup-check thumbnail show through
-AVSampleBufferDisplayLayer. Every allocation has an eight-buffer ceiling shared
-across formats and decoder recovery for that NativePreview. A private,
-non-propagating buffer attachment carries the allocation lease into renderers,
-so destroying a PreviewPicture wrapper cannot reset the budget. Saturation drops
-presentation frames; releasing renderer buffers permits new pictures again.
-Display layers honor readiness and flush when detached, minimized, closed or
-their window's occlusion changes. Detached, hidden and minimized monitors do not enqueue pictures.
-The GPU compositor converts NV12 for display; there is
-no CPU RGB conversion, per-frame CoreImage context, JPEG encode/decode, or fixed
-24 fps/1280-pixel main-preview limit. Audio and video use one
-AVSampleBufferRenderSynchronizer clock. Bounded queues, stale-frame dropping,
-timestamp discontinuity handling, and a decoder watchdog keep playback current.
-The 32 MB video queue holds only two 4K pictures, so a clock left behind by a
-late arrival would otherwise evict every later picture before it is due. When
-capacity evicts an unpresented picture, the shared clock restarts at the newest
-one. Audio-device initialization stays off the UI thread and
-has an operator-visible timeout. The main preview preserves source cadence;
-the silent outgoing thumbnail explicitly requests its smaller size and rate.
-Both the audience and native decoders use two slice threads instead of buffering
-whole frames across automatic frame threads. That keeps a 1 fps input from
-waiting many seconds for a decoder thread queue to fill.
+AVSampleBufferDisplayLayer. Each frame carries sample aspect and supported
+range, matrix, primaries and transfer tags. The preview helper adjusts sample
+aspect for rounded thumbnail dimensions, and the view and Core Video use
+the same aspect. A private, non-propagating pixel-buffer attachment carries the
+allocation lease into renderers. Each NativePreview has an eight-buffer
+ceiling shared across formats and decoder restarts.
+
+Pipe packet assembly, pixel copies and sample creation run outside the
+playback inbox lock. One pending picture on the UI handoff can be replaced
+by a newer one. Publication and each visible layer's accepted enqueue count
+are measured separately. A blocked layer reoffers the latest picture and can
+flush twice per stall. Hidden, minimized and detached layers release their
+queued surfaces. The floating window refits to the destination screen after
+a cross-display drag.
+
+Video and the AVSampleBufferRenderSynchronizer use the same media-to-host
+clock anchor. Bounded queues favor current playback. When the clock falls
+behind or source timestamps jump, video reanchors to the newest picture.
+Queued and in-flight PCM is invalidated on reanchor or mute. Pending audio
+pauses until its renderer is flushed, while video keeps advancing. A busy
+audio renderer leaves the current PCM packet in the queue until it accepts
+work, the packet goes stale, or the queue evicts it. Audio-device
+initialization runs on the audio queue and has an operator-visible timeout.
+
+The main preview preserves source size and cadence. The silent outgoing
+decoder requests a smaller size and rate. Both helpers decode with two slice
+threads to limit decoder queue delay for low-rate inputs. The outgoing
+decoder still decodes the full compressed picture before dropping or scaling
+decoded frames. Each start or recovery replaces its decoder generation.
+Clients can require a fresh frame from a specific generation.
 Guest permission grants read access
 only to the audience output. Control and publishing credentials are private.
 
