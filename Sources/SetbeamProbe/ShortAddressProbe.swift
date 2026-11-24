@@ -60,16 +60,16 @@ extension SetbeamProbe {
                 // Another app holds port 80 or macOS refused it. The operator sees this; the link keeps working.
                 let joined = try await http("http://127.0.0.1:\(port)/s/\(snapshot.guestToken)/join", json: ["name": "Link", "ask": true, "mobile": false])
                 guard joined.status == 200 else { throw SetbeamError.runtime("The viewing link stopped working while port 80 was unavailable.") }
-                print("PASS: port 80 is unavailable here (\(problem.rawValue)); the listener reports it, retries, and the viewing link keeps working")
+                print("PASS: the viewer link works when the port 80 listener reports \(problem.rawValue)")
+                print("SKIP: default-port short-address routing (port 80 unavailable)")
                 listener.stop()
                 listener = ShortAddressListener(port: 0, retryDelay: 1)
                 listener.serve(.init(address: "127.0.0.1", hosts: [host], port: port, path: path))
                 try await waitFor("a substitute port") { listener.state == .active }
-                print("NOTE: the remaining checks use substitute port \(listener.boundPort ?? 0) instead of port 80")
-            } else {
-                print("PASS: an unprivileged wildcard listener answers on port 80 while the short address is open")
+                print("NOTE: remaining short-address checks use an ephemeral loopback port")
             }
             let webPort = try unwrap(listener.boundPort, "The short address listener has no port.")
+            let addressEvidence = "short-address listener on port \(webPort)"
 
             let typed = try unwrap(raw("127.0.0.1", webPort, "GET / HTTP/1.1\r\nHost: \(host)\r\n\r\n"), "Typing the name did not connect.")
             let location = typed.components(separatedBy: "\r\n").first { $0.hasPrefix("Location: ") }.map { String($0.dropFirst(10)) }
@@ -81,7 +81,7 @@ extension SetbeamProbe {
             guard strangers.allSatisfy({ $0.hasPrefix("HTTP/1.1 404") && !$0.contains(path) && !$0.contains(snapshot.guestToken) }) else {
                 throw SetbeamError.runtime("The short address served something other than its redirect.")
             }
-            print("PASS: typing \(host) redirects only GET / to the ask-only path on the gateway; other hosts and paths get 404 and neither code")
+            print("PASS: the \(addressEvidence) redirects only GET / to the ask-only path on the gateway; other hosts and paths get 404 and neither code")
 
             if let other = NetworkAddress.available().first(where: { $0.address != "127.0.0.1" }) {
                 let reply = try raw(other.address, webPort, "GET / HTTP/1.1\r\nHost: \(other.address)\r\n\r\n")
@@ -100,7 +100,7 @@ extension SetbeamProbe {
             guard nameless.status == 400, saved.status == 400, let waiting = request.json["pass"] as? String,
                   request.json["admission"] as? String == "pending", let number = request.json["number"] as? Int,
                   try await http(location! + "config.json", pass: waiting).status == 403,
-                  try await whep(snapshot.audience.whepURL, "guest", snapshot.guestToken) == 401 else {
+                  try await whepInvalidOfferStatus(snapshot.audience.whepURL, "guest", snapshot.guestToken) == 401 else {
                 throw SetbeamError.runtime("The short address let a viewer in without Ask to join and Admit.")
             }
             guard gateway.viewers.first(where: { $0.number == number })?.shortAddress == true else {
@@ -115,12 +115,12 @@ extension SetbeamProbe {
             guard admitted.status == 200, let user = admitted.json["user"] as? String, user != "guest",
                   let password = admitted.json["pass"] as? String, password != snapshot.guestToken,
                   (admitted.json["whepURL"] as? String)?.hasPrefix("http://127.0.0.1:") == true,
-                  try await whep(admitted.json["whepURL"] as! String, user, password) != 401 else {
+                  try await whepInvalidOfferStatus(admitted.json["whepURL"] as! String, user, password) == 400 else {
                 throw SetbeamError.runtime("An admitted typed-name viewer did not receive its own reader.")
             }
             let frames = try await decodedFrames(tools: tools, directory: directory, rtsp: await runtime.localRTSP("live"), user: user, password: password)
             guard frames >= 30 else { throw SetbeamError.runtime("Only \(frames) audience frames decoded with the admitted reader.") }
-            print("PASS: after Admit the typed-name viewer gets its own read-only reader for the IP address; \(frames) real audience frames decode")
+            print("PASS: after Admit the typed-name viewer gets its own read-only reader for the IP address; the invalid WHEP offer gets HTTP 400 and \(frames) audience frames decode over RTSP")
 
             try await runtime.setHold(true)
             try await waitFor("holding output") { let s = await runtime.snapshot(); return s.session.holding && s.audienceAvailable }
@@ -146,7 +146,7 @@ extension SetbeamProbe {
                   stillAdmitted.status == 200, closedPort == nil || closedPort?.contains(path) == false else {
                 throw SetbeamError.runtime("Turning approval off let a typed-name request in or left the short address open.")
             }
-            print("PASS: turning approval off stops port 80, declines waiting typed-name requests, refuses new ones, and keeps the admitted viewer")
+            print("PASS: turning approval off closes the \(addressEvidence), declines waiting typed-name requests, refuses new ones, and keeps the admitted viewer")
 
             let oldPath = path, oldToken = snapshot.guestToken
             publisher.stop(); await publisher.settle()

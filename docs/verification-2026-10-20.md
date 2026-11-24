@@ -60,7 +60,7 @@ python3 scripts/check-native-preview.py /tmp/setbeam-preview.json \
   --newer-than /tmp/setbeam-session.json
 ```
 
-The two integration files are private temporary files. The session file contains a private viewing link. Do not commit or publish it. `check-force-quit.py` deliberately kills only the Setbeam app identified by that file; use it only for this disposable sample test.
+The two integration files are private temporary files. The session file contains a private viewing link. Do not commit or publish it. The current `check-force-quit.py` takes a separately identified QA bundle, launches its own integration child, and checks the process groups it observed before Quit.
 
 ## Build 2 terminology and scope follow-up
 

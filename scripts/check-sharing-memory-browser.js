@@ -73,6 +73,7 @@ async function integrated(browser, pages, errors, controlFile, reportFile, ackFi
   const motion = new Map();
   const record = data => fs.appendFileSync(reportFile, JSON.stringify({at: new Date().toISOString(), ...data}) + '\n');
   let phaseID, phaseBegan, acked = false, warmupRSS = 0;
+  const detachedSince = new Map();
   while (process.ppid === initial.pid && performance.now() - began < (initial.duration + 600) * 1000) {
     const {phase, step} = read(controlFile);
     const now = performance.now();
@@ -81,6 +82,8 @@ async function integrated(browser, pages, errors, controlFile, reportFile, ackFi
       phaseID = step;
       phaseBegan = now;
       acked = false;
+      motion.clear();
+      detachedSince.clear();
     }
     const [viewers, {bytes, pids}] = await withDeadline(
       Promise.all([Promise.all(pages.map(page => readViewer(page, true))), browserMemory(system)]), 8000);
@@ -91,24 +94,35 @@ async function integrated(browser, pages, errors, controlFile, reportFile, ackFi
     const ready = viewers.map(viewer => {
       const previous = motion.get(viewer.name);
       const playing = viewer.state === 'Live feed' && viewer.attached && viewer.pixels !== null;
-      const advanced = Boolean(playing && previous && viewer.pixels !== previous.pixels &&
-        (viewer.frames !== previous.frames || viewer.time !== previous.time));
-      const lastAdvance = advanced ? now : previous?.lastAdvance ?? now;
+      const advanced = Boolean(playing && previous && previous.pixels !== null &&
+        viewer.pixels !== previous.pixels && viewer.frames > previous.frames && viewer.time > previous.time);
+      const lastAdvance = advanced ? now : previous?.lastAdvance ?? phaseBegan;
       motion.set(viewer.name, {pixels: viewer.pixels, frames: viewer.frames, time: viewer.time, lastAdvance});
-      if (phase === 'hold') {
-        const detached = viewer.state === 'On hold' && viewer.muted && !viewer.attached;
-        if (acked) assert.ok(detached, viewer.name + ' reattached media during Hold');
-        return detached;
+      if (phase === 'hold' || phase === 'stop') {
+        const expected = phase === 'hold' ? 'On hold' : 'Sharing ended';
+        const detached = viewer.state === expected && viewer.muted && !viewer.attached;
+        if (acked) assert.ok(detached, viewer.name + ' reattached media during ' + phase);
+        if (!detached) {
+          detachedSince.delete(viewer.name);
+          return false;
+        }
+        const first = detachedSince.get(viewer.name);
+        if (!first) {
+          detachedSince.set(viewer.name, {at: now, frames: viewer.frames});
+          return false;
+        }
+        assert.equal(viewer.frames, first.frames, viewer.name + ' presented frames after detaching in ' + phase);
+        return now - first.at >= 1000;
       }
-      if (phase === 'stop') return viewer.state === 'Sharing ended' && !viewer.attached;
       if (phase === 'stall') return now - Math.max(phaseBegan, lastAdvance) >= 4000 && !playing;
       if (phase === 'live') {
         assert.ok(now - Math.max(phaseBegan, lastAdvance) < 15000, viewer.name + ' went 15s without moving decoded video');
       }
-      return advanced && previous.pixels !== null && viewer.frames > 1;
+      return advanced && viewer.frames > 1;
     });
     if (ready.every(Boolean) && !acked) {
       record({event: 'phaseVerified', phase, step, phaseSeconds: (now - phaseBegan) / 1000,
+        viewers, detachedSeconds: [...detachedSince].map(([name, first]) => ({name, seconds: (now - first.at) / 1000})),
         secondsSinceMovingFrame: pages.map(({name}) => (now - motion.get(name).lastAdvance) / 1000)});
       fs.writeFileSync(ackFile + '.tmp', JSON.stringify({step}));
       fs.renameSync(ackFile + '.tmp', ackFile);

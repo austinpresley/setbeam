@@ -15,7 +15,10 @@ extension SetbeamProbe {
         return ProbeReply(status: (response as! HTTPURLResponse).statusCode, body: data)
     }
 
-    static func whep(_ url: String, _ user: String, _ password: String) async throws -> Int {
+    // This intentionally truncated offer reaches MediaMTX's SDP parser only after
+    // authentication. 400 tests that boundary, while 401 shows access was refused.
+    // Browser playback tests perform actual WebRTC negotiation and decoding.
+    static func whepInvalidOfferStatus(_ url: String, _ user: String, _ password: String) async throws -> Int {
         var request = URLRequest(url: URL(string: url)!, timeoutInterval: 10)
         request.httpMethod = "POST"; request.setValue("application/sdp", forHTTPHeaderField: "Content-Type")
         request.setValue("Basic " + Data("\(user):\(password)".utf8).base64EncodedString(), forHTTPHeaderField: "Authorization")

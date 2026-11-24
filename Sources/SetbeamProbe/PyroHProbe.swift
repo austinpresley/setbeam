@@ -69,14 +69,9 @@ extension SetbeamProbe {
             try await runtime.saveFrame(to: output.appendingPathComponent("pyro-h-simulated-local.jpg"))
             try await capture(runtime: runtime, tools: tools, output: output.appendingPathComponent("pyro-h-simulated-audience.jpg"), directory: directory)
             guard try await readerCount() == 1 else { throw SetbeamError.runtime("Native/local and audience paths opened more than one upstream reader.") }
-            try await runtime.setHold(true)
-            _ = try await waitFor { $0.sourceAvailable && $0.audienceAvailable && $0.session.holding }
-            let heldPicture = output.appendingPathComponent("pyro-h-simulated-hold.jpg")
-            try await capture(runtime: runtime, tools: tools, output: heldPicture, directory: directory)
-            guard try Data(contentsOf: heldPicture) != Data(contentsOf: output.appendingPathComponent("pyro-h-simulated-audience.jpg")) else {
-                throw SetbeamError.runtime("Pyro H Hold did not replace the audience picture.")
-            }
-            guard try await audioPeak(runtime: runtime, tools: tools, directory: directory, name: "pyro-h-hold") <= 1 else { throw SetbeamError.runtime("Pyro H Hold leaked source sound.") }
+            try await verifyHold(runtime: runtime, tools: tools, fixtures: fixtures, directory: directory,
+                                 maximumHoldPeak: 1, resume: false)
+            guard try await readerCount() == 1 else { throw SetbeamError.runtime("Hold opened a second upstream media reader.") }
             sender?.stop(); sender = nil
             _ = try await waitFor { !$0.sourceAvailable && $0.session.holding && $0.audienceAvailable }
             sender = try startSender()
@@ -87,8 +82,12 @@ extension SetbeamProbe {
             await runtime.stopSharing()
             let stopped = try await waitFor { $0.sourceAvailable && !$0.session.sharing }
             guard stopped.session.monitoring, try await readerCount() == 1 else { throw SetbeamError.runtime("Stop Sharing interrupted the Pyro H local input.") }
+            let pids = await runtime.processIDs()
             await runtime.shutdown()
-            guard await runtime.processIDs().isEmpty else { throw SetbeamError.runtime("Pyro H runtime left owned processes behind.") }
+            guard pids.allSatisfy({ kill(-$0, 0) != 0 && errno == ESRCH }) else {
+                throw SetbeamError.runtime("Pyro H runtime left owned groups behind: \(pids).")
+            }
+            print("PASS: Pyro H shutdown emptied owned media process groups \(pids)")
             print("PASS: simulated Pyro H local/audience pictures and audio, silent Hold, source-loss recovery retaining Hold/link, Resume/Stop, one upstream reader, and owned-process cleanup")
         } catch { await runtime.shutdown(); throw error }
     }

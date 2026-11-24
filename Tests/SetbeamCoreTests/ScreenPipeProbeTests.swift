@@ -31,11 +31,16 @@ final class ScreenPipeProbeTests: XCTestCase {
         let units = Units()
         let encoder = try ScreenEncoder(width: 3840, height: 2160, fps: 60, queue: queue) { units.data.append($0) }
         let image = try randomFrame(width: 3840, height: 2160)
-        let start = Date()
+        let clock = ContinuousClock()
+        let start = clock.now
         for frame in 0..<120 {
             queue.sync { encoder.encode(image) }
-            Thread.sleep(until: start.addingTimeInterval(Double(frame + 1) / 60))
+            let due = start + .seconds(Double(frame + 1) / 60)
+            let remaining = clock.now.duration(to: due).components
+            let seconds = Double(remaining.seconds) + Double(remaining.attoseconds) / 1e18
+            if seconds > 0 { Thread.sleep(forTimeInterval: seconds) }
         }
+        let elapsed = start.duration(to: clock.now)
         encoder.flush(); queue.sync {}
         queue.sync { encoder.invalidate() }
 
@@ -55,7 +60,8 @@ final class ScreenPipeProbeTests: XCTestCase {
         let message = String(decoding: errors.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
         XCTAssertEqual(process.terminationStatus, 0, message)
         XCTAssertFalse(message.contains("[h264"), "Withheld pictures must not leave dependent pictures: \(message.prefix(400))")
-        XCTAssertGreaterThan(units.data.count, 30)
+        XCTAssertGreaterThan(units.data.count, 30, "120 scheduled inputs over \(elapsed) yielded \(units.data.count) encoded frames.")
+        print("4K source driver: 120 input attempts scheduled at 60 fps over \(elapsed), \(units.data.count) encoded frames, largest \(largest) bytes")
     }
 }
 

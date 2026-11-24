@@ -46,6 +46,72 @@ build, macOS 14 installation and update, and the startup Force Quit regression
 remain to be exercised with disposable builds. Supervisor lifecycle code was
 left for that runtime check.
 
+## QA evidence audit, 2026-11-24
+
+The checkout checks accept the original build 43 Helpers and Resources/Fixtures
+without building a second runtime. The check logs record SHA-256 for each input.
+The reference build 43 disk image also matches its recorded SHA-256
+`d876ec04a572bbdf3c2298ac81ce6a9cbc07d5d4ecf27f2f4c11d3a5c5f7bd84`.
+That digest identifies the reference disk image. The local probes run checkout
+code with the packaged helpers and fixtures.
+
+The first full `scripts/check.sh` attempt passed 17 Python tests, 60 Node
+tests, the preview bridge probe, and 191 core XCTest cases. The app suite
+failed with `Could not start Native playback: No such file or directory`
+because the preview still looked in checkout `Vendor/bin`. After passing
+the selected helper directory to the preview, all 12 focused XCTest cases
+passed. The native decoder presented 63 frames over 2.634 seconds with a
+6.92 ms maximum shared-clock difference. The 4K driver scheduled 120 input
+attempts over 2.003 seconds and encoded 116 frames.
+
+The Sample media probe passed. It observed an existing guest decode and then
+disconnect on Hold. A new guest decoded 47 frames that exactly matched the
+bundled Hold artwork and 192,000 stereo PCM samples with a peak of zero. Over
+the same window the private feed decoded 48 frames and had an audio peak of
+3,022. Resume restored video and audio on the same guest credential. The
+probe also passed source crash and stall recovery and media-server recovery
+while held. All three owned media process groups exited at shutdown.
+The simulated Pyro H probe also passed. Its new guest matched 47 held frames
+and measured a zero peak across 192,000 stereo samples. The private feed
+decoded 48 frames while the simulator retained one upstream reader.
+
+The first Hold measurement started the video cutoff before its initial RTSP
+keyframe and collected only 27 frames. A later attempt received all held
+frames and a silent PCM window, but the captured-output logger had redacted
+the reference frame hashes. The Pyro H simulation also collected 189,954
+samples against an expected 192,000 when an audio timestamp gap crossed its
+window. The final probe hashes native decoded frame planes to files, starts
+the video window at its first decoded frame, and counts real PCM samples
+without filling timestamp gaps with silence.
+
+Viewer access, local address, and short address probes passed. The short
+address used port 80 and decoded 61 RTSP frames under the admitted credential.
+The invalid WHEP offer returned 400 after authorization and 401 for denied
+credentials. Port 80 contention still has a listener retry XCTest and the
+short-address probe records a separate skip when it has to substitute a port.
+
+Chrome measured the checked-in viewer layout at eight sizes using fixture
+states, rejected hidden and ancestor-clipped composer controls, and confirmed
+presented-frame and detach checks against a moving canvas track. The force-quit
+runner killed its own disposable fixture and found no live members in its app
+group or three groups started with the build 43 supervisor. Native feedback also
+rejected a stale frame count and accepted two newer exports with advancing
+frames.
+
+The 30-second live soak passed in 126.823 seconds with two Chrome viewers.
+Both delivered moving frames after Resume and recovery. During Hold both
+detached, and decoded outgoing audio peaked at zero across 48,000 stereo
+samples. Audience and source publisher recovery were observed 15.868 and
+20.483 seconds after their pauses. After Stop the private presented-frame
+count advanced from 447 to 487, and cleanup found none of the 18 observed
+media processes still running.
+
+Native window screenshots, the full Chrome and WKWebView collaboration
+sequences, Force Quit on a packaged Setbeam app, signed Sparkle installation,
+and physical hardware qualification remain separate gates. The full check
+was followed by focused reruns, so remaining full-suite media legs did not run
+in this audit.
+
 ## Unified release candidate, 2026-11-23
 
 The local `release/unified-candidate` branch combines build 41’s signed updates

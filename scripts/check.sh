@@ -8,35 +8,60 @@ python3 -m unittest discover -s Tests/SetbeamPreviewBridgeTests > build/logs/pre
 cat build/logs/preview-timing-tests.log
 python3 -I -m unittest discover -s Tests/SetbeamReleaseTests > build/logs/release-tests.log 2>&1 || { cat build/logs/release-tests.log; exit 1; }
 cat build/logs/release-tests.log
-scripts/build-preview-bridge.sh
-python3 scripts/check-preview-bridge.py --tools "${SETBEAM_TEST_TOOLS:-$ROOT/Vendor/bin}" > build/logs/preview-bridge-integration.log 2>&1 || { cat build/logs/preview-bridge-integration.log; exit 1; }
-cat build/logs/preview-bridge-integration.log
 node --test scripts/check-viewer-recovery.js > build/logs/viewer-recovery.log 2>&1 || { cat build/logs/viewer-recovery.log; exit 1; }
 node --test scripts/check-viewer-pointers.js > build/logs/viewer-pointers.log 2>&1 || { cat build/logs/viewer-pointers.log; exit 1; }
-swift test > build/logs/swift-tests.log 2>&1 || { tail -n 70 build/logs/swift-tests.log; exit 1; }
-if [[ -x Vendor/bin/ffmpeg && -x Vendor/bin/mediamtx ]]; then
-  swift run --skip-build SetbeamProbe --pyro-h-test --tools "${SETBEAM_TEST_TOOLS:-$ROOT/Vendor/bin}" --fixtures "${SETBEAM_TEST_FIXTURES:-$ROOT/Fixtures}" > build/logs/pyro-h-integration.log 2>&1 || { cat build/logs/pyro-h-integration.log; exit 1; }
-  cat build/logs/pyro-h-integration.log
-  swift run --skip-build SetbeamProbe --tools "${SETBEAM_TEST_TOOLS:-$ROOT/Vendor/bin}" --fixtures "${SETBEAM_TEST_FIXTURES:-$ROOT/Fixtures}" > build/logs/media-integration.log 2>&1 || { cat build/logs/media-integration.log; exit 1; }
-  cat build/logs/media-integration.log
-  swift run --skip-build SetbeamProbe --recovery-test --tools "${SETBEAM_TEST_TOOLS:-$ROOT/Vendor/bin}" --fixtures "${SETBEAM_TEST_FIXTURES:-$ROOT/Fixtures}" > build/logs/source-recovery.log 2>&1 || { cat build/logs/source-recovery.log; exit 1; }
-  cat build/logs/source-recovery.log
-  swift run --skip-build SetbeamProbe --access-test --tools "${SETBEAM_TEST_TOOLS:-$ROOT/Vendor/bin}" --fixtures "${SETBEAM_TEST_FIXTURES:-$ROOT/Fixtures}" > build/logs/viewer-access.log 2>&1 || { cat build/logs/viewer-access.log; exit 1; }
-  cat build/logs/viewer-access.log
-  swift run --skip-build SetbeamProbe --local-address-test --tools "${SETBEAM_TEST_TOOLS:-$ROOT/Vendor/bin}" --fixtures "${SETBEAM_TEST_FIXTURES:-$ROOT/Fixtures}" > build/logs/local-address.log 2>&1 || { cat build/logs/local-address.log; exit 1; }
-  cat build/logs/local-address.log
-  swift run --skip-build SetbeamProbe --short-address-test --tools "${SETBEAM_TEST_TOOLS:-$ROOT/Vendor/bin}" --fixtures "${SETBEAM_TEST_FIXTURES:-$ROOT/Fixtures}" > build/logs/short-address.log 2>&1 || { cat build/logs/short-address.log; exit 1; }
-  cat build/logs/short-address.log
-  swift run --skip-build SetbeamProbe --safety-test --tools "${SETBEAM_TEST_TOOLS:-$ROOT/Vendor/bin}" --fixtures "${SETBEAM_TEST_FIXTURES:-$ROOT/Fixtures}" > build/logs/source-switching.log 2>&1 || { cat build/logs/source-switching.log; exit 1; }
-  cat build/logs/source-switching.log
-  swift run --skip-build SetbeamProbe --format-test --tools "${SETBEAM_TEST_TOOLS:-$ROOT/Vendor/bin}" --fixtures "${SETBEAM_TEST_FIXTURES:-$ROOT/Fixtures}" > build/logs/media-formats.log 2>&1 || { cat build/logs/media-formats.log; exit 1; }
-  cat build/logs/media-formats.log
-  swift run --skip-build SetbeamProbe --frame-rate-test --tools "${SETBEAM_TEST_TOOLS:-$ROOT/Vendor/bin}" --fixtures "${SETBEAM_TEST_FIXTURES:-$ROOT/Fixtures}" > build/logs/frame-rates.log 2>&1 || { cat build/logs/frame-rates.log; exit 1; }
-  cat build/logs/frame-rates.log
-  swift run --skip-build SetbeamProbe --keyframe-test --tools "${SETBEAM_TEST_TOOLS:-$ROOT/Vendor/bin}" --fixtures "${SETBEAM_TEST_FIXTURES:-$ROOT/Fixtures}" > build/logs/keyframe-bursts.log 2>&1 || { cat build/logs/keyframe-bursts.log; exit 1; }
-  cat build/logs/keyframe-bursts.log
-else
-  echo 'Media integration not run: build the bundled runtime first.'
-  exit 1
+if [[ -z "${SETBEAM_TEST_TOOLS:-}" ]]; then
+  scripts/build-preview-bridge.sh
 fi
-echo 'Swift and media checks passed. Native, browser, and physical checks are separate.'
+SETBEAM_TEST_TOOLS="$(cd "${SETBEAM_TEST_TOOLS:-$ROOT/Vendor/bin}" && pwd -P)"
+fixtures="$ROOT/Fixtures"
+if [[ "$SETBEAM_TEST_TOOLS" == */Contents/Helpers ]]; then
+  fixtures="$SETBEAM_TEST_TOOLS/../Resources/Fixtures"
+fi
+SETBEAM_TEST_FIXTURES="$(cd "${SETBEAM_TEST_FIXTURES:-$fixtures}" && pwd -P)"
+export SETBEAM_TEST_TOOLS SETBEAM_TEST_FIXTURES
+for helper in ffmpeg ffprobe mediamtx setbeam-preview; do
+  if [[ ! -x "$SETBEAM_TEST_TOOLS/$helper" ]]; then
+    echo "Missing executable $SETBEAM_TEST_TOOLS/$helper" >&2
+    exit 1
+  fi
+done
+for fixture in Demo.mp4 Hold.mp4 Compatibility-H264.mp4 Compatibility-HEVC.mp4; do
+  if [[ ! -r "$SETBEAM_TEST_FIXTURES/$fixture" ]]; then
+    echo "Missing fixture $SETBEAM_TEST_FIXTURES/$fixture" >&2
+    exit 1
+  fi
+done
+{
+  echo "Checkout Swift tests and probes using $SETBEAM_TEST_TOOLS and $SETBEAM_TEST_FIXTURES"
+  shasum -a 256 "$SETBEAM_TEST_TOOLS/"{ffmpeg,ffprobe,mediamtx,setbeam-preview}
+  if [[ -x "$SETBEAM_TEST_TOOLS/setbeam-supervisor" ]]; then
+    shasum -a 256 "$SETBEAM_TEST_TOOLS/setbeam-supervisor"
+  else
+    echo 'Packaged supervisor unavailable. Media tests use directly owned helpers.'
+  fi
+  shasum -a 256 "$SETBEAM_TEST_FIXTURES/"{Demo,Hold,Compatibility-H264,Compatibility-HEVC}.mp4
+} | tee build/logs/check-inputs.log
+python3 scripts/check-preview-bridge.py --tools "$SETBEAM_TEST_TOOLS" > build/logs/preview-bridge-integration.log 2>&1 || { cat build/logs/preview-bridge-integration.log; exit 1; }
+cat build/logs/preview-bridge-integration.log
+swift test > build/logs/swift-tests.log 2>&1 || { tail -n 70 build/logs/swift-tests.log; exit 1; }
+probe() {
+  local log="$1"
+  shift
+  swift run --skip-build SetbeamProbe --tools "$SETBEAM_TEST_TOOLS" --fixtures "$SETBEAM_TEST_FIXTURES" "$@" > "build/logs/$log.log" 2>&1 || {
+    cat "build/logs/$log.log"
+    exit 1
+  }
+  cat "build/logs/$log.log"
+}
+probe pyro-h-integration --pyro-h-test
+probe media-integration
+probe source-recovery --recovery-test
+probe viewer-access --access-test
+probe local-address --local-address-test
+probe short-address --short-address-test
+probe source-switching --safety-test
+probe media-formats --format-test
+probe frame-rates --frame-rate-test
+probe keyframe-bursts --keyframe-test
+echo 'Swift and media checks passed. Native UI, browser, exact package, and physical checks are separate.'

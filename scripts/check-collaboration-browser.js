@@ -3,6 +3,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const assert = require('node:assert/strict');
+const viewerLayoutEvidence = require('./viewer-layout-evidence');
 const {chromium} = require(process.env.PLAYWRIGHT_MODULE || 'playwright-core');
 (async () => {
   const session = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
@@ -16,7 +17,7 @@ const {chromium} = require(process.env.PLAYWRIGHT_MODULE || 'playwright-core');
     await page.locator('#join-name').fill('Sam, client');
     await page.locator('#join-colors input[value="teal"]').check();
     await page.locator('#join-submit').click(); console.log('join submitted');
-    await page.waitForFunction(()=>document.getElementById('state').textContent==='Live feed' && document.getElementById('video').currentTime>1, {timeout:30000});
+    await page.waitForFunction(()=>document.getElementById('state').textContent==='Live feed' && document.getElementById('video').getVideoPlaybackQuality().totalVideoFrames > 24, null, {timeout:30000});
     // An upright phone docks chat under the picture; elsewhere the toggle opens it.
     if (await page.locator('#chat-toggle').isVisible()) await page.locator('#chat-toggle').click();
     await page.locator('#chat-panel').waitFor({state:'visible'});
@@ -39,12 +40,9 @@ const {chromium} = require(process.env.PLAYWRIGHT_MODULE || 'playwright-core');
     await page.locator('#chat-send').click();
     await page.waitForFunction(count=>document.querySelectorAll('.chat-message').length===count+2 && [...document.querySelectorAll('.chat-frame')].some(image=>image.naturalWidth>0),previousCount);
     await page.locator('#chat-input').fill('');
-    const emptyComposer = await page.evaluate(() => {
-      const rect=id=>{const r=document.getElementById(id).getBoundingClientRect();return {width:r.width,height:r.height}};
-      return {form:rect('chat-form'),capture:rect('chat-capture'),send:rect('chat-send')};
-    });
-    assert.ok(emptyComposer.form.height<=56,'Empty phone composer should occupy one 54 px row');
-    for(const target of [emptyComposer.capture,emptyComposer.send]) assert.ok(target.width>=44 && target.height>=44,'Composer touch targets remain 44 px');
+    const emptyComposer = await page.evaluate(viewerLayoutEvidence, []);
+    assert.ok(emptyComposer.usable && emptyComposer.form.height <= 56,
+      'Empty phone composer must be visible in one row with reachable 44 px controls: ' + JSON.stringify(emptyComposer));
     const reports=[];
     await page.locator('#chat-input').fill('Draft survives rotation');
     for (const [name,width,height] of [['iphone-portrait',390,844],['iphone-landscape',844,390],['ipad-portrait',768,1024],['ipad-landscape',1024,768],['ipad-air-portrait',820,1180],['ipad-air-landscape',1180,820],['split-width',320,640],['short-keyboard',844,260]]) {
@@ -56,14 +54,12 @@ const {chromium} = require(process.env.PLAYWRIGHT_MODULE || 'playwright-core');
       }
       await page.locator('#chat-panel').waitFor({state:'visible'});
       await page.waitForTimeout(150);
-      const geometry=await page.evaluate(()=>{
-        const rect=id=>{const r=document.getElementById(id).getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height,right:r.right,bottom:r.bottom}};
-        return {width:innerWidth,height:innerHeight,scrollWidth:document.documentElement.scrollWidth,chat:rect('chat-panel'),input:rect('chat-input'),send:rect('chat-send'),picture:rect('picture'),font:parseFloat(getComputedStyle(document.getElementById('chat-input')).fontSize),draft:document.getElementById('chat-input').value};
-      });
+      const geometry = await page.evaluate(viewerLayoutEvidence, []);
+      assert.ok(Math.abs(geometry.width - width) <= 1 && Math.abs(geometry.height - height) <= 1, name+' has the wrong visual viewport');
       assert.ok(geometry.scrollWidth<=width+1,name+' has horizontal overflow');
+      assert.ok(geometry.usable, name+' composer is hidden, clipped or blocked: '+JSON.stringify(geometry));
       assert.ok(geometry.font>=16,name+' input may trigger focus zoom');
       assert.equal(geometry.draft,'Draft survives rotation');
-      if(width>height && height<550) assert.ok(geometry.send.bottom<=height+1,name+' Send is clipped');
       if(width<=600 && height>width) assert.ok(geometry.chat.bottom>=height-16 && geometry.chat.bottom<=height,name+' conversation should fill the remaining phone height');
       await page.screenshot({path:path.join(output,name+'.png'),fullPage:true});
       reports.push({name,...geometry});
@@ -72,17 +68,14 @@ const {chromium} = require(process.env.PLAYWRIGHT_MODULE || 'playwright-core');
     await page.locator('#chat-menu-reply').click();
     await page.locator('#chat-capture').click();
     await page.locator('#chat-preview').waitFor({state:'visible'});
-    const chips = await page.evaluate(() => {
-      const visible=id=>{const r=document.getElementById(id).getBoundingClientRect();return {bottom:r.bottom,height:r.height,display:getComputedStyle(document.getElementById(id)).display}};
-      return {remove:visible('chat-remove-frame'),cancel:visible('chat-cancel-reply'),send:visible('chat-send')};
-    });
-    assert.ok(chips.remove.height >= 44 && chips.remove.bottom <= 260 && chips.cancel.height >=44 && chips.cancel.bottom <=260 && chips.send.bottom<=260,'Compact draft controls remain visible');
+    const chips = await page.evaluate(viewerLayoutEvidence, ['chat-remove-frame', 'chat-cancel-reply']);
+    assert.ok(chips.usable, 'Compact draft controls must be visible and reachable: '+JSON.stringify(chips));
     await page.screenshot({path:path.join(output,'compact-draft-controls.png'),fullPage:true});
     await page.locator('#chat-remove-frame').click();
     await page.locator('#chat-cancel-reply').click();
     assert.equal(await page.locator('#chat-input').inputValue(),'Draft survives rotation');
     assert.deepEqual(errors,[],'Browser exceptions');
-    const result={passed:true,engine:'installed Chrome',checks:['actual decoded sample','identity/color','literal text','likes','reply','audience frame attachment','54 px empty composer','44 px capture and Send targets','eight layouts','rotation draft retention'],emptyComposer,reports};
+    const result={passed:true,engine:'installed Chrome',checks:['actual decoded sample','identity/color','literal text','likes','reply','audience frame attachment','54 px empty composer','44 px capture and Send targets','eight layouts','rotation draft retention'],emptyComposer,chips,reports};
     fs.writeFileSync(path.join(output,'browser-results.json'),JSON.stringify(result,null,2));
     console.log(JSON.stringify({passed:true,layouts:reports.length,checks:result.checks}));
   } catch (error) { console.log(JSON.stringify({errors,state:await page.evaluate(()=>({state:document.getElementById('state')?.textContent,copy:document.getElementById('join-copy')?.textContent,status:document.getElementById('join-status')?.textContent,rows:document.querySelectorAll('.chat-message').length,chat:document.getElementById('chat-status')?.textContent}))})); await page.screenshot({path:path.join(output,'failure.png'),fullPage:true}); throw error; } finally { await browser.close(); }

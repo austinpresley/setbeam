@@ -9,8 +9,9 @@ installed app, settings and Keychain items are not touched.
 """
 import argparse
 import hashlib
-import importlib.util
 import http.server
+import importlib.util
+import json
 import os
 import plistlib
 import shutil
@@ -116,6 +117,9 @@ def main():
             dmg = feed_dir / "Setbeam-update-qa.dmg"
             subprocess.run(["hdiutil", "create", "-volname", "Setbeam QA", "-srcfolder", folder, "-fs", "HFS+",
                             "-format", "UDZO", dmg], check=True, capture_output=True)
+        digest = hashlib.sha256(dmg.read_bytes()).hexdigest()
+        print(json.dumps({"artifact": dmg.name, "bytes": dmg.stat().st_size, "sha256": digest,
+                          "build": new_build, "bundleIdentifier": BUNDLE}), flush=True)
         signature = release.run([release.TOOLS / "sign_update", "--account", release.KEY_ACCOUNT, "-p", dmg]).stdout.strip()
         release.write_feed(feed_dir / "appcast.xml", None,
                            types.SimpleNamespace(version=new_info["CFBundleShortVersionString"], build=new_build),
@@ -148,16 +152,21 @@ def main():
         subprocess.run(["codesign", "--verify", "--deep", "--strict", installed], check=True)
         if release.tree_hashes(installed) != expected:
             raise SystemExit("FAIL: the installed update differs from the signed disk image's app.")
+        if hashlib.sha256(dmg.read_bytes()).hexdigest() != digest:
+            raise SystemExit("FAIL: the QA update disk image changed while being served.")
         print(f"PASS: Sparkle verified the signed feed and EdDSA disk image, then replaced build {old_build} "
               f"with Developer ID build {new_build} ({len(expected)} files match; strict signature valid).")
     finally:
         if process and process.poll() is None:
             process.kill()
+            process.wait(timeout=5)
         # Sparkle may relaunch the updated copy; quit only that QA bundle identifier.
         subprocess.run(["osascript", "-e", QUIT], capture_output=True, timeout=30)
         server.shutdown()
+        server.server_close()
         reset_preferences()
-        shutil.rmtree(work, ignore_errors=True)
+        shutil.rmtree(work)
+        print("Cleanup: waited for the owned launch, closed the loopback server and removed the QA work directory.", flush=True)
 
 
 if __name__ == "__main__":

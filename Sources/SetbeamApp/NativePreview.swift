@@ -26,7 +26,9 @@ import SetbeamCore
     private let audioEnabled: Bool
     private let width: Int
     private let frameRate: Int
-    init(audioEnabled: Bool = true, width: Int = 0, frameRate: Int = 0) {
+    private let tools: URL
+    init(audioEnabled: Bool = true, width: Int = 0, frameRate: Int = 0, tools: URL = AppAssets.runtimePaths.tools) {
+        self.tools = tools
         self.audioEnabled = audioEnabled; self.width = width; self.frameRate = frameRate
     }
     var onPlaybackState: ((Bool, String?) -> Void)?
@@ -83,7 +85,7 @@ import SetbeamCore
         if width > 0 { arguments += ["--width", String(width)] }
         if frameRate > 0 { arguments += ["--fps", String(frameRate)] }
         do {
-            decoder = try ManagedChild(name: "Native playback", executable: AppAssets.runtimePaths.tools.appendingPathComponent("setbeam-preview"),
+            decoder = try ManagedChild(name: "Native playback", executable: tools.appendingPathComponent("setbeam-preview"),
                 arguments: arguments, directory: directory, onOutput: { output.consume($0) })
         } catch { output.stop(); playback = nil; throw error }
         decoderGeneration = current

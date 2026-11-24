@@ -34,19 +34,12 @@ extension SetbeamProbe {
                 return String(decoding: result, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             }
             func whepStatus(_ user: String, _ password: String) async throws -> Int {
-                let descriptor = snapshot.audience
-                // MediaMTX delays failed authentication, so allow longer than its pause.
-                var request = URLRequest(url: URL(string: descriptor.whepURL)!, timeoutInterval: 10)
-                request.httpMethod = "POST"; request.setValue("application/sdp", forHTTPHeaderField: "Content-Type")
-                request.setValue("Basic " + Data("\(user):\(password)".utf8).base64EncodedString(), forHTTPHeaderField: "Authorization")
-                request.httpBody = Data("v=0\r\n".utf8)
-                let (_, response) = try await URLSession.shared.data(for: request)
-                return (response as! HTTPURLResponse).statusCode
+                try await whepInvalidOfferStatus(snapshot.audience.whepURL, user, password)
             }
-            guard try await readable("guest", snapshot.guestToken), try await whepStatus("guest", snapshot.guestToken) != 401 else {
+            guard try await readable("guest", snapshot.guestToken), try await whepStatus("guest", snapshot.guestToken) == 400 else {
                 throw SetbeamError.runtime("The shared viewing credential did not read the audience output without approval.")
             }
-            print("PASS: without approval, the shared viewing credential reads the audience output")
+            print("PASS: without approval, the shared credential reads RTSP and passes the WHEP authorization gate (invalid offer gets HTTP 400)")
 
             let a = ViewerReader(user: "viewer1xprobe", password: UUID().uuidString), b = ViewerReader(user: "viewer2xprobe", password: UUID().uuidString)
             let revision = snapshot.audienceRevision
@@ -59,10 +52,10 @@ extension SetbeamProbe {
                 throw SetbeamError.runtime("The viewing link's shared credential still reads media under approval.")
             }
             guard try await readable(a.user, a.password), try await readable(b.user, b.password),
-                  try await whepStatus(a.user, a.password) != 401 else {
+                  try await whepStatus(a.user, a.password) == 400 else {
                 throw SetbeamError.runtime("An admitted viewer's own credential could not read the audience output.")
             }
-            print("PASS: under approval, only admitted viewers' own credentials read the audience output (RTSP and WHEP)")
+            print("PASS: under approval, admitted credentials read RTSP and reach WHEP offer validation, while the shared credential gets HTTP 401")
 
             func reader(_ credential: ViewerReader) async throws -> ManagedChild {
                 let child = try ManagedChild(name: "Probe reader", executable: tools.appendingPathComponent("ffmpeg"),
@@ -157,13 +150,13 @@ extension SetbeamProbe {
             throw SetbeamError.runtime("An admitted request received no playback details of its own (HTTP \(status)).")
         }
         let rtsp = try await readable(user, password), whep = try await whepStatus(user, password)
-        guard rtsp, whep != 401 else {
+        guard rtsp, whep == 400 else {
             throw SetbeamError.runtime("An admitted request's own playback details did not read the audience output (RTSP \(rtsp), WHEP \(whep)).")
         }
         guard try await call("config.json", pass: passB).0 == 403, try await call("join", ["pass": passB, "mobile": true]).1["admission"] as? String == "declined" else {
             throw SetbeamError.runtime("A declined request obtained playback details or was readmitted on reload.")
         }
-        print("PASS: Admit gives that request its own reader for real RTSP and WHEP playback; Decline stays refused after reload")
+        print("PASS: Admit gives the request its own RTSP reader and passes WHEP authorization. Decline stays refused after reload")
 
         gateway.remove(number: numberA)
         try await apply()

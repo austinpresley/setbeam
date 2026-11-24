@@ -18,16 +18,19 @@ parser.add_argument("--max-video-clock-error-ms", type=float)
 args = parser.parse_args()
 deadline = time.monotonic() + args.timeout
 latest, baseline = {}, None
+marker = args.newer_than.stat().st_mtime_ns if args.newer_than else 0
 while time.monotonic() < deadline:
     try:
-        modified = args.feedback.stat().st_mtime
-        fresh = time.time() - modified < 3 and (not args.newer_than or modified >= args.newer_than.stat().st_mtime)
+        modified = args.feedback.stat().st_mtime_ns
+        fresh = 0 <= time.time_ns() - modified < 3_000_000_000 and modified > marker
         if fresh:
             latest = json.loads(args.feedback.read_text())
             frames = latest.get("frames", 0)
-            if baseline is None:
-                baseline = frames
-            healthy = latest.get("playing") and latest.get("decoderRunning") and frames > baseline and latest.get("renderer") == "native-timestamped-nv12" and latest.get("audioVideoClockShared")
+            if baseline is None or frames < baseline[0]:
+                baseline = (frames, modified)
+            healthy = (latest.get("playing") and latest.get("decoderRunning") and frames > baseline[0] and
+                       modified > baseline[1] and latest.get("renderer") == "native-timestamped-nv12" and
+                       latest.get("audioVideoClockShared"))
             floating = not args.require_floating or latest.get("floatingVisible") and latest.get("floatingAboveNormal")
             sound = not args.require_sound or latest.get("audioSamplesScheduled", 0) > 0 and latest.get("audioRendering") and not latest.get("muted", True)
             dimensions = (args.width is None or latest.get("width") == args.width) and (args.height is None or latest.get("height") == args.height)
@@ -35,6 +38,8 @@ while time.monotonic() < deadline:
             timing = args.max_video_clock_error_ms is None or abs(latest.get("videoClockErrorMilliseconds", 1e9)) <= args.max_video_clock_error_ms
             if healthy and floating and sound and dimensions and cadence and timing:
                 print("PASS: native decoded video is advancing" + (" with floating preview" if args.require_floating else "") + (" and scheduled native audio" if args.require_sound else ""))
+                print(json.dumps({"beforeFrames": baseline[0], "afterFrames": frames, "beforeFeedbackNS": baseline[1],
+                                  "afterFeedbackNS": modified, "afterMarkerNS": marker or None}))
                 raise SystemExit(0)
     except (FileNotFoundError, json.JSONDecodeError):
         pass

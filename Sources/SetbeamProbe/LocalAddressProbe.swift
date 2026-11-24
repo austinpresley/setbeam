@@ -61,12 +61,12 @@ extension SetbeamProbe {
                 throw SetbeamError.runtime("Playback details were not issued through the local address.")
             }
             // Media stays on the IP address, so playback never depends on name resolution.
-            guard try await whep(config.json["whepURL"] as! String, user, password) != 401 else {
+            guard try await whepInvalidOfferStatus(config.json["whepURL"] as! String, user, password) == 400 else {
                 throw SetbeamError.runtime("The playback credential issued through the local address was refused.")
             }
             let frames = try await decodedFrames(tools: tools, directory: directory, rtsp: await runtime.localRTSP("live"), user: user, password: password)
             guard frames >= 30 else { throw SetbeamError.runtime("Only \(frames) audience frames decoded with the issued credential.") }
-            print("PASS: a viewer joined at the local address receives playback details for the IP address; WHEP accepts them and \(frames) real audience frames decode")
+            print("PASS: a viewer joined at the local address receives playback details for the IP address; the invalid WHEP offer gets HTTP 400 and \(frames) audience frames decode over RTSP")
 
             let origin = presenceStatus(host: host, port: port, token: snapshot.guestToken, origin: "http://\(host):\(port)")
             let crossOrigin = presenceStatus(host: host, port: port, token: snapshot.guestToken, origin: "http://127.0.0.1:\(port)")
@@ -85,7 +85,7 @@ extension SetbeamProbe {
             guard nameless.status == 400, let waiting = request.json["pass"] as? String, request.json["admission"] as? String == "pending",
                   let number = request.json["number"] as? Int,
                   try await http("\(base)/s/\(snapshot.guestToken)/config.json", pass: waiting).status == 403,
-                  try await whep(config.json["whepURL"] as! String, "guest", snapshot.guestToken) == 401 else {
+                  try await whepInvalidOfferStatus(config.json["whepURL"] as! String, "guest", snapshot.guestToken) == 401 else {
                 throw SetbeamError.runtime("Viewer approval was bypassed at the local address.")
             }
             gateway.approve(number: number)
@@ -93,7 +93,7 @@ extension SetbeamProbe {
             gateway.confirm(readers: gateway.desiredReaders)
             let admitted = try await http("\(base)/s/\(snapshot.guestToken)/config.json", pass: waiting)
             guard admitted.status == 200, let own = admitted.json["user"] as? String, own != "guest",
-                  try await whep(config.json["whepURL"] as! String, own, admitted.json["pass"] as? String ?? "") != 401 else {
+                  try await whepInvalidOfferStatus(config.json["whepURL"] as! String, own, admitted.json["pass"] as? String ?? "") == 400 else {
                 throw SetbeamError.runtime("An admitted viewer at the local address did not receive its own reader.")
             }
             print("PASS: with approval on, the local address requires a name, withholds playback until Admit, and the shared code alone is refused by media")

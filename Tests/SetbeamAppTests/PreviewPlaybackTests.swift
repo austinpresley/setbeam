@@ -151,12 +151,14 @@ final class PreviewPlaybackTests: XCTestCase {
 
     @MainActor func testNativePlaybackClockAndCadenceThroughActualPrivateRTSPRelay() async throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        let tools = root.appendingPathComponent("Vendor/bin")
+        let environment = ProcessInfo.processInfo.environment
+        let tools = environment["SETBEAM_TEST_TOOLS"].map { URL(fileURLWithPath: $0) } ?? root.appendingPathComponent("Vendor/bin")
+        let fixtures = environment["SETBEAM_TEST_FIXTURES"].map { URL(fileURLWithPath: $0) } ?? root.appendingPathComponent("Fixtures")
         guard FileManager.default.isExecutableFile(atPath: tools.appendingPathComponent("setbeam-preview").path) else {
             throw XCTSkip("Build the bundled playback bridge before native RTSP integration.")
         }
-        let runtime = MediaRuntime(paths: RuntimePaths(tools: tools, fixtures: root.appendingPathComponent("Fixtures")))
-        let player = NativePreview()
+        let runtime = MediaRuntime(paths: RuntimePaths(tools: tools, fixtures: fixtures))
+        let player = NativePreview(tools: tools)
         do {
             _ = try await runtime.prepare(source: .sample, viewerAddress: "127.0.0.1")
             let deadline = Date().addingTimeInterval(15)
@@ -172,13 +174,15 @@ final class PreviewPlaybackTests: XCTestCase {
             while player.diagnostics.presentedFrames < 12 && Date() < playbackDeadline { try await Task.sleep(nanoseconds: 50_000_000) }
             let before = player.diagnostics
             XCTAssertGreaterThanOrEqual(before.presentedFrames, 12)
+            let started = ContinuousClock.now
             var errors: [Double] = []
             for _ in 0..<50 {
                 try await Task.sleep(nanoseconds: 50_000_000)
                 errors.append(abs(player.diagnostics.videoClockError))
             }
+            let elapsed = started.duration(to: .now)
             let after = player.diagnostics
-            print("Native RTSP playback: \(after.width)x\(after.height), \(String(format: "%.3f", after.sourceFPS)) fps, \(after.presentedFrames - before.presentedFrames) frames in 2.5s, max presentation/clock difference \(String(format: "%.2f", (errors.max() ?? 0) * 1000))ms, \(after.clockResets) shared-clock anchors")
+            print("Native RTSP playback: \(after.width)x\(after.height), \(String(format: "%.3f", after.sourceFPS)) fps, \(after.presentedFrames - before.presentedFrames) frames over \(elapsed), max presentation/clock difference \(String(format: "%.2f", (errors.max() ?? 0) * 1000))ms, \(after.clockResets) shared-clock anchors")
             XCTAssertEqual(after.width, 1280); XCTAssertEqual(after.height, 720)
             XCTAssertEqual(after.sourceFPS, 24, accuracy: 0.05)
             XCTAssertGreaterThan(after.presentedFrames - before.presentedFrames, 45)

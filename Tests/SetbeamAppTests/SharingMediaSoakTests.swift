@@ -31,7 +31,7 @@ final class SharingMediaSoakTests: XCTestCase {
         log.configure(directory: report.appendingPathComponent("runtime-log"))
         let runtime = MediaRuntime(paths: RuntimePaths(tools: tools, fixtures: scratch), log: log)
         let gateway = ViewerGateway(assets: AppAssets.viewerAssets)
-        let preview = NativePreview(audioEnabled: false)
+        let preview = NativePreview(audioEnabled: false, tools: tools)
         let evidenceURL = report.appendingPathComponent("mac.ndjson")
         try Data().write(to: evidenceURL)
         let evidence = try FileHandle(forWritingTo: evidenceURL)
@@ -99,19 +99,19 @@ final class SharingMediaSoakTests: XCTestCase {
             }
         }
         func audioPeak(_ label: String, silent: Bool) async throws {
-            // Same decoded 48 kHz mono PCM and peak thresholds as the packaged SetbeamProbe.
+            // Check both channels across the complete half-second capture.
             let pcm = scratch.appendingPathComponent("audio.pcm")
             defer { try? FileManager.default.removeItem(at: pcm) }
             let audience = await runtime.localRTSP("live")
             try await ffmpeg(["-y", "-rtsp_transport", "tcp", "-i", audience, "-map", "0:a:0", "-t", "0.5",
-                "-ac", "1", "-ar", "48000", "-c:a", "pcm_s16le", "-f", "s16le", pcm.path], label)
+                "-ac", "2", "-ar", "48000", "-c:a", "pcm_s16le", "-f", "s16le", pcm.path], label)
             let bytes = [UInt8](try Data(contentsOf: pcm))
             let peak = stride(from: 0, to: bytes.count - 1, by: 2).reduce(0) { peak, index in
                 let sample = Int16(bitPattern: UInt16(bytes[index]) | UInt16(bytes[index + 1]) << 8)
                 return max(peak, abs(Int(sample)))
             }
-            try record("outgoingAudio", ["label": label, "samples": bytes.count / 2, "peakS16": peak])
-            guard bytes.count >= 46_000, silent ? peak < 8 : peak > 100 else {
+            try record("outgoingAudio", ["label": label, "samples": bytes.count / 2, "channels": 2, "sampleRate": 48_000, "peakS16": peak])
+            guard bytes.count == 24_000 * 2 * 2, silent ? peak < 8 : peak > 100 else {
                 throw SetbeamError.runtime("\(label) decoded \(bytes.count / 2) audio samples at peak \(peak).")
             }
         }
@@ -146,6 +146,10 @@ final class SharingMediaSoakTests: XCTestCase {
             }
             return host
         }
+        func secondsBetween(_ start: ContinuousClock.Instant, _ end: ContinuousClock.Instant) -> Double {
+            let duration = start.duration(to: end).components
+            return Double(duration.seconds) + Double(duration.attoseconds) / 1e18
+        }
         func stall(_ role: String, publisherIndex: Int) async throws {
             let before = await runtime.snapshot()
             let owned = await runtime.processIDs()
@@ -159,29 +163,38 @@ final class SharingMediaSoakTests: XCTestCase {
             }
             let priorFrames = preview.diagnostics.presentedFrames
             try changePhase("stall")
-            let since = clock.now
             // Leave the supervisor running so parent-exit cleanup still works during SIGSTOP.
             guard MacProcess.startTime(helper) == identity, getpgid(helper) == supervisor, kill(helper, SIGSTOP) == 0 else {
                 throw SetbeamError.runtime("Could not pause the owned \(role) helper.")
             }
+            let since = clock.now
             try record("helperPaused", ["role": role, "helperPID": helper, "supervisorPID": supervisor])
-            var unavailable = false
+            var unavailableAt: ContinuousClock.Instant?
+            var recoveredAt: ContinuousClock.Instant?
             try await wait(35, "The \(role) stall did not become unavailable and recover.") {
                 let snapshot = await runtime.snapshot()
-                if !unavailable, !(role == "source" ? snapshot.sourceAvailable : snapshot.audienceAvailable) {
-                    unavailable = true
-                    try record("publisherUnavailable", ["role": role])
+                if unavailableAt == nil, !(role == "source" ? snapshot.sourceAvailable : snapshot.audienceAvailable) {
+                    let now = clock.now
+                    unavailableAt = now
+                    try record("publisherUnavailable", ["role": role, "sincePauseSeconds": secondsBetween(since, now)])
                 }
                 if role == "audience", !snapshot.sourceAvailable {
                     throw SetbeamError.runtime("An audience stall interrupted private monitoring.")
                 }
                 let pids = await runtime.processIDs()
-                return unavailable && browserVerified() && snapshot.session.audience == .live &&
-                    snapshot.guestToken == before.guestToken && snapshot.audienceRevision > before.audienceRevision &&
-                    pids.count == 3 && pids[publisherIndex] != supervisor && MacProcess.startTime(helper) != identity
+                if recoveredAt == nil, unavailableAt != nil, snapshot.session.audience == .live,
+                   snapshot.guestToken == before.guestToken, snapshot.audienceRevision > before.audienceRevision,
+                   pids.count == 3, pids[publisherIndex] != supervisor, MacProcess.startTime(helper) != identity {
+                    recoveredAt = clock.now
+                }
+                return recoveredAt != nil && browserVerified()
             }
-            let elapsed = since.duration(to: clock.now)
-            guard elapsed >= .seconds(8) else { throw SetbeamError.runtime("The \(role) interruption did not last eight seconds.") }
+            guard let recoveredAt, let unavailableAt else {
+                throw SetbeamError.runtime("Missing the observed \(role) outage or recovery timestamp.")
+            }
+            guard since.duration(to: recoveredAt) >= .seconds(8) else {
+                throw SetbeamError.runtime("The \(role) recovered after \(secondsBetween(since, recoveredAt)) seconds, below the eight-second stall floor.")
+            }
             try changePhase("recover")
             try await wait(35, "The viewers did not decode moving video after the \(role) stall.") { browserVerified() }
             try await verifyPrivateFrames()
@@ -191,8 +204,8 @@ final class SharingMediaSoakTests: XCTestCase {
             let replacement = await runtime.processIDs()
             guard replacement.count == 3 else { throw SetbeamError.runtime("Publisher missing after \(role) recovery.") }
             try record("helperRecovered", ["role": role, "oldSupervisorPID": supervisor,
-                "newSupervisorPID": replacement[publisherIndex], "elapsedSeconds": elapsed.components.seconds,
-                "unavailableObserved": unavailable])
+                "newSupervisorPID": replacement[publisherIndex], "pauseToRecoverySeconds": secondsBetween(since, recoveredAt),
+                "observedUnavailableToRecoverySeconds": secondsBetween(unavailableAt, recoveredAt)])
         }
         func verifyPrivateFrames() async throws {
             let before = preview.diagnostics.presentedFrames
@@ -311,6 +324,7 @@ final class SharingMediaSoakTests: XCTestCase {
             try await wait(5, "An owned media process survived shutdown.") {
                 observedPIDs.allSatisfy { MacProcess.startTime($0.key) != $0.value }
             }
+            try record("cleanup", ["checkedMediaPIDs": observedPIDs.keys.sorted(), "remainingMediaPIDs": [Int]()])
             try record("passed", ["elapsedSeconds": began.duration(to: clock.now).components.seconds,
                                   "targetLiveSeconds": seconds])
         } catch {

@@ -12,6 +12,16 @@ packaged="$PWD/build/Setbeam.app/Contents/Helpers"
 if [[ -z "${SETBEAM_TEST_TOOLS:-}" && ! -x "$tools/setbeam-supervisor" && -x "$packaged/setbeam-supervisor" ]]; then
   tools="$packaged"
 fi
+tools="$(cd "$tools" && pwd -P)"
+fixtures="$PWD/Fixtures"
+if [[ "$tools" == */Contents/Helpers ]]; then
+  fixtures="$tools/../Resources/Fixtures"
+fi
+fixtures="$(cd "${SETBEAM_TEST_FIXTURES:-$fixtures}" && pwd -P)"
+if [[ ! -r "$fixtures/Hold.mp4" ]]; then
+  echo "Missing fixture $fixtures/Hold.mp4" >&2
+  exit 2
+fi
 for helper in ffmpeg ffprobe mediamtx setbeam-preview setbeam-supervisor; do
   if [[ ! -x "$tools/$helper" ]]; then
     echo "Missing $tools/$helper. Build Setbeam or set SETBEAM_TEST_TOOLS to the packaged helpers." >&2
@@ -40,7 +50,8 @@ mkdir -p build/logs
 umask 077
 report="$(mktemp -d "$PWD/build/logs/sharing-soak.XXXXXX")"
 echo "Evidence directory: $report"
-SETBEAM_TEST_TOOLS="$tools" SETBEAM_REAL_MEDIA_SECONDS="$seconds" SETBEAM_REAL_MEDIA_REPORT_DIR="$report" SETBEAM_REAL_MEDIA_NODE="$node" \
+shasum -a 256 "$tools/"{ffmpeg,ffprobe,mediamtx,setbeam-preview,setbeam-supervisor} "$fixtures/Hold.mp4" | tee "$report/inputs.sha256"
+SETBEAM_TEST_TOOLS="$tools" SETBEAM_TEST_FIXTURES="$fixtures" SETBEAM_REAL_MEDIA_SECONDS="$seconds" SETBEAM_REAL_MEDIA_REPORT_DIR="$report" SETBEAM_REAL_MEDIA_NODE="$node" \
   /usr/bin/caffeinate -i swift test --scratch-path "$PWD/.build/sharing-soak" -c release \
     --filter SharingMediaSoakTests 2>&1 | tee "$report/run.log"
 if ! grep -q '"event":"passed"' "$report/mac.ndjson" || ! grep -q '"passed":true' "$report/browser.ndjson"; then

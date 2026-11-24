@@ -13,7 +13,12 @@ import SetbeamCore
                 return URL(fileURLWithPath: values[index + 1], isDirectory: true)
             }
             let tools = option("--tools", fallback: root.appendingPathComponent("Vendor/bin"))
-            let fixtures = option("--fixtures", fallback: root.appendingPathComponent("Fixtures"))
+            let selectedTools = tools.resolvingSymlinksInPath()
+            let contents = selectedTools.deletingLastPathComponent()
+            let defaultFixtures = selectedTools.lastPathComponent == "Helpers" && contents.lastPathComponent == "Contents"
+                ? contents.appendingPathComponent("Resources/Fixtures")
+                : root.appendingPathComponent("Fixtures")
+            let fixtures = option("--fixtures", fallback: defaultFixtures)
             let output = root.appendingPathComponent("build/probe", isDirectory: true)
             try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
             // Each probe run keeps the same redacted session timeline the app writes.
@@ -110,21 +115,7 @@ import SetbeamCore
                 let localPicture = output.appendingPathComponent("local.jpg")
                 try await runtime.saveFrame(to: localPicture)
                 _ = try await runtime.startSharing()
-                try await Task.sleep(nanoseconds: 2_000_000_000)
-                let livePicture = output.appendingPathComponent("audience-live.jpg")
-                try await capture(runtime: runtime, tools: tools, output: livePicture, directory: output)
-                let liveAudio = try await audioPeak(runtime: runtime, tools: tools, directory: output, name: "live-audio")
-                try await runtime.setHold(true)
-                try await Task.sleep(nanoseconds: 1_500_000_000)
-                let holding = output.appendingPathComponent("audience-hold.jpg")
-                try await capture(runtime: runtime, tools: tools, output: holding, directory: output)
-                let holdAudio = try await audioPeak(runtime: runtime, tools: tools, directory: output, name: "hold-audio")
-                guard try Data(contentsOf: livePicture) != Data(contentsOf: holding) else { throw SetbeamError.runtime("Hold did not replace outgoing video.") }
-                guard await runtime.snapshot().sourceAvailable else { throw SetbeamError.runtime("Hold interrupted local media.") }
-                guard liveAudio > 100, holdAudio < 8 else { throw SetbeamError.runtime("Hold did not suppress the source audio.") }
-                print("PASS: Hold replaces audience video and suppresses source audio while local video continues")
-                try await runtime.setHold(false)
-                try await Task.sleep(nanoseconds: 1_500_000_000)
+                try await verifyHold(runtime: runtime, tools: tools, fixtures: fixtures, directory: output)
                 await runtime.stopSharing()
                 guard await runtime.snapshot().sourceAvailable else { throw SetbeamError.runtime("Stop Sharing interrupted local media.") }
                 let currentGuest = await runtime.snapshot().guestToken
@@ -175,8 +166,8 @@ import SetbeamCore
                 print("PASS: media-server recovery preserves the source, viewing link, and silent audience Hold")
                 let pids = await runtime.processIDs()
                 await runtime.shutdown()
-                guard pids.allSatisfy({ kill($0, 0) != 0 }) else { throw SetbeamError.runtime("Owned media processes survived shutdown.") }
-                print("PASS: owned media processes exited")
+                guard pids.allSatisfy({ kill(-$0, 0) != 0 && errno == ESRCH }) else { throw SetbeamError.runtime("Owned media groups survived shutdown: \(pids).") }
+                print("PASS: shutdown emptied owned media process groups \(pids)")
                 print("Setbeam media integration checks passed. Browser and physical-device checks are separate.")
             } catch { await runtime.shutdown(); throw error }
         } catch { fputs("FAIL: \(Redaction.text(error.localizedDescription))\n", stderr); exit(1) }
@@ -678,9 +669,9 @@ import SetbeamCore
     }
     static func audioPeak(runtime: MediaRuntime, tools: URL, directory: URL, name: String) async throws -> Int {
         let url = await runtime.localRTSP("live"), output = directory.appendingPathComponent(name + ".pcm")
-        _ = try await run(tools: tools, args: ["-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-rtsp_transport", "tcp", "-i", url, "-map", "0:a:0", "-t", "0.5", "-ac", "1", "-ar", "48000", "-c:a", "pcm_s16le", "-f", "s16le", output.path], directory: directory)
-        let samples = [UInt8](try Data(contentsOf: output))
-        guard samples.count > 2000 else { throw SetbeamError.runtime("Not enough decoded audio for the Hold check.") }
-        return stride(from: 0, to: samples.count - 1, by: 2).map { abs(Int(Int16(bitPattern: UInt16(samples[$0]) | UInt16(samples[$0+1]) << 8))) }.max() ?? 0
+        _ = try await run(tools: tools, args: ["-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-rtsp_transport", "tcp", "-i", url, "-map", "0:a:0", "-af", "asetpts=N/SR/TB", "-t", "0.5", "-ac", "2", "-ar", "48000", "-c:a", "pcm_s16le", "-f", "s16le", output.path], directory: directory)
+        let peak = try pcmPeak(at: output, samples: 24_000 * 2)
+        print("PCM evidence: \(name), 24000 stereo frames at 48 kHz, peak \(peak)")
+        return peak
     }
 }
