@@ -1,5 +1,5 @@
-// A one-second silent black clip, the usual fallback for keeping a phone screen awake where the
-// Screen Wake Lock API is unavailable, including this plain-HTTP LAN page (not yet verified on a phone).
+// A one-second silent black clip, the playback fallback when Screen Wake Lock is unavailable on this LAN page.
+// Whether playback keeps a phone's display awake depends on the browser.
 // It is embedded as a data: URI because Safari requires byte-range responses for URL-loaded video.
 // Generated with the bundled FFmpeg 9.0.2:
 // ffmpeg -nostdin -y -f lavfi -i color=c=black:s=64x64:r=10:d=1

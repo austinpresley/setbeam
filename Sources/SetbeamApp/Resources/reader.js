@@ -34,10 +34,8 @@ class MediaMTXWebRTCReader {
   #conf;
   #state = "getting_codecs";
   #restartTimeout = null;
-  #pc = null;
-  #offerData = null;
-  #sessionUrl = null;
-  #queuedCandidates = [];
+  #attempt = null;
+  #codecProbe = new AbortController();
   #nonAdvertisedCodecs;
 
   /**
@@ -55,29 +53,40 @@ class MediaMTXWebRTCReader {
   close() {
     this.#state = "closed";
 
-    if (this.#pc !== null) {
-      this.#pc.close();
-    }
-
-    if (this.#restartTimeout !== null) {
-      clearTimeout(this.#restartTimeout);
-    }
+    this.#codecProbe.abort();
+    clearTimeout(this.#restartTimeout);
+    this.#stopAttempt();
   }
 
-  // Read the existing peer only. Diagnostics never opens another media connection.
+  // Diagnostics read the existing peer.
   getStats() {
-    return this.#pc?.getStats() ?? Promise.resolve(new Map());
+    return this.#attempt?.pc?.getStats() ?? Promise.resolve(new Map());
   }
 
-  static #supportsNonAdvertisedCodec(codec, fmtp) {
+  static #supportsNonAdvertisedCodec(codec, fmtp, signal) {
     return new Promise((resolve) => {
       const pc = new RTCPeerConnection({ iceServers: [] });
       const mediaType = "audio";
-      let payloadType = "";
+      let payloadType = "", done = false;
+      const finish = (supported) => {
+        if (done) return;
+        done = true;
+        clearTimeout(deadline);
+        signal.removeEventListener("abort", cancel);
+        pc.close();
+        resolve(supported);
+      };
+      const cancel = () => finish(false);
+      const deadline = setTimeout(cancel, 5000);
+      signal.addEventListener("abort", cancel, {once: true});
 
-      pc.addTransceiver(mediaType, { direction: "recvonly" });
-      pc.createOffer()
+      Promise.resolve().then(() => {
+        if (signal.aborted) throw new Error("closed");
+        pc.addTransceiver(mediaType, { direction: "recvonly" });
+        return pc.createOffer();
+      })
         .then((offer) => {
+          if (done) throw new Error("closed");
           if (offer.sdp === undefined) {
             throw new Error("SDP not present");
           }
@@ -125,15 +134,7 @@ class MediaMTXWebRTCReader {
             }),
           ),
         )
-        .then(() => {
-          resolve(true);
-        })
-        .catch(() => {
-          resolve(false);
-        })
-        .finally(() => {
-          pc.close();
-        });
+        .then(() => finish(true), cancel);
     });
   }
 
@@ -411,270 +412,159 @@ class MediaMTXWebRTCReader {
     return frag;
   }
 
-  /** @param {string} err */
-  #handleError(err) {
-    if (this.#state === "running") {
-      if (this.#pc !== null) {
-        this.#pc.close();
-        this.#pc = null;
-      }
+  #stopAttempt() {
+    const attempt = this.#attempt;
+    this.#attempt = null;
+    if (!attempt) return;
+    clearTimeout(attempt.deadline);
+    for (const controller of attempt.requests) controller.abort();
+    attempt.pc?.close();
+    if (attempt.sessionUrl) this.#deleteSession(attempt.sessionUrl);
+  }
 
-      this.#offerData = null;
+  #retry(attempt, error) {
+    if (this.#attempt !== attempt) return;
+    this.#stopAttempt();
+    this.#state = "restarting";
+    this.#restartTimeout = setTimeout(() => {
+      this.#restartTimeout = null;
+      if (this.#state !== "restarting") return;
+      this.#state = "running";
+      this.#start();
+    }, MediaMTXWebRTCReader.#RETRY_PAUSE);
+    this.#conf.onError?.(`${error}, retrying in some seconds`);
+  }
 
-      if (this.#sessionUrl !== null) {
-        fetch(this.#sessionUrl, {
-          method: "DELETE",
-        });
-        this.#sessionUrl = null;
-      }
-
-      this.#queuedCandidates = [];
-      this.#state = "restarting";
-
-      this.#restartTimeout = window.setTimeout(
-        () => this.#restart(),
-        MediaMTXWebRTCReader.#RETRY_PAUSE,
-      );
-
-      if (this.#conf.onError !== undefined) {
-        this.#conf.onError(`${err}, retrying in some seconds`);
-      }
-    } else if (this.#state === "getting_codecs") {
+  async #getNonAdvertisedCodecs() {
+    try {
+      const codecs = await Promise.all([
+        ["pcma/8000/2"],
+        ["multiopus/48000/6", "channel_mapping=0,4,1,2,3,5;num_streams=4;coupled_streams=2"],
+        ["L16/48000/2"],
+      ].map(async ([codec, fmtp]) =>
+        await MediaMTXWebRTCReader.#supportsNonAdvertisedCodec(codec, fmtp, this.#codecProbe.signal) ? codec : false,
+      ));
+      if (this.#state !== "getting_codecs") return;
+      this.#nonAdvertisedCodecs = codecs.filter(Boolean);
+      this.#state = "running";
+      this.#start();
+    } catch (error) {
+      if (this.#state !== "getting_codecs") return;
       this.#state = "failed";
-
-      if (this.#conf.onError !== undefined) {
-        this.#conf.onError(err);
-      }
+      this.#codecProbe.abort();
+      this.#conf.onError?.(String(error));
     }
   }
 
-  #restart() {
-    this.#restartTimeout = null;
-    this.#state = "running";
-    this.#start();
-  }
-
-  #getNonAdvertisedCodecs() {
-    Promise.all(
-      [
-        ["pcma/8000/2"],
-        [
-          "multiopus/48000/6",
-          "channel_mapping=0,4,1,2,3,5;num_streams=4;coupled_streams=2",
-        ],
-        ["L16/48000/2"],
-      ].map((c) =>
-        MediaMTXWebRTCReader.#supportsNonAdvertisedCodec(c[0], c[1]).then(
-          (r) => (r ? c[0] : false),
-        ),
-      ),
-    )
-      .then((c) => c.filter((e) => e !== false))
-      .then((codecs) => {
-        if (this.#state !== "getting_codecs") {
-          throw new Error("closed");
-        }
-
-        this.#nonAdvertisedCodecs = codecs;
-        this.#state = "running";
-        this.#start();
-      })
-      .catch((err) => {
-        this.#handleError(err.toString());
+  async #start() {
+    const attempt = {requests: new Set(), candidates: []};
+    this.#attempt = attempt;
+    attempt.deadline = setTimeout(() => this.#retry(attempt, "WHEP negotiation timed out"), 8000);
+    try {
+      const iceServers = await this.#request(attempt, this.#conf.url, {method: "OPTIONS"}, response => {
+        if (!response.ok) throw new Error(`WHEP OPTIONS returned ${response.status}`);
+        return MediaMTXWebRTCReader.#linkToIceServers(response.headers.get("Link"));
       });
-  }
+      if (this.#attempt !== attempt) return;
+      const pc = attempt.pc = new RTCPeerConnection({iceServers, sdpSemantics: "unified-plan"});
+      pc.addTransceiver("video", {direction: "recvonly"});
+      pc.addTransceiver("audio", {direction: "recvonly"});
+      pc.createDataChannel("");
+      pc.onicecandidate = event => {
+        if (this.#attempt !== attempt || !event.candidate) return;
+        if (attempt.answered) this.#sendCandidates(attempt, [event.candidate]);
+        else attempt.candidates.push(event.candidate);
+      };
+      pc.onconnectionstatechange = () => {
+        if (pc.connectionState === "failed" || pc.connectionState === "closed") this.#retry(attempt, "peer connection closed");
+      };
+      pc.ontrack = event => { if (this.#attempt === attempt) this.#conf.onTrack?.(event); };
+      pc.ondatachannel = event => { if (this.#attempt === attempt) this.#conf.onDataChannel?.(event); };
 
-  #start() {
-    this.#requestICEServers()
-      .then((iceServers) => this.#setupPeerConnection(iceServers))
-      .then((offer) => this.#sendOffer(offer))
-      .then((answer) => this.#setAnswer(answer))
-      .catch((err) => {
-        this.#handleError(err.toString());
-      });
+      const offer = await pc.createOffer();
+      if (this.#attempt !== attempt) return;
+      offer.sdp = MediaMTXWebRTCReader.#editOffer(offer.sdp, this.#nonAdvertisedCodecs);
+      attempt.offerData = MediaMTXWebRTCReader.#parseOffer(offer.sdp);
+      await pc.setLocalDescription(offer);
+      if (this.#attempt !== attempt) return;
+      const answer = await this.#sendOffer(attempt, offer.sdp);
+      if (this.#attempt !== attempt) return;
+      await pc.setRemoteDescription(new RTCSessionDescription({type: "answer", sdp: answer}));
+      if (this.#attempt !== attempt) return;
+      clearTimeout(attempt.deadline);
+      attempt.answered = true;
+      if (attempt.candidates.length) this.#sendCandidates(attempt, attempt.candidates.splice(0));
+    } catch (error) { this.#retry(attempt, String(error)); }
   }
 
   #authHeader() {
     if (this.#conf.user !== undefined && this.#conf.user !== "") {
       const credentials = btoa(`${this.#conf.user}:${this.#conf.pass}`);
-      return { Authorization: `Basic ${credentials}` };
+      return {Authorization: `Basic ${credentials}`};
     }
     if (this.#conf.token !== undefined && this.#conf.token !== "") {
-      return { Authorization: `Bearer ${this.#conf.token}` };
+      return {Authorization: `Bearer ${this.#conf.token}`};
     }
     return {};
   }
 
-  #requestICEServers() {
-    return fetch(this.#conf.url, {
-      method: "OPTIONS",
-      headers: this.#authHeader(),
-    }).then((res) =>
-      MediaMTXWebRTCReader.#linkToIceServers(res.headers.get("Link")),
-    );
+  async #request(attempt, url, options, consume = response => response) {
+    const controller = new AbortController();
+    attempt?.requests.add(controller);
+    const deadline = setTimeout(() => controller.abort(), 5000);
+    try {
+      const response = await fetch(url, {...options, signal: controller.signal,
+        headers: {...this.#authHeader(), ...options.headers}});
+      return await consume(response);
+    } finally {
+      clearTimeout(deadline);
+      attempt?.requests.delete(controller);
+    }
   }
 
-  #setupPeerConnection(iceServers) {
-    if (this.#state !== "running") {
-      throw new Error("closed");
-    }
-
-    this.#pc = new RTCPeerConnection({
-      iceServers,
-      // https://webrtc.org/getting-started/unified-plan-transition-guide
-      sdpSemantics: "unified-plan",
-    });
-
-    const direction = "recvonly";
-    this.#pc.addTransceiver("video", { direction });
-    this.#pc.addTransceiver("audio", { direction });
-
-    // using data channels requires creating a data channel locally
-    this.#pc.createDataChannel("");
-
-    this.#pc.onicecandidate = (evt) => this.#onLocalCandidate(evt);
-    this.#pc.onconnectionstatechange = () => this.#onConnectionState();
-    this.#pc.ontrack = (evt) => this.#onTrack(evt);
-    this.#pc.ondatachannel = (evt) => this.#onDataChannel(evt);
-
-    return this.#pc.createOffer().then((offer) => {
-      offer.sdp = MediaMTXWebRTCReader.#editOffer(
-        offer.sdp,
-        this.#nonAdvertisedCodecs,
-      );
-      this.#offerData = MediaMTXWebRTCReader.#parseOffer(offer.sdp);
-
-      return this.#pc.setLocalDescription(offer).then(() => offer.sdp);
-    });
-  }
-
-  #sendOffer(offer) {
-    if (this.#state !== "running") {
-      throw new Error("closed");
-    }
-
-    return fetch(this.#conf.url, {
-      method: "POST",
-      headers: {
-        ...this.#authHeader(),
-        "Content-Type": "application/sdp",
-      },
-      body: offer,
-    }).then((res) => {
-      switch (res.status) {
-        case 201:
-          break;
-        case 404:
-          throw new Error("stream not found");
-        case 400:
-          return res.json().then((e) => {
-            throw new Error(e.error);
-          });
-        default:
-          throw new Error(`bad status code ${res.status}`);
-      }
-
-      this.#sessionUrl = new URL(
-        res.headers.get("location"),
-        this.#conf.url,
-      ).toString();
-
-      return res.text();
-    });
-  }
-
-  #setAnswer(answer) {
-    if (this.#state !== "running") {
-      throw new Error("closed");
-    }
-
-    return this.#pc
-      .setRemoteDescription(
-        new RTCSessionDescription({
-          type: "answer",
-          sdp: answer,
-        }),
-      )
-      .then(() => {
-        if (this.#state !== "running") {
-          return;
-        }
-
-        if (this.#queuedCandidates.length !== 0) {
-          this.#sendLocalCandidates(this.#queuedCandidates);
-          this.#queuedCandidates = [];
-        }
+  async #sendOffer(attempt, offer) {
+    // Closing a local peer cannot cancel an allocation already made by the server.
+    // Keep the POST alive briefly so a late Location can still be deleted.
+    const controller = new AbortController();
+    const deadline = setTimeout(() => controller.abort(), 30000);
+    try {
+      const response = await fetch(this.#conf.url, {
+        method: "POST", signal: controller.signal,
+        headers: {...this.#authHeader(), "Content-Type": "application/sdp"},
+        body: offer,
       });
-  }
-
-  #onLocalCandidate(evt) {
-    if (this.#state !== "running") {
-      return;
-    }
-
-    if (evt.candidate !== null) {
-      if (this.#sessionUrl === null) {
-        this.#queuedCandidates.push(evt.candidate);
-      } else {
-        this.#sendLocalCandidates([evt.candidate]);
+      if (response.status !== 201) throw new Error(`WHEP POST returned ${response.status}`);
+      const location = response.headers.get("Location");
+      if (!location) throw new Error("WHEP response has no session location");
+      const session = new URL(location, this.#conf.url);
+      if (session.origin !== new URL(this.#conf.url).origin) throw new Error("WHEP session origin changed");
+      if (this.#attempt !== attempt) {
+        this.#deleteSession(session.href);
+        controller.abort();
+        return;
       }
+      attempt.sessionUrl = session.href;
+      attempt.requests.add(controller);
+      return await response.text();
+    } finally {
+      clearTimeout(deadline);
+      attempt.requests.delete(controller);
     }
   }
 
-  #sendLocalCandidates(candidates) {
-    fetch(this.#sessionUrl, {
-      method: "PATCH",
-      headers: {
-        "Content-Type": "application/trickle-ice-sdpfrag",
-        "If-Match": "*",
-      },
-      body: MediaMTXWebRTCReader.#generateSdpFragment(
-        this.#offerData,
-        candidates,
-      ),
-    })
-      .then((res) => {
-        switch (res.status) {
-          case 204:
-            break;
-          case 404:
-            throw new Error("stream not found");
-          default:
-            throw new Error(`bad status code ${res.status}`);
-        }
-      })
-      .catch((err) => {
-        this.#handleError(err.toString());
+  #deleteSession(url) {
+    this.#request(null, url, {method: "DELETE", keepalive: true}).catch(() => {});
+  }
+
+  async #sendCandidates(attempt, candidates) {
+    try {
+      const response = await this.#request(attempt, attempt.sessionUrl, {
+        method: "PATCH",
+        headers: {"Content-Type": "application/trickle-ice-sdpfrag", "If-Match": "*"},
+        body: MediaMTXWebRTCReader.#generateSdpFragment(attempt.offerData, candidates),
       });
-  }
-
-  #onConnectionState() {
-    if (this.#state !== "running") {
-      return;
-    }
-
-    // "closed" can arrive before "failed" and without
-    // the close() method being called at all.
-    // It happens when the other peer sends a termination
-    // message like a DTLS CloseNotify.
-    if (
-      this.#pc.connectionState === "failed" ||
-      this.#pc.connectionState === "closed"
-    ) {
-      this.#handleError("peer connection closed");
-    }
-  }
-
-  #onTrack(evt) {
-    if (this.#conf.onTrack !== undefined) {
-      this.#conf.onTrack(evt);
-    }
-  }
-
-  #onDataChannel(evt) {
-    if (this.#conf.onDataChannel !== undefined) {
-      this.#conf.onDataChannel(evt);
-    }
+      if (response.status !== 204) throw new Error(`WHEP PATCH returned ${response.status}`);
+    } catch (error) { this.#retry(attempt, String(error)); }
   }
 }
 

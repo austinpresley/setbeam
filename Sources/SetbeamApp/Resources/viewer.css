@@ -41,7 +41,7 @@ h1{margin:0;min-width:0;font-size:16px;line-height:1.25;font-weight:600;white-sp
 
 /* Idle on a large screen: only the tally, the Sample label, and a muted-sound reminder stay. */
 @media (min-width:601px),(orientation:landscape){
- .player.live.idle header{background:transparent}.player.live.idle h1,.player.live.idle .avatar-button{opacity:0;pointer-events:none}
+ .player.live.idle header:not(:focus-within){background:transparent}.player.live.idle h1,.player.live.idle .avatar-button:not(:focus){opacity:0;pointer-events:none}
  .player.live.idle .controls{background:transparent;border-color:transparent;box-shadow:none;-webkit-backdrop-filter:none;backdrop-filter:none}
  .player.live.idle .controls>*{opacity:0;pointer-events:none}
  .player.live.idle #sound:not(:disabled)[aria-pressed=false]{opacity:1;pointer-events:auto;background:var(--glass);-webkit-backdrop-filter:blur(22px);backdrop-filter:blur(22px);box-shadow:0 0 0 6px #ffffff26}

@@ -11,7 +11,9 @@ function browser(options = {}) {
   const configHeaders = [];
   let now = 1_000, interval, requests = 0, hung = false, deferState = false, releaseState;
   const timers = new Map(), readers = [], listeners = {}, urls = [], sources = [], locks = [], heartbeats = [], joins = [];
-  let joinFails = false, stateGone = false;
+  let joinFails = false, stateGone = false, config = {whepURL: 'http://localhost/live/whep', user: 'guest', pass: 'synthetic'};
+  const queuedResponses = new Map(), chatUpdates = [], chatActivity = [];
+  let clipFails = options.clipFails, unmuteFails = options.unmuteFails, uuidCounter = 0;
   // Elements inside the join page, for focus checks.
   const joinParts = new Set(['join-title', 'join-name', 'join-submit', 'join-cancel', 'join-retry', 'join-form', 'join-status']);
   // Most checks describe a tab that already chose its name and color; identity checks pass their own storage.
@@ -23,11 +25,11 @@ function browser(options = {}) {
       append(...items) { this.children.push(...items); }, focus() { context.document.activeElement = this; }};
     created.push(node); return node;
   }
-  let stats, statsError = false, resolveStats;
+  let stats, statsError = false, resolveStats, frameCallback, frames = 0, canceledFrames = 0;
   const elements = new Map();
   function element(id) {
     if (!elements.has(id)) elements.set(id, {
-      hidden: false, textContent: '', paused: false, readyState: 4, currentTime: 0, muted: true, plays: 0,
+      hidden: ['chat-menu', 'chat-information'].includes(id), textContent: '', paused: false, readyState: 4, currentTime: 0, muted: true, plays: 0,
       style: {setProperty(name, value) { this[name] = value; }}, parentElement: {attributes: {}, toggleAttribute(name, enabled) { if (enabled) this.attributes[name] = ''; else delete this.attributes[name]; }}, writes: 0,
       attributes: {}, contains(target) { return target === this || (id === 'join' && joinParts.has(target?.id)); }, addEventListener(name, fn) { listeners[id + ':' + name] = fn; },
       children: [], append(...items) { this.children.push(...items); },
@@ -36,6 +38,9 @@ function browser(options = {}) {
       focus() { context.document.activeElement = this; this.focuses++; },
       play() {
         this.plays++;
+        if (id === 'keepawake' && clipFails || id === 'video' && unmuteFails && !this.muted) {
+          this.paused = true; return Promise.reject(Object.assign(new Error('Playback blocked'), {name: 'NotAllowedError'}));
+        }
         // Browsers reject blocked autoplay with NotAllowedError, and a replaced source with AbortError.
         if (id === 'video' && options.autoplayBlocked) return Promise.reject(Object.assign(new Error('Autoplay blocked'), {name: 'NotAllowedError'}));
         if (id === 'video' && options.playInterrupted) return Promise.reject(Object.assign(new Error('The play() request was interrupted by a new load request.'), {name: 'AbortError'}));
@@ -50,18 +55,33 @@ function browser(options = {}) {
     return el;
   }
   const audioListeners = {};
-  const audio = {readyState: 'live', muted: !!options.mutedAudio, addEventListener(name, fn) { audioListeners[name] = fn; }};
-  const stream = {tracks: options.silent ? [] : [audio], getAudioTracks() { return this.tracks; }, addEventListener(name, fn) { listeners['stream:' + name] = fn; }};
+  const audio = {kind: 'audio', readyState: 'live', muted: !!options.mutedAudio, addEventListener(name, fn) { audioListeners[name] = fn; }};
+  const videoTrack = {kind: 'video', readyState: 'live', muted: false, addEventListener() {}};
+  class MediaStream {
+    constructor() { this.tracks = []; this.videoTracks = []; }
+    getAudioTracks() { return this.tracks; }
+    getVideoTracks() { return this.videoTracks; }
+    getTracks() { return [...this.videoTracks, ...this.tracks]; }
+    addTrack(track) { (track.kind === 'video' ? this.videoTracks : this.tracks).push(track); }
+    addEventListener(name, fn) {
+      const key = 'stream:' + name, previous = listeners[key];
+      listeners[key] = event => { previous?.(event); fn(event); };
+    }
+  }
+  const stream = new MediaStream();
+  stream.addTrack(videoTrack);
+  if (!options.silent) stream.addTrack(audio);
   const state = {state: 'live', title: 'Recovery test', revision: 1};
   const context = {
     document: {getElementById: element, createElement: create, pictureInPictureEnabled: !!options.pip, hidden: false, addEventListener(name, fn) { listeners[name] = fn; }, body: {id: 'body'}},
     matchMedia: query => ({matches: query === '(pointer: fine)' && !!options.finePointer}),
-    navigator: {userAgent: 'test'}, crypto: {randomUUID: () => 'viewer-test'},
-    sessionStorage: {getItem(key) { return storage.get(key); }, setItem(key, value) { storage.set(key, value); }},
+    navigator: {userAgent: 'test'}, crypto: {randomUUID: () => uuidCounter++ === 0 ? 'viewer-test' :
+      '00000000-0000-4000-8000-' + String(uuidCounter).padStart(12, '0')},
+    sessionStorage: {getItem(key) { return storage.get(key); }, setItem(key, value) { storage.set(key, value); }, removeItem(key) { storage.delete(key); }},
     Date: class extends Date { static now() { return now; } },
-    AbortController,
+    AbortController, MediaStream,
     setTimeout(fn, delay) { const id = {}; timers.set(id, {fn, due: now + delay}); return id; },
-    clearTimeout(id) { timers.delete(id); }, setInterval(fn) { interval = fn; },
+    clearTimeout(id) { timers.delete(id); }, setInterval(fn) { interval = fn; return fn; }, clearInterval(id) { if (id === interval) interval = undefined; },
     MediaMTXWebRTCReader: class {
       constructor(config) {
         this.config = config; this.closed = false; readers.push(this);
@@ -77,6 +97,10 @@ function browser(options = {}) {
       const options = {...request, join: joinResponse()};
       requests++; urls.push(url);
       if (url === 'heartbeat') heartbeats.push(JSON.parse(options.body));
+      if (url === 'config.json') configHeaders.push(request.headers || {});
+      if (url === 'join') joins.push(JSON.parse(request.body));
+      const queued = queuedResponses.get(url);
+      if (queued?.length) return queued.shift()(request);
       if (deferState && url === 'state.json') {
         // Capture this response now and deliver it only when the test releases it.
         deferState = false; const snapshot = {...state};
@@ -87,18 +111,30 @@ function browser(options = {}) {
       });
       // Stop and a changed code both retire the link, so its state is gone too.
       if (url === 'state.json' && stateGone) return Promise.resolve({ok: false, status: 404, json: async () => ({})});
-      if (url === 'config.json') configHeaders.push(request.headers || {});
       if (url === 'heartbeat' && heartbeatValue) return Promise.resolve({ok: true, status: 200, json: async () => heartbeatValue});
       if (url === 'join') {
-        const body = JSON.parse(request.body); joins.push(body);
+        const body = JSON.parse(request.body);
         if (joinFails) return Promise.reject(new TypeError('Failed to fetch'));
         const join = (typeof options.join === 'function' ? options.join(body) : options.join) || {pass: 'a'.repeat(48), number: 1, admission: 'admitted', ready: true, color: 'blue'};
         return Promise.resolve({ok: !join.status, status: join.status || 200, json: async () => join});
       }
       return Promise.resolve({ok: true, status: 200, json: async () => url === 'config.json'
-        ? {whepURL: 'http://localhost/live/whep', user: 'guest', pass: 'synthetic'} : state});
+        ? config : state});
     }
   };
+  if (options.plainHTTP) context.crypto = {getRandomValues: bytes => bytes.fill(255)};
+  if (!options.noFrameCounter) element('video').getVideoPlaybackQuality = () => ({totalVideoFrames: frames, droppedVideoFrames: 0});
+  if (options.frameCallback) {
+    element('video').requestVideoFrameCallback = fn => { frameCallback = fn; return fn; };
+    element('video').cancelVideoFrameCallback = fn => {
+      canceledFrames++; if (frameCallback === fn) frameCallback = undefined;
+    };
+  }
+  if (options.chat) context.SetbeamChat = {attach(viewer) {
+    chatUpdates.viewer = viewer;
+    return {update(value) { chatUpdates.push(value); }, activity(value) { chatActivity.push(value); }};
+  }};
+  element('retry').setAttribute('aria-label', 'Play feed');
   element('video').videoWidth = 1920; element('video').videoHeight = 1200;
   element('player').requestFullscreen = () => { context.document.fullscreenElement = element('player'); return Promise.resolve(); };
   context.document.exitFullscreen = () => { context.document.fullscreenElement = null; return Promise.resolve(); };
@@ -110,7 +146,9 @@ function browser(options = {}) {
     close() { this.readyState = 2; }
   };
   if (options.wakeLock) context.navigator.wakeLock = {request(type) {
-    const lock = {type, released: false, release() { this.released = true; return Promise.resolve(); }, addEventListener() {}};
+    let notify;
+    const lock = {type, released: false, release() { this.released = true; notify?.(); return Promise.resolve(); },
+      addEventListener(name, fn) { if (name === 'release') notify = fn; }};
     locks.push(lock); return Promise.resolve(lock);
   }};
   if (options.keepAwakeVideo) context.SetbeamKeepAwakeVideo = 'data:video/mp4;base64,AAAA';
@@ -124,7 +162,32 @@ function browser(options = {}) {
   else context.SetbeamPointers = {COLORS: palette, attach() { return undefined; }};
   vm.runInNewContext(controller, context);
   const settle = async () => { for (let n = 0; n < 120; n++) await Promise.resolve(); };
+  function frame() {
+    const video = element('video'); video.currentTime += 1;
+    frames++;
+    if (options.frameCallback) frameCallback?.(now, {presentedFrames: frames});
+    else listeners['video:timeupdate']();
+  }
+  function queueResponse(url, fn) {
+    if (!queuedResponses.has(url)) queuedResponses.set(url, []);
+    queuedResponses.get(url).push(fn);
+  }
   return {
+    chatUpdates, chatActivity, videoTrack,
+    get frameCallback() { return frameCallback; }, get canceledFrames() { return canceledFrames; },
+    set config(value) { config = value; }, set clipFails(value) { clipFails = value; },
+    set unmuteFails(value) { unmuteFails = value; },
+    defer(url, body, status = 200) {
+      let release, signal;
+      queueResponse(url, request => {
+        signal = request.signal;
+        return new Promise(resolve => {
+          release = () => resolve({ok: status >= 200 && status < 300, status, json: async () => body});
+        });
+      });
+      return {get signal() { return signal; }, async release() { release(); await settle(); }};
+    },
+    rejectNext(url) { queueResponse(url, () => Promise.reject(new Error('Connection unavailable'))); },
     pointerUpdates, set join(value) { joinValue = value; }, set heartbeatResponse(value) { heartbeatValue = value; }, configHeaders,
     readers, state, elements, listeners, settle, sources, locks, context, stream, audio, audioListeners, heartbeats, storage, joins, urls,
     set joinFails(value) { joinFails = value; }, set stateGone(value) { stateGone = value; }, el: element,
@@ -141,15 +204,15 @@ function browser(options = {}) {
       const source = sources.at(-1); source.readyState = 1;
       source.onmessage({data: JSON.stringify(value)}); await settle();
     },
-    frame() { const video = element('video'); video.currentTime += 1; listeners['video:timeupdate'](); },
+    frame,
     async tick(ms = 1500) {
       now += ms;
       for (const [id, timer] of [...timers]) if (timer.due <= now) { timers.delete(id); timer.fn(); }
-      interval(); await settle();
+      interval?.(); await settle();
     },
     async track() {
-      readers.at(-1).config.onTrack({streams: [stream]}); await settle();
-      const video = element('video'); video.currentTime += 1; listeners['video:timeupdate']();
+      readers.at(-1).config.onTrack({streams: [stream], track: videoTrack}); await settle();
+      frame();
     }
   };
 }
@@ -399,7 +462,7 @@ test('a new tab chooses one name and color before it plays, with approval off', 
   assert.equal(b.count('join'), 0, 'Nothing is sent before the viewer chooses');
   assert.equal(b.count('config.json'), 0); assert.equal(b.readers.length, 0);
   assert.equal(b.swatches().length, 3, 'Every palette color is offered');
-  assert.match(b.el('join-hint').textContent, /^Shown to the operator\. Names are not verified\.$/);
+  assert.match(b.el('join-hint').textContent, /The operator sees your name\. Other viewers see it on your chat messages\./);
   b.pick('teal');
   await b.submit('  Alex\n\u202e  ' + 'x'.repeat(70));
   const sent = b.joins.at(-1);
@@ -420,7 +483,7 @@ test('a new tab chooses one name and color before it plays, with approval off', 
 test('an empty name is not sent, and shared pointers are named in the hint', async () => {
   const b = browser({storage: {}}); await b.settle();
   b.state.pointers = true; await b.tick();
-  assert.match(b.el('join-hint').textContent, /other viewers when you point/);
+  assert.match(b.el('join-hint').textContent, /Other viewers see it on your chat messages and when you point/);
   await b.submit('   ');
   assert.equal(b.count('join'), 0); assert.equal(b.el('join-status').textContent, 'Enter a name the operator will recognize.');
 });
@@ -573,7 +636,7 @@ test('pointing is offered only while admitted, enabled, and the session continue
   const b = browser({eventSource: true, pointers: true, storage: {'setbeam-pass:': pass}, join: {pass, number: 2, admission: 'admitted', ready: true, color: 'blue'}});
   await b.settle();
   await b.push({...b.state, pointers: true}); await b.track();
-  assert.deepEqual({...b.pointerUpdates.at(-1)}, {enabled: true, live: true, revision: 1});
+  assert.deepEqual({...b.pointerUpdates.at(-1)}, {enabled: true, live: true, revision: 1, suspended: false});
   assert.equal(b.pointerUpdates.viewer.nameLocked(), false);
   await b.push({...b.state, approval: true, pointers: true});
   assert.equal(b.pointerUpdates.viewer.nameLocked(), false, 'A session admitted unnamed before approval may name itself once');
@@ -655,7 +718,7 @@ test('a failed request is reported in the form and sent again only when the view
   const g = gateway();
   const b = browser({join: g.join}); b.state.approval = true; await b.settle();
   b.joinFails = true; await b.submit('Ana');
-  assert.match(b.el('join-status').textContent, /did not reach the operator/);
+  assert.match(b.el('join-status').textContent, /could not be confirmed/);
   assert.equal(b.el('join-submit').disabled, false); assert.equal(b.el('join-name').readOnly, false);
   const asks = b.joins.filter(body => body.ask).length;
   b.joinFails = false; await b.tick(); await b.tick();
@@ -754,16 +817,16 @@ test('a busy session waits for Try again, and a changed link replaces the waitin
   g.gone = true; await b.tick();
   assert.equal(b.el('state').textContent, 'Session unavailable');
   assert.equal(b.el('join-title').textContent, 'Link unavailable');
-  assert.equal(b.el('join-retry').hidden, false); assert.equal(b.count('config.json'), 0);
+  assert.equal(b.el('join-retry').hidden, true); assert.equal(b.count('config.json'), 0);
 });
 
-test('a link retired while the form is open shows unavailable, and Try again sends no request', async () => {
+test('a link retired while the form is open shows a terminal notice', async () => {
   const g = gateway();
   const b = browser({join: g.join, storage: {'setbeam-viewer-name': 'Sam'}}); b.state.approval = true; await b.settle();
   assert.equal(b.el('state').textContent, 'Ask to join');
   g.gone = true; b.stateGone = true; await b.tick(); await b.tick();
   assert.equal(b.el('state').textContent, 'Session unavailable', 'Stop while the form is open retires the form');
-  assert.equal(b.el('join-form').hidden, true); assert.equal(b.el('join-retry').hidden, false);
+  assert.equal(b.el('join-form').hidden, true); assert.equal(b.el('join-retry').hidden, true);
   b.listeners['join-retry:click'](); await b.settle(); await b.tick();
   assert.equal(b.el('state').textContent, 'Session unavailable', 'Try again on a retired link stays unavailable');
   assert.equal(b.el('join-form').hidden, true);
@@ -771,7 +834,7 @@ test('a link retired while the form is open shows unavailable, and Try again sen
   assert.equal(b.count('config.json'), 0);
 });
 
-test('Try again after an ask meets a retired link stays unavailable without a new request', async () => {
+test('an Ask on a retired link shows a terminal notice without another request', async () => {
   const g = gateway();
   const b = browser({join: g.join}); b.state.approval = true; await b.settle();
   assert.equal(b.el('state').textContent, 'Ask to join');
@@ -780,7 +843,7 @@ test('Try again after an ask meets a retired link stays unavailable without a ne
   const asks = b.joins.filter(body => body.ask).length;
   b.listeners['join-retry:click'](); await b.settle(); await b.tick(); await b.tick();
   assert.equal(b.el('state').textContent, 'Session unavailable', 'Try again does not return to a form that cannot work');
-  assert.equal(b.el('join-form').hidden, true); assert.equal(b.el('join-retry').hidden, false);
+  assert.equal(b.el('join-form').hidden, true); assert.equal(b.el('join-retry').hidden, true);
   assert.equal(b.joins.filter(body => body.ask).length, asks, 'Try again sends no new request');
   assert.equal(g.requests, 0); assert.equal(b.count('config.json'), 0);
 });
@@ -837,4 +900,381 @@ test('playback updates preserve chat layout and compact keyboard classes', async
   assert.ok(player.className.split(' ').includes('keyboard-tight'), 'A video update must not expand the keyboard composer');
   b.state.state = 'holding'; await b.tick();
   assert.ok(player.className.split(' ').includes('chat-open'), 'Chat remains open through Hold');
+});
+
+test('Hold, Stop, and removal invalidate delayed credentials immediately', async () => {
+  for (const transition of ['holding', 'stopped', 'removed']) {
+    const b = browser({eventSource: true, chat: true}); await b.settle(); await b.track();
+    const late = b.defer('config.json', {whepURL: 'http://localhost/late/whep'});
+    await b.push({...b.state, revision: 2});
+    assert.equal(b.readers[0].closed, true);
+    assert.equal(b.chatUpdates.viewer.displayedRevision(), undefined);
+    assert.equal(b.heartbeats.at(-1).playing, false);
+    assert.ok(late.signal);
+    if (transition === 'removed') {
+      b.heartbeatResponse = {ok: true, admission: 'removed'}; await b.tick(3000);
+    } else await b.push({...b.state, state: transition, revision: 2});
+    assert.equal(b.el('state').textContent, {holding: 'On hold', stopped: 'Sharing ended', removed: 'Removed'}[transition]);
+    assert.equal(late.signal.aborted, true);
+    await late.release();
+    assert.equal(b.readers.length, 1);
+    assert.equal(b.el('video').srcObject, null);
+  }
+});
+
+test('a matching config waits for sequenced state when the gateway is ahead', async () => {
+  const b = browser({eventSource: true}); await b.settle(); await b.track();
+  const config = {whepURL: 'http://localhost/next/whep', revision: 2, sequence: 11};
+  b.config = config;
+  await b.push({...b.state, revision: 2, sequence: 10});
+  assert.equal(b.readers.length, 1);
+  await b.push({...b.state, revision: 2, sequence: 11});
+  assert.equal(b.readers.length, 2);
+  assert.equal(b.readers[1].config.url, config.whepURL);
+});
+
+test('sequence orders polls and pushes regardless of delivery order', async () => {
+  const b = browser({eventSource: true}); await b.settle(); await b.track();
+  await b.push({...b.state, sequence: 4});
+  const newerPoll = b.defer('state.json', {...b.state, state: 'holding', sequence: 6});
+  b.listeners.online(); await b.settle();
+  await b.push({...b.state, sequence: 5});
+  await newerPoll.release();
+  assert.equal(b.el('state').textContent, 'On hold');
+  await b.push({...b.state, sequence: 5});
+  assert.equal(b.el('state').textContent, 'On hold');
+  assert.equal(b.readers.length, 1);
+});
+
+test('a retired poll result cannot end a session after a newer push', async () => {
+  const b = browser({eventSource: true}); await b.settle(); await b.track();
+  const expired = b.defer('state.json', undefined, 404);
+  b.listeners.online(); await b.settle(); await b.push();
+  await expired.release();
+  assert.equal(b.el('state').textContent, 'Live feed');
+  assert.equal(b.readers[0].closed, false);
+});
+
+test('temporarily losing control polling leaves the decoded feed and sound playing', async () => {
+  const b = browser(); await b.settle(); await b.track();
+  b.listeners['sound:click'](); await b.settle();
+  b.rejectNext('state.json'); await b.tick();
+  assert.equal(b.el('state').textContent, 'Live feed');
+  assert.equal(b.el('video').muted, false);
+  assert.equal(b.readers.length, 1);
+  b.state.state = 'holding'; await b.tick();
+  assert.equal(b.el('state').textContent, 'On hold');
+});
+
+test('a timed-out config cannot replace the credentials from a later attempt', async () => {
+  const b = browser(); await b.settle();
+  const expired = b.defer('config.json', {whepURL: 'http://localhost/old/whep'});
+  b.state.revision++; await b.tick();
+  const count = b.readers.length;
+  await b.tick(5100); await b.tick();
+  assert.equal(expired.signal.aborted, true);
+  assert.equal(b.readers.length, count + 1);
+  await expired.release();
+  assert.equal(b.readers.length, count + 1);
+  assert.match(b.readers.at(-1).config.url, /\/live\/whep$/);
+});
+
+test('pagehide cancels work and pageshow checks both state and the stored pass', async () => {
+  const b = browser({eventSource: true, chat: true, wakeLock: true}); await b.settle(); await b.track(); await b.settle();
+  await b.push({...b.state, sequence: 8});
+  const oldHeartbeat = b.defer('heartbeat', {admission: 'removed', chatLastID: 99});
+  const oldState = b.defer('state.json', {...b.state, state: 'stopped', sequence: 9});
+  b.listeners.visibilitychange(); await b.settle();
+  b.listeners.pagehide();
+  assert.equal(oldState.signal.aborted, true);
+  assert.equal(oldHeartbeat.signal.aborted, true);
+  assert.equal(b.readers[0].closed, true);
+  assert.equal(b.sources[0].readyState, 2);
+  assert.equal(b.locks[0].released, true);
+  assert.equal(b.chatUpdates.at(-1).suspended, true);
+  const before = b.requests;
+  b.listeners.online(); await b.tick(30_000); assert.equal(b.requests, before);
+
+  const resumedState = b.defer('state.json', {...b.state, sequence: 8});
+  b.listeners.pageshow(); await b.settle();
+  assert.equal(b.joins.at(-1).pass, b.storage.get('setbeam-pass:'));
+  assert.equal(b.readers.length, 1);
+  await oldState.release(); await oldHeartbeat.release();
+  await resumedState.release(); await b.track();
+  assert.equal(b.readers.length, 2);
+  assert.equal(b.sources.length, 2);
+  assert.equal(b.chatUpdates.at(-1).suspended, false);
+  assert.equal(b.chatActivity.includes(99), false);
+  assert.equal(b.el('state').textContent, 'Live feed');
+});
+
+test('terminal links ignore online, page restore, tick, and click retries', async () => {
+  const b = browser(); await b.settle(); await b.track();
+  b.stateGone = true; await b.tick();
+  assert.equal(b.el('state').textContent, 'Sharing ended');
+  const before = b.requests;
+  b.listeners.pagehide(); b.listeners.pageshow(); b.listeners.online();
+  b.listeners['retry:click'](); await b.tick(15_000);
+  assert.equal(b.requests, before);
+});
+
+test('a newer heartbeat supersedes a timed-out one, and stale activity and admission are ignored', async () => {
+  const b = browser({eventSource: true, chat: true}); await b.settle(); await b.push(); await b.track(); await b.settle();
+  const old = b.defer('heartbeat', {admission: 'unknown', chatLastID: 95});
+  await b.tick(3000);
+  b.frame(); await b.tick(2000);
+  assert.equal(b.count('heartbeat'), 3, 'only one heartbeat is in flight');
+  b.heartbeatResponse = {admission: 'admitted', chatLastID: 96};
+  b.frame(); await b.tick(3200);
+  assert.equal(old.signal.aborted, true);
+  assert.equal(b.chatActivity.at(-1), 96);
+  await old.release();
+  assert.equal(b.chatActivity.includes(95), false);
+  assert.equal(b.readers[0].closed, false);
+});
+
+test('a join retry for the same draft keeps its UUID, while an edited draft gets a new UUID', async () => {
+  const b = browser({join: {status: 400}}); b.state.approval = true; await b.settle();
+  b.joinFails = true;
+  await b.submit('Ana'); await b.submit('Ana');
+  const asked = b.joins.filter(body => body.ask);
+  const id = asked[0].requestID;
+  assert.match(id, /^[0-9a-f-]{36}$/);
+  assert.equal(asked[1].requestID, id);
+  b.pick('teal'); await b.submit('Ana');
+  assert.notEqual(b.joins.at(-1).requestID, id);
+  assert.equal(b.joins[0].requestID, undefined);
+});
+
+test('streamless audio and a clock advance do not establish fresh video', async () => {
+  const b = browser({chat: true, pointers: true}); b.state.pointers = true; await b.settle();
+  const track = b.readers[0].config.onTrack;
+  track({track: b.audio, streams: []}); await b.settle();
+  b.frame();
+  assert.equal(b.chatUpdates.viewer.live(), false);
+  const stream = b.el('video').srcObject;
+  track({track: b.videoTrack, streams: []}); await b.settle();
+  assert.equal(b.el('video').srcObject, stream);
+  b.el('video').currentTime += 1; b.listeners['video:timeupdate']();
+  assert.equal(b.chatUpdates.viewer.live(), false, 'a media clock advance alone does not prove a decoded frame');
+  b.frame(); assert.equal(b.chatUpdates.viewer.displayedRevision(), 1);
+  assert.equal(b.pointerUpdates.at(-1).live, true);
+  const paints = b.chatUpdates.length;
+  for (let n = 0; n < 50; n++) b.frame();
+  assert.equal(b.chatUpdates.length, paints, 'steady frames do not render or update collaboration');
+});
+
+test('old frame callbacks cannot establish readiness after reconnecting', async () => {
+  const b = browser({eventSource: true, frameCallback: true, chat: true}); await b.settle(); await b.track();
+  const first = b.frameCallback;
+  await b.push({...b.state, revision: 2});
+  assert.equal(b.canceledFrames, 1);
+  first(1000, {presentedFrames: 2});
+  assert.equal(b.chatUpdates.viewer.displayedRevision(), undefined);
+  await b.track(); assert.equal(b.chatUpdates.viewer.displayedRevision(), 2);
+});
+
+test('a rejected unmute resumes the same peer silently and can be retried', async () => {
+  const b = browser({unmuteFails: true}); await b.settle(); await b.track();
+  b.listeners['sound:click'](); await b.settle();
+  assert.equal(b.el('video').muted, true);
+  assert.equal(b.el('video').paused, false);
+  assert.equal(b.el('sound').getAttribute('aria-pressed'), 'false');
+  assert.equal(b.el('state').textContent, 'Live feed');
+  b.unmuteFails = false; b.listeners['sound:click'](); await b.settle();
+  assert.equal(b.el('video').muted, false);
+  assert.equal(b.readers.length, 1);
+});
+
+test('late PiP entry after Hold exits and native fullscreen is not triggered by pointing', async () => {
+  const b = browser({eventSource: true, pip: true}); await b.settle(); await b.track();
+  let complete;
+  b.el('video').requestPictureInPicture = () => new Promise(resolve => { complete = () => {
+    b.context.document.pictureInPictureElement = b.el('video'); resolve();
+  }; });
+  const entering = b.listeners['pip:click']();
+  await b.push({...b.state, state: 'holding'});
+  complete(); await entering;
+  assert.equal(b.context.document.pictureInPictureElement, null);
+  assert.equal(b.el('pip').getAttribute('aria-pressed'), 'false');
+  await b.push(b.state); await b.track();
+  b.el('picture').classList = {contains: name => name === 'pointing'};
+  b.listeners['picture:dblclick']({target: {closest() { return null; }}});
+  assert.equal(b.context.document.fullscreenElement, undefined);
+});
+
+test('wake lock release and blocked fallback playback both retry', async () => {
+  const lock = browser({wakeLock: true}); await lock.settle(); await lock.track(); await lock.settle();
+  await lock.locks[0].release(); lock.frame(); await lock.tick(3000);
+  assert.equal(lock.locks.length, 2);
+  const b = browser({keepAwakeVideo: true, clipFails: true}); await b.settle(); await b.track(); await b.settle();
+  assert.equal(b.el('keepawake').paused, true);
+  b.clipFails = false; b.listeners['picture:click'](); await b.settle();
+  assert.equal(b.el('keepawake').plays, 2);
+  assert.equal(b.el('keepawake').paused, false);
+  b.context.document.hidden = true; b.listeners.visibilitychange();
+  assert.equal(b.el('keepawake').paused, true);
+});
+
+test('focused avatar stays visible and identity Escape takes priority over background chat', async () => {
+  const b = browser({chat: true}); await b.settle(); await b.track(); await b.tick(3000);
+  b.el('identity-button').focus(); b.listeners['identity-button:focus']();
+  await b.tick(3000);
+  assert.ok(!b.el('player').className.includes(' idle'));
+  b.listeners['identity-button:click']();
+  const key = (key, options = {}) => {
+    const event = {key, target: b.context.document.activeElement, preventDefault() { this.defaultPrevented = true; }, ...options};
+    b.listeners.keydown(event);
+    return event.defaultPrevented;
+  };
+  b.el('chat-menu').hidden = false;
+  assert.equal(key('Escape'), undefined, 'the chat menu owns Escape');
+  assert.equal(key('f'), undefined, 'a menu blocks global shortcuts');
+  b.el('chat-menu').hidden = true;
+  assert.equal(key('Escape'), true, 'the identity editor closes before background chat');
+  assert.equal(b.chatUpdates.viewer.identityOpen(), false);
+  assert.equal(key('f', {isComposing: true}), undefined);
+  b.el('pointer').hidden = true;
+  assert.equal(key('p'), undefined, 'an unavailable shortcut leaves the key alone');
+});
+
+const whepReader = fs.readFileSync('Sources/SetbeamApp/Resources/reader.js', 'utf8');
+
+function whep() {
+  const requests = [], peers = [], errors = [], tracks = [], timers = new Map();
+  let now = 0;
+  const sdp = 'v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 96 97 98\r\na=rtpmap:96 pcma/8000/2\r\na=rtpmap:97 multiopus/48000/6\r\na=rtpmap:98 L16/48000/2\r\n';
+  class Peer {
+    constructor() { peers.push(this); this.closed = false; this.answers = 0; this.transceivers = []; }
+    addTransceiver(kind, options) { this.transceivers.push({kind, ...options}); }
+    createDataChannel() {}
+    close() { this.closed = true; }
+    async createOffer() { return {sdp}; }
+    async setLocalDescription() {}
+    async setRemoteDescription() { this.answers++; }
+  }
+  const context = {
+    window: {}, AbortController, URL, btoa, RTCSessionDescription: class {}, RTCPeerConnection: Peer,
+    setTimeout(fn, delay) { const key = {}; timers.set(key, {fn, at: now + delay}); return key; },
+    clearTimeout(key) { timers.delete(key); },
+    fetch(url, options) {
+      return new Promise((resolve, reject) => {
+        const request = {url, ...options, resolve, reject};
+        requests.push(request);
+        if (options.method === 'OPTIONS' || options.method === 'DELETE') {
+          resolve({status: 204, ok: true, headers: {get: () => null}});
+        }
+      });
+    },
+  };
+  vm.runInNewContext(whepReader, context);
+  const reader = new context.window.MediaMTXWebRTCReader({
+    url: 'http://localhost/live/whep', user: 'guest', pass: 'synthetic',
+    onError: error => errors.push(error), onTrack: track => tracks.push(track),
+  });
+  const settle = async () => { for (let n = 0; n < 48; n++) await Promise.resolve(); };
+  return {
+    reader, requests, peers, errors, tracks, settle,
+    get offers() { return requests.filter(request => request.method === 'POST'); },
+    get deletes() { return requests.filter(request => request.method === 'DELETE'); },
+    answer(request, id, body = async () => 'v=0\r\n') {
+      request.resolve({status: 201, headers: {get: () => '/live/whep/' + id}, text: body});
+    },
+    async advance(ms) {
+      now += ms;
+      for (const [key, timer] of [...timers]) if (timer.at <= now && timers.delete(key)) timer.fn();
+      await settle();
+    }
+  };
+}
+
+test('WHEP close deletes its session once with read credentials and cancels PATCH', async () => {
+  const w = whep(); await w.settle();
+  const [offer] = w.offers, pc = w.peers.at(-1);
+  w.answer(offer, 'active'); await w.settle();
+  assert.deepEqual(pc.transceivers, [{kind: 'video', direction: 'recvonly'}, {kind: 'audio', direction: 'recvonly'}]);
+  pc.onicecandidate({candidate: {candidate: 'candidate:fixture', sdpMLineIndex: 0}});
+  const patch = w.requests.at(-1);
+  w.reader.close(); w.reader.close();
+  assert.equal(pc.closed, true);
+  assert.equal(patch.method, 'PATCH');
+  assert.equal(patch.signal.aborted, true);
+  assert.equal(w.deletes.length, 1);
+  assert.equal(w.deletes[0].url, 'http://localhost/live/whep/active');
+  assert.equal(w.deletes[0].headers.Authorization, offer.headers.Authorization);
+  assert.equal(w.deletes[0].keepalive, true);
+  patch.reject(new Error('aborted')); await w.advance(10_000);
+  assert.equal(w.errors.length, 0);
+  assert.equal(w.offers.length, 1);
+});
+
+test('WHEP close deletes a late 201 without applying or consuming its answer', async () => {
+  const w = whep(); await w.settle();
+  const old = w.peers.at(-1);
+  w.reader.close();
+  let consumed = false;
+  w.answer(w.offers[0], 'late', () => { consumed = true; });
+  await w.settle();
+  assert.equal(old.answers, 0);
+  assert.equal(consumed, false);
+  assert.equal(w.deletes[0].url, 'http://localhost/live/whep/late');
+  old.ontrack({track: 'stale'});
+  assert.deepEqual(w.tracks, []);
+});
+
+test('WHEP negotiation deadline permits a new attempt before a stale POST returns', async () => {
+  const w = whep(); await w.settle();
+  const old = w.peers.at(-1);
+  await w.advance(8000); await w.advance(2000);
+  assert.equal(old.closed, true);
+  assert.match(w.errors[0], /timed out/);
+  const active = w.peers.at(-1);
+  w.answer(w.offers[1], 'replacement'); await w.settle();
+  w.answer(w.offers[0], 'stale'); await w.settle();
+  assert.equal(active.closed, false);
+  assert.equal(old.answers, 0);
+  assert.equal(active.answers, 1);
+  assert.deepEqual(w.deletes.map(request => request.url), ['http://localhost/live/whep/stale']);
+  w.reader.close();
+  assert.equal(w.deletes.at(-1).url, 'http://localhost/live/whep/replacement');
+});
+
+test('WHEP negotiation deadline includes a stalled answer body', async () => {
+  const w = whep(); await w.settle();
+  const old = w.peers.at(-1), [offer] = w.offers;
+  let finishBody;
+  w.answer(offer, 'headers', () => new Promise(resolve => { finishBody = resolve; })); await w.settle();
+  await w.advance(8000); await w.advance(2000);
+  assert.equal(offer.signal.aborted, true);
+  assert.equal(old.answers, 0);
+  assert.equal(w.deletes[0].url, 'http://localhost/live/whep/headers');
+  assert.equal(w.offers.length, 2);
+  finishBody('v=0\r\n'); await w.settle();
+  assert.equal(old.answers, 0);
+  w.reader.close();
+});
+
+test('admission starts the state stream before reader credentials are ready', async () => {
+  const b = browser({eventSource: true, join: {pass, admission: 'admitted', ready: false}}); await b.settle();
+  assert.equal(b.sources.length, 1);
+  assert.equal(b.count('config.json'), 0);
+  await b.push({...b.state, state: 'holding'});
+  assert.equal(b.el('state').textContent, 'On hold');
+  b.join = {pass, admission: 'admitted', ready: true}; await b.tick();
+  assert.equal(b.count('config.json'), 0);
+  await b.push(b.state);
+  assert.equal(b.readers.length, 1);
+});
+
+test('plain HTTP joins still generate a UUID when randomUUID is unavailable', async () => {
+  const b = browser({plainHTTP: true, storage: {}}); await b.settle(); await b.submit('Ana');
+  assert.equal(b.joins[0].requestID, 'ffffffff-ffff-4fff-bfff-ffffffffffff');
+});
+
+test('a browser with only inbound decoder statistics waits for those counters to advance', async () => {
+  const b = browser({stats: true, noFrameCounter: true, chat: true}); await b.settle(); await b.track();
+  b.stats = reception(10, 0, 0, 0, 4);
+  await b.tick(); assert.equal(b.chatUpdates.viewer.live(), false);
+  b.stats = reception(25, 0, 0, 0, 5);
+  await b.tick(); assert.equal(b.chatUpdates.viewer.live(), true);
 });
