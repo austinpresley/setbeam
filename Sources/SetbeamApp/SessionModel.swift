@@ -405,40 +405,30 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
         updateSourceDisplayPointers()
         viewers = gateway.viewers
     }
-    func admitViewer(_ viewer: ViewerActivity) {
-        guard gateway.approve(viewer) else { return }
-        SessionLog.shared.record("viewer.admit", ["number": viewer.number, "shortAddress": viewer.shortAddress])
-        viewers = gateway.viewers; syncViewerAccess()
-    }
-    func declineViewer(_ viewer: ViewerActivity) {
-        guard gateway.decline(viewer) else { return }
-        SessionLog.shared.record("viewer.decline", ["number": viewer.number, "shortAddress": viewer.shortAddress])
-        viewers = gateway.viewers
-    }
-    /// Acts on a request card only if that exact request is still waiting on the current link.
-    /// A card from an earlier link, a request already decided elsewhere, or one that lapsed does nothing.
+    /// Acts only if the exact request is still pending on the current link.
     @discardableResult func answer(_ request: JoinRequest, admit: Bool) -> Bool {
-        guard state.sharing, viewerApproval else { return false }
+        guard state.sharing, viewerApproval, !stoppingSharing else { return false }
         viewers = gateway.viewers
-        guard let viewer = request.current(in: viewers, link: viewingLink) else { return false }
-        if admit { admitViewer(viewer) } else { declineViewer(viewer) }
+        guard let viewer = request.current(in: viewers, link: viewingLink),
+              admit ? gateway.approve(viewer) : gateway.decline(viewer) else { return false }
+        SessionLog.shared.record(admit ? "viewer.admit" : "viewer.decline",
+                                 ["number": viewer.number, "shortAddress": viewer.shortAddress])
+        viewers = gateway.viewers
+        if admit { syncViewerAccess() }
         return true
     }
     private func observeJoinRequests() {
         joinRequests.observe(link: viewingLink, active: state.sharing && viewerApproval, viewers: viewers)
     }
-    /// Ends this session's playback and presence immediately; other viewers continue.
-    func removeViewer(_ viewer: ViewerActivity) {
-        guard gateway.remove(viewer) else { return }
-        SessionLog.shared.record("viewer.remove", ["number": viewer.number])
-        viewers = gateway.viewers; syncViewerAccess()
-    }
-    /// The floating card must not remove a session from an earlier viewing link.
-    func removeViewer(_ reference: JoinRequest) {
-        guard state.sharing, viewerApproval else { return }
+    /// Ends the exact admitted session's playback and presence. Other viewers continue.
+    @discardableResult func removeViewer(_ reference: JoinRequest) -> Bool {
+        guard state.sharing, viewerApproval, !stoppingSharing else { return false }
         viewers = gateway.viewers
-        guard let current = reference.current(in: viewers, link: viewingLink, admission: .admitted) else { return }
-        removeViewer(current)
+        guard let current = reference.current(in: viewers, link: viewingLink, admission: .admitted),
+              gateway.remove(current) else { return false }
+        SessionLog.shared.record("viewer.remove", ["number": current.number])
+        viewers = gateway.viewers; syncViewerAccess()
+        return true
     }
     /// Applies the gateway's admitted readers to the media server, one change at a time. A page
     /// receives its own credential only after the server has accepted it.

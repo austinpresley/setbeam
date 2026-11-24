@@ -23,19 +23,18 @@ struct ViewerRequestRow: View {
     @ObservedObject var model: SessionModel
     let viewer: ViewerActivity
     var framed = true
+    var returnAccessibilityFocus: () -> Void = {}
+    @AccessibilityFocusState private var decisionFocused: Bool?
 
     var body: some View {
         let request = JoinRequest(viewer, link: model.viewingLink)
-        let method = viewer.shortAddress ? "Typed \(model.shortAddressHost ?? "the local address"). " : ""
         return HStack(spacing: 8) {
             ViewerAvatar(viewer: viewer, size: 28)
-            Text(viewer.displayName).font(.callout.weight(.semibold)).lineLimit(1)
-                .help("\(viewer.displayName) · \(method)Name chosen by the viewer")
-                .accessibilityLabel("\(viewer.displayName), session \(viewer.number). \(method)Asking to join")
+            ViewerSessionLabel(request: request, status: "Asking to join")
             Spacer(minLength: 0)
             ViewerDeviceIcon(viewer: viewer)
-            requestButton("Admit", symbol: "checkmark", tint: SetbeamChrome.admit) { model.answer(request, admit: true) }
-            requestButton("Decline", symbol: "xmark", tint: nil) { model.answer(request, admit: false) }
+            requestButton(request, admit: true)
+            requestButton(request, admit: false)
         }.padding(.horizontal, 12).frame(minHeight: 48)
             .background(framed ? SetbeamChrome.raised : .clear, in: RoundedRectangle(cornerRadius: 10))
             .overlay {
@@ -45,15 +44,39 @@ struct ViewerRequestRow: View {
             }
     }
 
-    private func requestButton(_ title: String, symbol: String, tint: Color?, action: @escaping () -> Void) -> some View {
-        let description = "\(title) \(viewer.displayName), session \(viewer.number)"
-        return Button(action: action) {
-            Image(systemName: symbol).font(.system(size: 13, weight: .bold))
-                .foregroundStyle(tint == nil ? Color.primary : .white)
+    private func requestButton(_ request: JoinRequest, admit: Bool) -> some View {
+        let description = "\(admit ? "Admit" : "Decline") \(request.name), session \(request.number)"
+        return Button {
+            let hadFocus = decisionFocused == admit
+            if model.answer(request, admit: admit) {
+                if hadFocus { returnAccessibilityFocus() }
+                request.announceDecision(admit: admit)
+            }
+        } label: {
+            Image(systemName: admit ? "checkmark" : "xmark").font(.system(size: 13, weight: .bold))
+                .foregroundStyle(admit ? Color.white : .primary)
                 .frame(width: 28, height: 28)
-                .background(tint ?? .primary.opacity(0.10), in: Circle())
+                .background(admit ? SetbeamChrome.admit : .primary.opacity(0.10), in: Circle())
                 .contentShape(Circle())
         }.buttonStyle(.plain).help(description).accessibilityLabel(description)
+            .accessibilityFocused($decisionFocused, equals: admit)
+    }
+}
+
+private struct ViewerSessionLabel: View {
+    let request: JoinRequest
+    let status: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(request.name).font(.callout.weight(.semibold)).lineLimit(1)
+            Text(request.sessionLabel).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .layoutPriority(1)
+        .help("\(request.name) · \(request.sessionLabel) · \(status)")
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(request.name), session \(request.number), \(request.routeLabel). \(status)")
     }
 }
 
@@ -61,9 +84,11 @@ struct ViewerActivityRow: View {
     @ObservedObject var model: SessionModel
     let viewer: ViewerActivity
     let showingDetails: Bool
+    let returnAccessibilityFocus: () -> Void
     let toggleDetails: () -> Void
     @State private var hover = false
     @FocusState private var removeFocused: Bool
+    @AccessibilityFocusState private var removeAccessibilityFocused: Bool
 
     var body: some View {
         let status = ViewerStatus(viewer: viewer, holding: model.audiencePresentation.confirmedHold)
@@ -76,12 +101,13 @@ struct ViewerActivityRow: View {
         }
     }
 
+    private var showsRemove: Bool { hover || removeFocused || removeAccessibilityFocused }
+
     private func row(status: ViewerStatus) -> some View {
         let reference = JoinRequest(viewer, link: model.viewingLink)
         return HStack(spacing: 8) {
             ViewerAvatar(viewer: viewer, holding: model.audiencePresentation.confirmedHold)
-            Text(viewer.displayName).font(.callout.weight(.semibold)).lineLimit(2)
-                .accessibilityLabel("\(viewer.displayName), session \(viewer.number)")
+            ViewerSessionLabel(request: reference, status: status.title)
             Spacer(minLength: 0)
             if viewer.pointing {
                 Image(systemName: "cursorarrow").font(.caption).foregroundStyle(.secondary)
@@ -94,14 +120,15 @@ struct ViewerActivityRow: View {
                 .foregroundStyle(.secondary)
             ZStack {
                 Image(systemName: status.symbol, variableValue: status.variableValue).font(.system(size: 14)).foregroundStyle(status.tint)
-                    .help(status.title).accessibilityLabel(status.title)
-                    .opacity(model.viewerApproval && (hover || removeFocused) ? 0 : 1)
+                    .help(status.title).accessibilityHidden(true)
+                    .opacity(model.viewerApproval && showsRemove ? 0 : 1)
                 if model.viewerApproval {
                     ChromeIconButton("Remove \(viewer.displayName), session \(viewer.number)", symbol: "minus.circle", size: 28,
-                                     hint: "Remove this viewer. Other viewers continue.") { model.removeViewer(reference) }
+                                     hint: "Remove this viewer. Other viewers continue.") { remove(reference) }
                         .foregroundStyle(SetbeamChrome.red)
-                        .focused($removeFocused).opacity(hover || removeFocused ? 1 : 0.001)
-                        .allowsHitTesting(hover || removeFocused)
+                        .focused($removeFocused).accessibilityFocused($removeAccessibilityFocused)
+                        .opacity(showsRemove ? 1 : 0.001)
+                        .allowsHitTesting(showsRemove)
                 }
             }.frame(width: 28, height: 28)
         }.padding(.horizontal, 8).frame(minHeight: 48)
@@ -109,12 +136,17 @@ struct ViewerActivityRow: View {
             .contentShape(Rectangle()).onHover { hover = $0 }
             .help("\(viewer.displayName) · \(status.title)")
             .accessibilityElement(children: .contain)
-            .accessibilityValue(status.title)
             .contextMenu {
                 if model.viewerApproval {
-                    Button("Remove Viewer", role: .destructive) { model.removeViewer(reference) }
+                    Button("Remove Viewer", role: .destructive) { remove(reference) }
                 }
             }
+    }
+
+    private func remove(_ request: JoinRequest) {
+        guard model.removeViewer(request) else { return }
+        returnAccessibilityFocus()
+        AccessibilityNotification.Announcement("Removed \(request.name), session \(request.number).").post()
     }
 }
 
@@ -126,7 +158,6 @@ private struct ViewerDetails: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Divider()
-            LabeledContent("Session", value: "\(viewer.number)")
             LabeledContent("Playback", value: status)
             if let joined = viewer.admittedAt {
                 LabeledContent("Joined") { timestamp(joined) }

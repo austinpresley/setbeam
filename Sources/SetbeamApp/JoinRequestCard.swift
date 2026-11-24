@@ -13,6 +13,12 @@ struct JoinRequest: Identifiable, Equatable {
     let color: PointerColor
     let shortAddress: Bool
     var id: String { "\(link)-\(number)" }
+    var routeLabel: String { shortAddress ? "Short address" : "Viewing link" }
+    var sessionLabel: String { "Session \(number) · \(routeLabel)" }
+
+    func announceDecision(admit: Bool) {
+        AccessibilityNotification.Announcement("\(admit ? "Admitted" : "Declined") \(name), session \(number).").post()
+    }
 
     init(_ viewer: ViewerActivity, link: Int) {
         self.link = link; number = viewer.number; joinedAt = viewer.joinedAt; name = viewer.displayName
@@ -81,7 +87,9 @@ struct JoinRequestTracker {
             keyIsMonitor: NSApp.keyWindow != nil && NSApp.keyWindow === model?.monitorWindow,
             keyIsSharing: NSApp.keyWindow != nil && NSApp.keyWindow === model?.sharingWindow,
             hasSheet: model?.sheet != nil) { show() }
-        let words = fresh.count == 1 ? "\(fresh[0].name) asks to join" : "\(fresh.count) viewers ask to join"
+        let words = fresh.count == 1
+            ? "\(fresh[0].name) asks to join. Session \(fresh[0].number), \(fresh[0].routeLabel)."
+            : "\(fresh.count) viewers ask to join. Review their sessions in People."
         NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested,
                              userInfo: [.announcement: words, .priority: NSAccessibilityPriorityLevel.high.rawValue])
         // One Dock bounce. It never brings Setbeam forward.
@@ -102,7 +110,9 @@ struct JoinRequestTracker {
     }
     func hoverChanged(_ inside: Bool) { hovering = inside; if inside { hideTask?.cancel() } else { scheduleHide() } }
     func answer(_ request: JoinRequest, admit: Bool) {
-        if model?.answer(request, admit: admit) != true {
+        if model?.answer(request, admit: admit) == true {
+            request.announceDecision(admit: admit)
+        } else {
             // Already decided, lapsed, or from an earlier link: refresh the card rather than act.
             SessionLog.shared.record("viewer.request.stale", ["admit": admit])
             if let model { observe(link: model.viewingLink, active: model.state.sharing && model.viewerApproval, viewers: model.viewers) }
@@ -238,10 +248,10 @@ struct JoinRequestCard: View {
             Circle().fill(Color(red: request.color.rgb.red, green: request.color.rgb.green, blue: request.color.rgb.blue))
                 .frame(width: 10, height: 10).frame(width: 24).accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
-                let route = route(request), device = "Session \(request.number) · \(request.label.replacingOccurrences(of: " browser", with: ""))"
-                Text(request.name).fontWeight(.medium).lineLimit(1).truncationMode(.tail).help(request.name)
-                Text(route).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle).help(route)
-                Text(device).font(.caption).foregroundStyle(.secondary).lineLimit(1).help(device)
+                Text(request.name).fontWeight(.medium).lineLimit(1).help(request.name)
+                Text(request.sessionLabel).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                    .help(request.shortAddress ? "Typed \(center.model?.shortAddressHost ?? "the short address")" : "Opened the viewing link")
+                Text(request.label).font(.caption).foregroundStyle(.secondary).lineLimit(1).help(request.label)
             }.frame(maxWidth: .infinity, alignment: .leading)
                 .accessibilityElement(children: .combine)
             Button("Decline") { center.answer(request, admit: false) }.buttonStyle(CardButtonStyle(prominent: false))
@@ -251,9 +261,6 @@ struct JoinRequestCard: View {
         }
     }
 
-    private func route(_ request: JoinRequest) -> String {
-        request.shortAddress ? "Typed \(center.model?.shortAddressHost ?? "the local address")" : "Opened the viewing link"
-    }
 }
 
 /// Small push buttons for the card. System bordered buttons draw dimmed while Setbeam is in the

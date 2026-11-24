@@ -108,6 +108,7 @@ struct SharingTally: View {
 struct ToolbarPeople: View {
     @ObservedObject var model: SessionModel
     @State private var requestsExpanded = false
+    @AccessibilityFocusState private var peopleFocused: Bool
     private let maxAvatars = 2
 
     var body: some View {
@@ -129,7 +130,7 @@ struct ToolbarPeople: View {
                 }.frame(height: 28).contentShape(Rectangle())
             }.buttonStyle(ChromeButtonStyle())
                 .help("\(model.admittedViewers.count) joined · \(model.verifiedViewers) playing · Show people")
-                .accessibilityLabel("People").accessibilityValue("\(model.admittedViewers.count) joined, \(model.verifiedViewers) playing")
+                .accessibilityLabel("People").accessibilityFocused($peopleFocused).accessibilityValue("\(model.admittedViewers.count) joined, \(model.verifiedViewers) playing")
             if let first = model.pendingViewers.first {
                 Button { requestsExpanded.toggle() } label: {
                     ViewerAvatar(viewer: first, size: 24)
@@ -154,7 +155,9 @@ struct ToolbarPeople: View {
                         let visibleCount = min(4, model.pendingViewers.count)
                         let rows = VStack(spacing: 8) {
                             ForEach(model.pendingViewers) { viewer in
-                                ViewerRequestRow(model: model, viewer: viewer, framed: false)
+                                ViewerRequestRow(model: model, viewer: viewer, framed: false) {
+                                    requestsExpanded = false; peopleFocused = true
+                                }
                             }
                         }.padding(.horizontal, 8).padding(.vertical, 4)
                         if model.pendingViewers.count > visibleCount {

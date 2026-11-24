@@ -5,6 +5,7 @@ import SetbeamCore
 struct SharingPanel: View {
     @ObservedObject var model: SessionModel
     var detached = false
+    @AccessibilityFocusState private var focusedTab: SharingSection?
     var body: some View {
         VStack(spacing: 0) {
             if detached {
@@ -26,7 +27,7 @@ struct SharingPanel: View {
                     Group {
                         switch model.sharingSection ?? .invite {
                         case .invite: SharingInviteView(model: model)
-                        case .viewers: SharingViewersView(model: model)
+                        case .viewers: SharingViewersView(model: model) { focusedTab = .viewers }
                         case .options: SharingOptionsView(model: model)
                         case .chat: EmptyView()
                         }
@@ -40,11 +41,9 @@ struct SharingPanel: View {
             .background(SetbeamChrome.panel)
             .accessibilityElement(children: .contain).accessibilityLabel("Sharing")
             .accessibilityIdentifier("sharingPanel")
-            .onAppear {
-                if !detached {
-                    NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested,
-                        userInfo: [.announcement: "Sharing. \(model.sharingSection?.rawValue ?? "Invite")", .priority: NSAccessibilityPriorityLevel.medium.rawValue])
-                }
+            .task(id: model.sharingFocusRequest) {
+                guard detached == model.sharingInWindow else { return }
+                focusedTab = model.sharingSection ?? .invite
             }
     }
 
@@ -72,6 +71,7 @@ struct SharingPanel: View {
                         .help(section.rawValue).accessibilityLabel(section.rawValue)
                         .accessibilityValue(badge == 0 ? "" : "\(badge) \(section == .viewers ? "waiting" : "unread")")
                         .accessibilityAddTraits(selected ? .isSelected : [])
+                        .accessibilityFocused($focusedTab, equals: section)
                 }
             }.padding(2).background(SetbeamChrome.segment, in: RoundedRectangle(cornerRadius: 8))
             if !detached {
@@ -98,6 +98,7 @@ struct SharingWindowView: View {
 
 struct SharingViewersView: View {
     @ObservedObject var model: SessionModel
+    var returnAccessibilityFocus: () -> Void = {}
     @State private var expandedViewer: String?
 
     var body: some View {
@@ -110,7 +111,7 @@ struct SharingViewersView: View {
                         .help("Names and colors are chosen by viewers. Each request is a browser session.")
                         .accessibilityLabel("Names and colors are chosen by viewers and are not verified.")
                 }
-                ForEach(model.pendingViewers) { viewer in ViewerRequestRow(model: model, viewer: viewer) }
+                ForEach(model.pendingViewers) { viewer in ViewerRequestRow(model: model, viewer: viewer, returnAccessibilityFocus: returnAccessibilityFocus) }
                 Divider()
             }
             if model.admittedViewers.isEmpty {
@@ -127,7 +128,8 @@ struct SharingViewersView: View {
                 }
                 VStack(spacing: 0) {
                     ForEach(model.admittedViewers) { viewer in
-                        ViewerActivityRow(model: model, viewer: viewer, showingDetails: expandedViewer == viewer.id) {
+                        ViewerActivityRow(model: model, viewer: viewer, showingDetails: expandedViewer == viewer.id,
+                                          returnAccessibilityFocus: returnAccessibilityFocus) {
                             expandedViewer = expandedViewer == viewer.id ? nil : viewer.id
                         }
                     }
