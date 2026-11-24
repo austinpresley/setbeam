@@ -52,6 +52,22 @@ upstream decoded at 1.011 fps and the keyframe check decoded 495 frames in
 seven seconds with zero decoder errors. The opt-in soak runner also passed a
 30-second smoke test with the notarized package's helpers and fixtures.
 
+The two-hour endurance run completed 7,200 seconds of live 1080p30 playback
+with two Chrome viewers and a moving synthetic source. The deliberate audience
+and source stalls recovered in 14 and 21 seconds. Hold measured zero across
+24,000 decoded outgoing PCM samples. After Stop, both viewers detached and
+the private decoded frame count advanced from 72,225 to 72,284. The native
+test host peaked at 48.7 MiB of physical footprint and its media helpers at
+131.0 MiB. Chrome's aggregate RSS peaked at 1,130.9 MiB and the largest viewer
+JavaScript heap was 4.1 MiB.
+
+XCTest passed in 7,290.623 seconds. Both the Mac and browser reports recorded
+completion in `build/logs/sharing-soak.iO1bSs/`. Editing the runner during the
+test caused its enclosing shell to exit with a parse error after XCTest
+passed. The two completion markers were verified directly. The current
+`scripts/check-sharing-soak.sh` completed the packaged smoke run with both
+markers and exit code zero.
+
 Android assembled both APKs and passed 86 JVM tests and 102 provisioning tests.
 Lint reported zero errors and eight warnings. The signed developer APK matches
 the build from the November 19 recorded run. The first emulator check received
