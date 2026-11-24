@@ -13,7 +13,7 @@ enum SharingSection: String, CaseIterable, Identifiable {
     }
 }
 
-enum SettingsSection: String { case permissions, diagnostics }
+enum SettingsSection: String { case permissions, diagnostics, updates }
 
 enum SharingDestination: Equatable {
     case hidden, inline, window

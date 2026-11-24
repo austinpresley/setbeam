@@ -9,6 +9,9 @@ The application bundles these separate helper programs and assets:
 | MediaMTX and reader.js | 1.21.2 | MIT | https://github.com/bluenviron/mediamtx/tree/v1.21.2 |
 | FFmpeg | 9.0.2 | LGPL 2.1 or later, built with GPL and nonfree components disabled | https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz |
 | Opus, statically linked into FFmpeg and the preview helper | 1.6.1 | BSD 3-Clause | https://downloads.xiph.org/releases/opus/opus-1.6.1.tar.gz |
+| Sparkle update framework | 2.10.0 | MIT, with the external licenses listed in its notice | https://github.com/sparkle-project/Sparkle/tree/2.10.0 |
+
+Sparkle is the unmodified binary framework from its pinned Swift package release. Its complete notice is `Sparkle-LICENSE.txt`.
 
 See `Setbeam.app/Contents/Resources/Licenses` for the complete notices, pinned versions and hashes, FFmpeg configuration, and runtime build script. Matching unmodified FFmpeg and Opus sources are included in its `Sources` subdirectory. The FFmpeg source signature and official public verification key are included too. The Swift app communicates with FFmpeg and `setbeam-preview` as separate supervised processes.
 
