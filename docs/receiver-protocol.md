@@ -130,13 +130,16 @@ an admitted receiver's existing pass or its state/media endpoints.
 Public, no pass needed. Never names viewers.
 
 ```json
-{"state":"live","title":"My feed","sample":false,"revision":3,
+{"state":"live","title":"My feed","sample":false,"revision":3,"sequence":8,
  "wifiSSID":"","approval":true,"pointers":false}
 ```
 
 - `state`: `stopped`, `live`, `holding`, or `reconnecting`.
 - `revision`: the publisher revision. It changes when the outgoing stream is
   republished (source change, approval change, recovery).
+- `sequence`: orders state snapshots within a share, including changes that
+  keep the same publisher revision. Ignore an older poll or event after a
+  newer sequence. Older Macs omit this field.
 - `sample`: true when the feed is labeled sample media. Show that label.
 
 `GET events` is a server-sent-event stream of the same JSON: once on open, on
@@ -153,6 +156,7 @@ every 1.5 to 3 seconds is equivalent.
 | `pass` | string, 48 hex | Omit on the first request. Send the stored pass afterwards. |
 | `name` | string | Required with `ask` for a new request. Control characters removed, whitespace collapsed, at most 40 characters. A label chosen by the device; the operator sees it as unverified. |
 | `ask` | `true` | Required for a new request. Sent only when a new request is intended. |
+| `requestID` | UUID string | Optional. Reuse it when retrying the same explicit Ask after an uncertain response. The Mac can return the existing record for 30 seconds. |
 | `color` | string | Optional: `blue green orange pink purple yellow red teal cyan lime indigo brown`. |
 | `mobile` | bool | Labels the operator row "Phone / tablet browser" when true, "Desktop browser" when false. |
 
@@ -199,14 +203,15 @@ Header `X-Setbeam-Pass: <pass>`.
 
 | Status | Body | Meaning |
 | --- | --- | --- |
-| 200 | `{"title":"…","sample":false,"whepURL":"http://192.168.1.20:52001/live/whep","user":"viewer7x…","pass":"…"}` | Admitted and media access in effect. |
+| 200 | `{"title":"…","sample":false,"revision":3,"sequence":8,"whepURL":"http://192.168.1.20:52001/live/whep","user":"viewer7x…","pass":"…"}` | Admitted and media access in effect. |
 | 403 | `{"admission":"pending"}` (or `declined`, `removed`, `unknown`) | Not admitted. |
 | 503 | empty | Admitted, but the media server has not yet accepted this session's user. Retry in about 1.5 s. |
 | 404 | | Path retired. Step 1. |
 
 `user`/`pass` are this session's own read-only media credentials, created at
 Admit and deleted at removal. They are never the viewing-link token. Keep
-them in memory only; fetch `config.json` again on every new revision.
+them in memory only. Fetch `config.json` again on every new revision and
+discard a result for a superseded revision, sequence, or viewing route.
 
 ### `GET chat` (optional, admitted only)
 

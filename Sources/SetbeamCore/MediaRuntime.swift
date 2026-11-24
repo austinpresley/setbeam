@@ -666,6 +666,16 @@ public actor MediaRuntime {
             throw error
         }
     }
+
+    public func viewerAccessConfirmed(approval: Bool, readers: Set<ViewerReader>, for generation: UInt64) -> Bool {
+        generation == audienceGeneration && sharing && !viewerAccessNeedsUpdate && approvalRequired == approval
+            && viewerReaders == readers && mediaServer?.isRunning == true
+    }
+
+    public func audiencePreviewURL(generation: UInt64, revision: Int) -> String? {
+        guard generation == audienceGeneration, revision == audienceRevision, sessionState.audience == .live else { return nil }
+        return localRTSP("live")
+    }
     private func applyCredentials() async throws {
         let expected = users()
         _ = try await api("/v3/config/global/patch", method: "PATCH", object: ["authInternalUsers": expected])
