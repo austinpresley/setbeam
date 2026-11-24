@@ -37,7 +37,7 @@ final class ViewerAccessLedgerTests: XCTestCase {
         let request = try XCTUnwrap(joined(ledger.join(pass: nil, name: "Sam", asking: true, color: .pink, mobile: false, local: false, now: now)))
         XCTAssertEqual(request.admission, .pending); XCTAssertFalse(request.mediaReady)
         XCTAssertTrue(ledger.readers.isEmpty, "A waiting request has no media credential")
-        XCTAssertTrue(ledger.approve(number: request.number))
+        XCTAssertTrue(ledger.approve(number: request.number, now: now))
         let admitted = try XCTUnwrap(ledger.record(request.pass))
         let reader = try XCTUnwrap(admitted.reader)
         XCTAssertFalse(admitted.mediaReady, "Not usable until the media server accepts it")
@@ -49,29 +49,29 @@ final class ViewerAccessLedgerTests: XCTestCase {
         _ = ledger.heartbeat(request.pass, playing: true, health: .good, revision: 0, name: .some("Director"), mobile: false, local: false, now: now)
         ledger.setName(request.pass, "Director")
         XCTAssertEqual(ledger.record(request.pass)?.name, "Sam")
-        XCTAssertFalse(ledger.approve(number: request.number), "A decision is applied once")
+        XCTAssertFalse(ledger.approve(number: request.number, now: now), "A decision is applied once")
     }
 
     func testRemovedAndDeclinedSessionsAreNeverSilentlyReadmitted() throws {
         var ledger = ViewerAccessLedger(); ledger.setApproval(true)
         let a = try XCTUnwrap(joined(ledger.join(pass: nil, name: "A", asking: true, color: nil, mobile: false, local: false, now: now)))
         let b = try XCTUnwrap(joined(ledger.join(pass: nil, name: "B", asking: true, color: nil, mobile: false, local: false, now: now)))
-        ledger.approve(number: a.number); ledger.approve(number: b.number)
+        ledger.approve(number: a.number, now: now); ledger.approve(number: b.number, now: now)
         let readerB = try XCTUnwrap(ledger.record(b.pass)?.reader)
         XCTAssertTrue(ledger.remove(number: a.number))
         XCTAssertEqual(ledger.readers, [readerB], "Only the removed session loses its credential")
         let again = try XCTUnwrap(joined(ledger.join(pass: a.pass, name: "A", color: nil, mobile: false, local: false, now: now)))
         XCTAssertEqual(again.admission, .removed, "Reloading the same tab keeps the removal")
-        XCTAssertFalse(ledger.approve(number: a.number))
+        XCTAssertFalse(ledger.approve(number: a.number, now: now))
         let c = try XCTUnwrap(joined(ledger.join(pass: nil, name: "C", asking: true, color: nil, mobile: false, local: false, now: now)))
-        XCTAssertTrue(ledger.decline(number: c.number))
+        XCTAssertTrue(ledger.decline(number: c.number, now: now))
         XCTAssertEqual(try XCTUnwrap(joined(ledger.join(pass: c.pass, name: "C", color: nil, mobile: false, local: false, now: now))).admission, .declined)
         // A forged or forgotten pass is a new request that the operator must decide.
         let forged = String(repeating: "ab", count: 24)
         let fresh = try XCTUnwrap(joined(ledger.join(pass: forged, name: "A", asking: true, color: nil, mobile: false, local: false, now: now)))
         XCTAssertEqual(fresh.admission, .pending); XCTAssertNotEqual(fresh.pass, forged)
         // Turning approval off keeps refusals.
-        ledger.setApproval(false)
+        ledger.setApproval(false, now: now)
         XCTAssertEqual(ledger.record(a.pass)?.admission, .removed)
         XCTAssertEqual(ledger.record(c.pass)?.admission, .declined)
         XCTAssertEqual(ledger.record(fresh.pass)?.admission, .admitted)
@@ -104,6 +104,54 @@ final class ViewerAccessLedgerTests: XCTestCase {
         }
     }
 
+    func testExplicitAskIDReusesTheOriginalRecordWithinItsLifetime() throws {
+        var ledger = ViewerAccessLedger()
+        ledger.setApproval(true, now: now)
+        ledger.setShortAddress(open: true, now: now)
+        let requestID = UUID()
+        func ask(_ at: Date, name: String = "Sam", shortAddress: Bool = false) -> ViewerAccessLedger.JoinOutcome {
+            ledger.join(pass: nil, name: name, asking: true, color: .blue, mobile: false, local: false,
+                        shortAddress: shortAddress, requestID: requestID, now: at)
+        }
+        let first = try XCTUnwrap(joined(ask(now)))
+        let retry = try XCTUnwrap(joined(ask(now.addingTimeInterval(1), name: "Different")))
+        XCTAssertEqual(retry.pass, first.pass)
+        XCTAssertEqual(retry.number, first.number)
+        XCTAssertEqual(retry.name, "Sam")
+        XCTAssertEqual(retry.lastSeen, first.lastSeen)
+        guard case .nameRequired = ledger.join(pass: nil, name: "Sam", color: nil, mobile: false, local: false,
+                                               requestID: requestID, now: now) else { return XCTFail() }
+        XCTAssertTrue(ledger.decline(number: first.number, now: now))
+        XCTAssertEqual(joined(ask(now))?.admission, .declined)
+        let short = try XCTUnwrap(joined(ask(now, shortAddress: true)))
+        XCTAssertNotEqual(short.pass, first.pass)
+        ledger.setShortAddress(open: false, now: now)
+        guard case .closed = ask(now, shortAddress: true) else { return XCTFail() }
+        let later = now.addingTimeInterval(ViewerAccessLedger.requestIDLifetime)
+        XCTAssertNotEqual(joined(ask(later))?.pass, first.pass)
+        ledger.reset()
+        XCTAssertNotEqual(joined(ask(later))?.pass, first.pass)
+    }
+
+    func testExpiredRequestsCannotBeRevivedOrAdmittedWhenApprovalChanges() throws {
+        var ledger = ViewerAccessLedger()
+        ledger.setApproval(true, now: now)
+        func ask() throws -> ViewerAccessLedger.Record {
+            try XCTUnwrap(joined(ledger.join(pass: nil, name: "Sam", asking: true, color: nil, mobile: false, local: false, now: now)))
+        }
+        let first = try ask(), second = try ask(), third = try ask(), fourth = try ask()
+        let expired = now.addingTimeInterval(ViewerAccessLedger.pendingFor)
+        var heartbeatLedger = ledger, approvalLedger = ledger, declineLedger = ledger
+        XCTAssertNil(ledger.record(first.pass, now: expired))
+        XCTAssertNil(heartbeatLedger.heartbeat(first.pass, playing: false, health: .connecting, revision: 0,
+                                               name: nil, mobile: false, local: false, now: expired))
+        XCTAssertFalse(approvalLedger.approve(number: second.number, now: expired))
+        XCTAssertFalse(declineLedger.decline(number: third.number, now: expired))
+        ledger.setApproval(false, now: expired)
+        XCTAssertNil(ledger.record(fourth.pass))
+        XCTAssertTrue(ledger.readers.isEmpty)
+    }
+
     func testAnUnnamedSessionAdmittedBeforeApprovalMayNameItselfOnceThroughHeartbeats() throws {
         var ledger = ViewerAccessLedger()
         let a = try XCTUnwrap(joined(ledger.join(pass: nil, name: nil, color: nil, mobile: false, local: false, now: now)))
@@ -119,7 +167,7 @@ final class ViewerAccessLedgerTests: XCTestCase {
     func testHeartbeatsChangeColorButNotAFixedNameUnderApproval() throws {
         var ledger = ViewerAccessLedger(); ledger.setApproval(true)
         let a = try XCTUnwrap(joined(ledger.join(pass: nil, name: "Sam", asking: true, color: .teal, mobile: false, local: false, now: now)))
-        XCTAssertTrue(ledger.approve(number: a.number))
+        XCTAssertTrue(ledger.approve(number: a.number, now: now))
         _ = ledger.heartbeat(a.pass, playing: true, health: .good, revision: 0, name: .some("Director"), color: .brown, mobile: false, local: false, now: now)
         XCTAssertEqual(ledger.record(a.pass)?.name, "Sam", "The admitted name stays fixed")
         XCTAssertEqual(ledger.record(a.pass)?.color, .brown, "The color is a label the viewer may change")
@@ -134,7 +182,7 @@ final class ViewerAccessLedgerTests: XCTestCase {
                 color: color, mobile: false, local: false, now: now)))
             let waiting = try XCTUnwrap(ledger.activity(session: nil, now: now).first)
             XCTAssertEqual(waiting.color, color); XCTAssertEqual(waiting.admission, .pending)
-            XCTAssertTrue(ledger.approve(number: request.number))
+            XCTAssertTrue(ledger.approve(number: request.number, now: now))
             let admitted = try XCTUnwrap(ledger.activity(session: nil, now: now).first)
             XCTAssertEqual(admitted.color, color); XCTAssertEqual(admitted.admission, .admitted)
             let changed: PointerColor = color == .teal ? .brown : .teal
@@ -166,7 +214,7 @@ final class ViewerAccessLedgerTests: XCTestCase {
         var ledger = ViewerAccessLedger(); ledger.setApproval(true)
         let request = try XCTUnwrap(joined(ledger.join(pass: nil, name: "Sam", asking: true,
             color: .teal, mobile: false, local: false, now: now)))
-        XCTAssertTrue(ledger.approve(number: request.number))
+        XCTAssertTrue(ledger.approve(number: request.number, now: now))
         _ = ledger.confirm(readers: ledger.readers)
         let session = ViewerSession(token: "test", title: "Studio", sample: true, state: .live,
             playback: PlaybackDescriptor(origin: "http://127.0.0.1:8889", path: "live", user: "guest", password: "test"), revision: 1)
@@ -264,7 +312,7 @@ final class ViewerAccessLedgerTests: XCTestCase {
         for index in 0..<ViewerAccessLedger.maxRecords {
             let request = try XCTUnwrap(joined(ledger.join(pass: nil, name: "Viewer \(index)", asking: true,
                 color: nil, mobile: false, local: false, now: now)))
-            XCTAssertTrue(ledger.approve(number: request.number))
+            XCTAssertTrue(ledger.approve(number: request.number, now: now))
         }
         let readers = ledger.readers
         let later = now.addingTimeInterval(ViewerAccessLedger.visibleFor + 1)
@@ -287,7 +335,7 @@ final class ViewerAccessLedgerTests: XCTestCase {
         for index in 0..<(ViewerAccessLedger.maxRecords - 1) {
             let request = try XCTUnwrap(joined(ledger.join(pass: nil, name: "Viewer \(index)", asking: true,
                 color: nil, mobile: false, local: false, now: now)))
-            XCTAssertTrue(ledger.approve(number: request.number))
+            XCTAssertTrue(ledger.approve(number: request.number, now: now))
         }
         let waiting = try XCTUnwrap(joined(ledger.join(pass: nil, name: "Waiting", asking: true,
             color: nil, mobile: false, local: false, now: now)))

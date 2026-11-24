@@ -218,7 +218,9 @@ final class ViewerGatewayTests: XCTestCase {
         let values = try XCTUnwrap(JSONSerialization.jsonObject(with: config) as? [String: Any])
         XCTAssertEqual(values["user"] as? String, "guest")
         XCTAssertEqual(values["pass"] as? String, "read-only-test-value")
-        XCTAssertEqual(values.count, 5)
+        XCTAssertEqual(values["revision"] as? Int, 0)
+        let initialState = try await waitForState(port: port, token: token)
+        XCTAssertEqual(values["sequence"] as? Int, initialState["sequence"] as? Int)
         let (_, rejected) = try await request(prefix + "state.json", method: "POST")
         XCTAssertEqual(rejected, 405)
         let body = Data(#"{"pass":"\#(pass)","mobile":true,"playing":true,"revision":0}"#.utf8)
@@ -246,17 +248,79 @@ final class ViewerGatewayTests: XCTestCase {
         let initial = try await stream.next()
         XCTAssertEqual(initial?["state"] as? String, "holding")
         XCTAssertEqual(initial?["revision"] as? Int, 7)
+        let initialSequence = try XCTUnwrap(initial?["sequence"] as? Int)
         var live = session(token: token); live.state = .live; live.revision = 8
         host.update(live)
         let pushed = try await stream.next()
         XCTAssertEqual(pushed?["state"] as? String, "live")
         XCTAssertEqual(pushed?["revision"] as? Int, 8)
+        let publishedSequence = try XCTUnwrap(pushed?["sequence"] as? Int)
+        XCTAssertGreaterThan(publishedSequence, initialSequence)
+        host.update(live)
         // Keepalives keep arriving well after an ordinary request would have been closed.
         try await Task.sleep(nanoseconds: 1_000_000_000)
         let keepalive = try await stream.next()
         XCTAssertEqual(keepalive?["state"] as? String, "live")
+        XCTAssertEqual(keepalive?["sequence"] as? Int, publishedSequence)
         let (_, response) = try await URLSession.shared.data(from: URL(string: "http://127.0.0.1:\(port)/s/\(token)/state.json")!)
         XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200, "Polling remains available as the fallback")
+    }
+
+    func testStateStreamCoalescesWhileSendingAndClosesAtTheDeadline() async throws {
+        let host = ViewerGateway(assets: [:], retryDelay: 0.05, keepaliveInterval: 0.1) { try NWListener(using: $0, on: $1) }
+        let token = UUID().uuidString
+        host.update(session(token: token))
+        let port = try await host.start(address: "127.0.0.1")
+        defer { host.stop() }
+        let stream = try await StateStream(port: port, token: token)
+        let initial = try await stream.next()
+        let initialSequence = try XCTUnwrap(initial?["sequence"] as? Int)
+        try await waitUntil { host.lock.withLock { host.streams.values.first?.deadline == nil } }
+        let sender = try XCTUnwrap(host.lock.withLock { host.streams.values.first })
+        host.lock.withLock { sender.deadline = .now() + 5 }
+        host.setAccess(approval: true, pointers: true)
+        for revision in 8...24 {
+            var next = session(token: token)
+            next.revision = revision
+            host.update(next)
+        }
+        XCTAssertTrue(host.lock.withLock { sender.dirty })
+        host.stateSent(sender, error: nil)
+        let latest = try await stream.next()
+        XCTAssertEqual(latest?["revision"] as? Int, 24)
+        XCTAssertEqual(latest?["approval"] as? Bool, true)
+        XCTAssertEqual(latest?["sequence"] as? Int, initialSequence + 18)
+        try await waitUntil { host.lock.withLock { sender.deadline == nil } }
+        host.lock.withLock { sender.deadline = .now() - 1 }
+        try await waitUntil { host.lock.withLock { host.streams.isEmpty } }
+    }
+
+    func testBindingReplacementClosesOldStreamsAndKeepsTheShare() async throws {
+        let host = ViewerGateway(assets: [:])
+        let token = UUID().uuidString
+        host.update(session(token: token))
+        host.setAccess(approval: true, pointers: false)
+        host.setShortAddress(open: true)
+        XCTAssertNil(host.readyBinding)
+        let firstPort = try await host.start(address: "127.0.0.1")
+        defer { host.stop() }
+        let first = try XCTUnwrap(host.readyBinding)
+        XCTAssertEqual(first.address, "127.0.0.1")
+        XCTAssertEqual(first.port, firstPort)
+        XCTAssertNotNil(first.shortAddressPath)
+        let stream = try await StateStream(port: firstPort, token: token)
+        _ = try await stream.next()
+        let nextPort = try await host.start(address: "127.0.0.1", port: NetworkAddress.freeTCPPort())
+        let next = try XCTUnwrap(host.readyBinding)
+        XCTAssertNotEqual(first.id, next.id)
+        XCTAssertEqual(next.port, nextPort)
+        XCTAssertEqual(next.shortAddressPath, first.shortAddressPath)
+        let closed = try await stream.next()
+        XCTAssertNil(closed)
+        _ = try await waitForState(port: nextPort, token: token)
+        host.stop()
+        XCTAssertNil(host.readyBinding)
+        XCTAssertNil(host.shortAddressPath)
     }
 
     func testTokenChangeAndStopCloseStateStreams() async throws {
@@ -293,6 +357,71 @@ final class ViewerGatewayTests: XCTestCase {
         XCTAssertEqual(second.status, 503)
         let (_, response) = try await URLSession.shared.data(from: URL(string: "http://127.0.0.1:\(port)/s/\(token)/state.json")!)
         XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+    }
+
+    func testOrdinaryConnectionBudgetIsReleasedAfterTheRequestDeadline() async throws {
+        let host = ViewerGateway(assets: [:], retryDelay: 0.05, requestTimeout: 0.4, maxRequests: 1) {
+            try NWListener(using: $0, on: $1)
+        }
+        let token = UUID().uuidString
+        host.update(session(token: token))
+        let port = try await host.start(address: "127.0.0.1")
+        defer { host.stop() }
+        let state = try await StateStream(port: port, token: token)
+        _ = try await state.next()
+        let endpoint = NWEndpoint.Port(rawValue: port)!
+        let queue = DispatchQueue(label: "test.viewer.request-budget")
+        let incomplete = NWConnection(host: "127.0.0.1", port: endpoint, using: .tcp)
+        defer { incomplete.cancel() }
+        incomplete.start(queue: queue)
+        incomplete.send(content: Data("GET /s/".utf8), completion: .contentProcessed { _ in })
+        try await waitUntil { host.ordinaryConnectionCount == 1 }
+
+        let excess = NWConnection(host: "127.0.0.1", port: endpoint, using: .tcp)
+        defer { excess.cancel() }
+        let closed = expectation(description: "connection above the cap closes")
+        excess.start(queue: queue)
+        excess.receive(minimumIncompleteLength: 1, maximumLength: 1024) { data, _, complete, error in
+            XCTAssertNil(data)
+            XCTAssertTrue(complete || error != nil)
+            closed.fulfill()
+        }
+        await fulfillment(of: [closed], timeout: 2)
+        try await waitUntil { host.ordinaryConnectionCount == 0 }
+        _ = try await waitForState(port: port, token: token)
+    }
+
+    func testJoinRetriesAndOperatorActionsStayScopedToTheirShare() async throws {
+        let host = ViewerGateway(assets: [:])
+        let first = UUID().uuidString, second = UUID().uuidString
+        host.update(session(token: first))
+        host.setAccess(approval: true, pointers: false)
+        let port = try await host.start(address: "127.0.0.1")
+        defer { host.stop() }
+        let id = UUID().uuidString
+        func ask(_ token: String) async throws -> String {
+            var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/s/\(token)/join")!)
+            request.httpMethod = "POST"
+            request.httpBody = try JSONSerialization.data(withJSONObject: ["ask": true, "name": "Sam", "requestID": id])
+            let (data, response) = try await URLSession.shared.data(for: request)
+            XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+            return try XCTUnwrap((JSONSerialization.jsonObject(with: data) as? [String: Any])?["pass"] as? String)
+        }
+        let pass = try await ask(first)
+        let retry = try await ask(first)
+        XCTAssertEqual(pass, retry)
+        XCTAssertEqual(host.viewers.count, 1)
+        let stale = try XCTUnwrap(host.viewers.first)
+        host.update(session(token: second))
+        let currentPass = try await ask(second)
+        XCTAssertNotEqual(currentPass, pass)
+        let current = try XCTUnwrap(host.viewers.first)
+        XCTAssertEqual(stale.number, current.number)
+        XCTAssertFalse(host.approve(stale))
+        XCTAssertFalse(host.decline(stale))
+        XCTAssertTrue(host.approve(current))
+        XCTAssertFalse(host.remove(stale))
+        XCTAssertTrue(host.remove(current))
     }
 
     private func session(token: String) -> ViewerSession {

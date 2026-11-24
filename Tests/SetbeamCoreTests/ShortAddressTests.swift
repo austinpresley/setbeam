@@ -326,7 +326,7 @@ final class ShortAddressAdmissionTests: XCTestCase {
         XCTAssertEqual(request.admission, .pending); XCTAssertTrue(request.shortAddress); XCTAssertFalse(request.mediaReady)
         XCTAssertEqual(ledger.activity(session: nil, now: now).first?.shortAddress, true)
         XCTAssertTrue(ledger.readers.isEmpty)
-        XCTAssertTrue(ledger.approve(number: request.number))
+        XCTAssertTrue(ledger.approve(number: request.number, now: now))
         XCTAssertNotNil(ledger.record(request.pass)?.reader, "Admitted short-address viewers play with their own reader")
     }
 
@@ -335,8 +335,8 @@ final class ShortAddressAdmissionTests: XCTestCase {
         let typed = try XCTUnwrap(joined(ledger.join(pass: nil, name: "Typed", asking: true, color: nil, mobile: true, local: false, shortAddress: true, now: now)))
         let admitted = try XCTUnwrap(joined(ledger.join(pass: nil, name: "Admitted", asking: true, color: nil, mobile: true, local: false, shortAddress: true, now: now)))
         let linked = try XCTUnwrap(joined(ledger.join(pass: nil, name: "Linked", asking: true, color: nil, mobile: false, local: false, now: now)))
-        ledger.approve(number: admitted.number)
-        ledger.setShortAddress(open: false)
+        ledger.approve(number: admitted.number, now: now)
+        ledger.setShortAddress(open: false, now: now)
         XCTAssertEqual(ledger.record(typed.pass)?.admission, .declined)
         XCTAssertEqual(ledger.record(admitted.pass)?.admission, .admitted, "The operator's admission stands")
         XCTAssertEqual(ledger.record(linked.pass)?.admission, .pending, "Requests from the link keep waiting")
@@ -344,9 +344,9 @@ final class ShortAddressAdmissionTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(joined(ledger.join(pass: admitted.pass, name: nil, color: nil, mobile: true, local: false, shortAddress: true, now: now))).admission, .admitted)
         guard case .closed = ledger.join(pass: nil, name: "Late", asking: true, color: nil, mobile: true, local: false, shortAddress: true, now: now) else { return XCTFail() }
 
-        ledger.setShortAddress(open: true)
+        ledger.setShortAddress(open: true, now: now)
         let waiting = try XCTUnwrap(joined(ledger.join(pass: nil, name: "Waiting", asking: true, color: nil, mobile: true, local: false, shortAddress: true, now: now)))
-        ledger.setApproval(false)
+        ledger.setApproval(false, now: now)
         XCTAssertFalse(ledger.shortAddressOpen)
         XCTAssertEqual(ledger.record(waiting.pass)?.admission, .declined, "Turning approval off never admits someone who only typed the name")
         XCTAssertEqual(ledger.record(linked.pass)?.admission, .admitted, "Link holders are admitted as before")

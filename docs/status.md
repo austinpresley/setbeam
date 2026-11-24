@@ -112,6 +112,49 @@ and physical hardware qualification remain separate gates. The full check
 was followed by focused reruns, so remaining full-suite media legs did not run
 in this audit.
 
+## Gateway and viewer ledger audit
+
+State polling and server-sent events now carry a numeric `sequence` scoped
+to the share. A stream starts with its current snapshot. Updates and
+keepalives use one write slot per stream, with the latest snapshot sent
+after a busy write and a five-second deadline for stalled writes.
+Successful playback config includes the revision and sequence from the
+same snapshot as its read credential. Ordinary HTTP has a separate
+64-connection budget, a fixed request deadline, and bounded header and
+route-specific body reads.
+
+A named explicit Ask can include a random UUID `requestID`. Retrying that
+UUID through the same entry path within 30 seconds returns the original
+pass and its current decision while the record exists. Admission and
+short-address rules still apply. Pending requests that miss their heartbeat
+window cannot be revived or admitted by a late event. Ledger eviction,
+listener replacement, and Stop retire affected presence channels.
+
+SessionModel can use `approve(_:)`, `decline(_:)`, and `remove(_:)` with the
+original `ViewerActivity`, and read `readyBinding` for the current
+listener ID, address, port, and ask-only path in one snapshot. Refresh the
+redirect and discovery when that binding changes or becomes unavailable.
+MediaRuntime must confirm only readers accepted for the current share and
+applied access configuration. Browser clients can scope sequence tracking
+to their current share and use config revision and sequence to reject
+stale playback results.
+
+The focused local suite passed 66 tests, including the legacy receiver
+admission flow. The first compile reported overlapping access to
+`ViewerAccessLedger.records` while assigning a reader. Constructing the
+reader before updating the record resolved it.
+
+Local `scripts/check.sh` passed 336 XCTest cases with two opt-in soak
+cases skipped, 17 Python tests, 60 Node tests, the preview bridge probe,
+and the first seven media probes. Viewer access, local address, and
+short address passed with the bundled helpers. The script stopped in the
+60 fps media-format probe after measuring 59.670 fps and a 33.333 ms
+frame interval against a 25.090 ms limit. The standalone media-format,
+frame-rate, and keyframe probes all passed. The keyframe probe decoded
+493 frames in seven seconds with no decoder errors. Live browser and TV
+checks with the combined changes, physical tests, and opt-in soaks remain
+outside this checkpoint.
+
 ## Unified release candidate, 2026-11-23
 
 The local `release/unified-candidate` branch combines build 41’s signed updates

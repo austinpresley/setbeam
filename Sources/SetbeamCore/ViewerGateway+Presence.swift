@@ -10,6 +10,9 @@ final class PresenceClient: @unchecked Sendable {
     var buffer = Data()
     var sending = false, dirty = false
     var sendStartedAt: Date?
+    var closing = false
+    var repliesInFlight = 0
+    var repliesStartedAt: Date?
     var lastHeard: Date
     var frames = 0
     var framesSince: Date
@@ -23,6 +26,7 @@ final class PresenceClient: @unchecked Sendable {
 /// never reaches media control, publishing, administration, or the operator's roster.
 extension ViewerGateway {
     static let presenceFrameLimit = 512, presenceBufferLimit = 4096, presenceFramesPerSecond = 120
+    static let maxPresenceReplies = 8
     static let presenceHelloDeadline: TimeInterval = 3, presenceSilence: TimeInterval = 20, presenceSendDeadline: TimeInterval = 5
     /// About 30 updates per second, independent of source capture and viewer video frame rates.
     static let presenceFlushInterval: TimeInterval = 0.033
@@ -39,19 +43,17 @@ extension ViewerGateway {
         let client = PresenceClient(connection: connection, now: Date())
         client.buffer = extra
         let accepted = lock.withLock { () -> Bool in
-            guard session?.token == token, pointersEnabled, presenceClients.count < maxPresenceClients else { return false }
+            guard session?.token == token, pointersEnabled, presenceClients.count < maxPresenceClients,
+                  upgradeRequestLocked(connection) else { return false }
             presenceClients[ObjectIdentifier(connection)] = client
-            return true
+            connection.stateUpdateHandler = { [weak self, weak connection] state in
+                guard let connection else { return }
+                switch state { case .failed, .cancelled: self?.closePresence(connection); default: break }
+            }
+            let response = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: \(accept)\r\n\r\n"
+            return sendPresenceReplyLocked(Data(response.utf8), to: client)
         }
         guard accepted else { send(connection, code: 503, mime: "text/plain", body: Data()); return }
-        connection.stateUpdateHandler = { [weak self, weak connection] state in
-            guard let connection else { return }
-            switch state { case .failed, .cancelled: self?.closePresence(connection); default: break }
-        }
-        let response = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: \(accept)\r\n\r\n"
-        connection.send(content: Data(response.utf8), completion: .contentProcessed { [weak self] error in
-            if error != nil { self?.closePresence(connection) }
-        })
         if processPresence(client) { readPresence(client) }
         schedulePresenceMaintenance()
     }
@@ -107,7 +109,11 @@ extension ViewerGateway {
         var open = true
         for reply in replies {
             switch reply {
-            case .data(let data): client.connection.send(content: data, completion: .contentProcessed { _ in })
+            case .data(let data):
+                guard lock.withLock({ sendPresenceReplyLocked(data, to: client) }) else {
+                    closePresence(client.connection)
+                    return false
+                }
             case .close(let data):
                 open = false
                 closePresence(client.connection, finalMessage: data)
@@ -155,31 +161,59 @@ extension ViewerGateway {
         return nil
     }
 
-    /// Ends a channel at once for presence. A final message, such as a refusal and close frame,
-    /// is sent before the connection's write side closes; the socket is released shortly after.
-    func closePresence(_ connection: NWConnection, finalMessage: Data? = nil) {
-        let removed = lock.withLock { () -> Bool in
-            guard let client = presenceClients.removeValue(forKey: ObjectIdentifier(connection)) else { return false }
-            if let number = client.number, !presenceClients.values.contains(where: { $0.number == number }) { presence.leave(number) }
-            return true
-        }
-        // A channel already closing with a final message finishes on its own.
-        guard removed || finalMessage == nil else { return }
-        if !removed { connection.cancel(); return }
-        if let finalMessage {
-            connection.send(content: finalMessage, contentContext: .finalMessage, isComplete: true, completion: .contentProcessed { [weak self] _ in
-                self?.queue.asyncAfter(deadline: .now() + 1) { connection.cancel() }
-            })
-        } else { connection.cancel() }
-        if removed { schedulePresenceFlush() }
+    /// Presence snapshots coalesce separately. Bound small control writes as well.
+    private func sendPresenceReplyLocked(_ data: Data, to client: PresenceClient, final: Bool = false) -> Bool {
+        guard presenceClients[ObjectIdentifier(client.connection)] === client,
+              client.repliesInFlight < Self.maxPresenceReplies else { return false }
+        if client.repliesInFlight == 0 { client.repliesStartedAt = Date() }
+        client.repliesInFlight += 1
+        client.connection.send(content: data, contentContext: final ? .finalMessage : .defaultMessage, isComplete: true,
+                               completion: .contentProcessed { [weak self] error in
+            guard let self else { client.connection.cancel(); return }
+            if final || error != nil { self.closePresence(client.connection); return }
+            self.lock.withLock {
+                client.repliesInFlight -= 1
+                if client.repliesInFlight == 0 { client.repliesStartedAt = nil }
+            }
+        })
+        return true
     }
 
-    func schedulePresenceFlush() {
-        let schedule = lock.withLock { () -> Bool in
-            guard !presenceFlushScheduled else { return false }
-            presenceFlushScheduled = true; return true
+    /// Ends presence immediately. A final frame keeps its slot until sent or timed out.
+    func closePresence(_ connection: NWConnection, finalMessage: Data? = nil) {
+        let removed = lock.withLock {
+            let id = ObjectIdentifier(connection)
+            guard let client = presenceClients[id] else { return false }
+            if let number = client.number { presence.leave(number) }
+            client.number = nil; client.pass = nil
+            schedulePresenceFlushLocked()
+            if let finalMessage, !client.closing {
+                client.closing = true
+                if sendPresenceReplyLocked(finalMessage, to: client, final: true) { return false }
+            }
+            presenceClients.removeValue(forKey: id)
+            return true
         }
-        if schedule { queue.asyncAfter(deadline: .now() + Self.presenceFlushInterval) { [weak self] in self?.flushPresence() } }
+        if removed { connection.cancel() }
+    }
+
+    /// A ledger eviction or revocation also frees the participant and its channel.
+    func retireUnauthorizedPresenceLocked() {
+        for (id, client) in presenceClients {
+            guard let pass = client.pass, ledger.record(pass)?.admission != .admitted else { continue }
+            if let number = client.number { presence.leave(number) }
+            presenceClients.removeValue(forKey: id)
+            client.connection.cancel()
+            schedulePresenceFlushLocked()
+        }
+    }
+
+    func schedulePresenceFlush() { lock.withLock { schedulePresenceFlushLocked() } }
+
+    func schedulePresenceFlushLocked() {
+        guard !presenceFlushScheduled else { return }
+        presenceFlushScheduled = true
+        queue.asyncAfter(deadline: .now() + Self.presenceFlushInterval) { [weak self] in self?.flushPresence() }
     }
 
     /// Sends each participant the others' latest pointers. A receiver with a send in flight gets
@@ -240,7 +274,8 @@ extension ViewerGateway {
                 return self.presenceClients.values.filter { client in
                     (client.number == nil && now.timeIntervalSince(client.opened) > Self.presenceHelloDeadline) ||
                     now.timeIntervalSince(client.lastHeard) > Self.presenceSilence ||
-                    client.sendStartedAt.map { now.timeIntervalSince($0) > Self.presenceSendDeadline } == true
+                    client.sendStartedAt.map { now.timeIntervalSince($0) > Self.presenceSendDeadline } == true ||
+                    client.repliesStartedAt.map { now.timeIntervalSince($0) > Self.presenceSendDeadline } == true
                 }.map(\.connection)
             }
             stale.forEach { self.closePresence($0) }

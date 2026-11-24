@@ -298,6 +298,36 @@ final class PresenceChannelTests: XCTestCase {
         XCTAssertEqual(host.viewers.first?.name, "Ana")
     }
 
+    func testLedgerEvictionImmediatelyRetiresAnOpenChannel() async throws {
+        let (socket, number) = try await participant("Ana")
+        defer { socket.close() }
+        try await socket.send(["t": "move", "x": 0.25, "y": 0.75, "r": 1])
+        let old = Date().addingTimeInterval(-ViewerAccessLedger.visibleFor - 1)
+        host.lock.withLock {
+            if let pass = host.ledger.record(number: number)?.pass {
+                _ = host.ledger.heartbeat(pass, playing: false, health: .connecting, revision: 1,
+                    name: nil, mobile: false, local: true, now: old)
+            }
+            for _ in 1..<ViewerAccessLedger.maxRecords {
+                _ = host.ledger.join(pass: nil, name: nil, color: nil, mobile: false, local: true, now: Date())
+            }
+        }
+        _ = try await join("Replacement")
+        XCTAssertTrue(host.lock.withLock { host.ledger.record(number: number) == nil })
+        XCTAssertTrue(host.lock.withLock { host.presenceClients.isEmpty && host.presence.participants.isEmpty })
+        while await socket.receive(timeout: 1) != nil {}
+        XCTAssertTrue(socket.closed)
+    }
+
+    func testReplacingTheListenerRetiresPresenceButKeepsThePass() async throws {
+        let (socket, number) = try await participant("Ana")
+        defer { socket.close() }
+        _ = try await host.start(address: "127.0.0.1", port: NetworkAddress.freeTCPPort())
+        XCTAssertTrue(host.viewers.contains { $0.number == number && !$0.pointing })
+        while await socket.receive(timeout: 1) != nil {}
+        XCTAssertTrue(socket.closed)
+    }
+
     func testANewViewingLinkClosesEveryChannel() async throws {
         let (a, _) = try await participant("Ana")
         defer { a.close() }
