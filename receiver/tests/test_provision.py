@@ -1075,6 +1075,16 @@ class ReviewRound2Tests(ProvisionTestCase):
         self.assertIn("per-profile", result.stderr)
         self.assertEqual(self.mutating_commands(), [])
 
+    def test_bare_user_header_does_not_override_per_profile_install_state(self):
+        device = make_device(installed=True)
+        device["dumpsys_bare_user_header"] = True
+        self.write_state({SERIAL: device})
+        result = self.run_tool("status", "--serial", SERIAL, "--json")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        package = json.loads(result.stdout)["package"]
+        self.assertTrue(package["installed"])
+        self.assertEqual(package["users"], {"0": True})
+
     def test_receipt_without_profile_ownership_never_uninstalls(self):
         self.write_state({SERIAL: make_device()})
         self.assertEqual(self.provision("--apk", self.apk(), "--apply").returncode, 0)

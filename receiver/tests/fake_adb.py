@@ -185,6 +185,8 @@ def device_shell(state, dev, argv):
             for user in dev.get("device_users", [0]):
                 installed = "true" if user in users_of(pkg) else "false"
                 user_lines += f"    User {user}: ceDataInode=1 deDataInode=1 installed={installed} hidden=false suspended=false distractionFlags=0 stopped=false notLaunched=false enabled=0 instant=false virtual=false\n"
+        if dev.get("dumpsys_bare_user_header"):
+            user_lines += "    User 0:\nDexopt state:\n"
         return 0, (
             "Packages:\n"
             f"  Package [{argv[2]}] (abc):\n"

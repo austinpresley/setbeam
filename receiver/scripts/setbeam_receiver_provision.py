@@ -725,7 +725,10 @@ class Device:
         if len(re.findall(rf"^\s*Package \[{re.escape(PACKAGE)}\] \(", stdout, re.M)) != 1:
             return info
         info["present_on_device"] = True
-        lines = re.findall(r"^[ \t]*User [0-9]+:.*$", stdout, re.M)
+        # Recent Android dumps include bare per-user headers in other sections.
+        # Only rows with state on the same line are installation observations.
+        lines = [line for line in re.findall(r"^[ \t]*User [0-9]+:.*$", stdout, re.M)
+                 if line.partition(":")[2].strip()]
         rows = [re.match(r"\s*User (\d+):.*?\binstalled=(true|false)\b", line) for line in lines]
         users = {int(row[1]): row[2] == "true" for row in rows if row}
         if (len(lines) == len(users) and self.user in users
