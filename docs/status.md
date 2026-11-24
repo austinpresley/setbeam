@@ -112,6 +112,38 @@ and physical hardware qualification remain separate gates. The full check
 was followed by focused reruns, so remaining full-suite media legs did not run
 in this audit.
 
+## Invitation and viewing network, 2026-11-24
+
+Copy and the viewing QR use the current share's ready gateway binding. The
+QR uses its IP, and Copy can use the active local name. Stop and rebind
+clear the invitation before asynchronous work. Save and Print check the
+listener attempt, approval setting, and Wi-Fi QR again after the dialog.
+A listener retry supersedes the export snapshot even when its URL stays
+the same.
+
+An outage on the selected interface keeps sharing and Hold intent while
+withdrawing invitations. An observed change to its subnet, router, or Wi-Fi
+identity ends sharing and preserves private monitoring. If a previously
+known identity is temporarily missing, the invitation waits for it. Trust
+uses the metadata macOS reports, so networks with identical observed
+interface, subnet, router, and Wi-Fi values cannot be distinguished.
+
+Typing a new viewing Wi-Fi name clears the draft password and Open network
+setting. A source connection or new share waits for an active Wi-Fi scan
+to finish.
+
+The local `scripts/check.sh` run before gateway binding alignment passed
+335 XCTest cases with two opt-in soaks skipped, 17 Python tests, 60 Node
+tests, and all ten bundled media probes. Its Swift run used the initial
+invitation changes. A focused rebuild covered the inactive-link and
+feedback fixes before the media probes proceeded. After alignment with
+`ViewerGateway.readyBinding`, 48 focused XCTest cases passed, including
+expired and loopback links, stale binds, network changes, and export
+endorsements. The local-address and short-address probes also passed on
+the aligned gateway, decoding 68 and 49 audience frames respectively.
+Native Save and Print interactions and physical network switching remain
+outside these fixture runs.
+
 ## Gateway and viewer ledger audit
 
 State polling and server-sent events now carry a numeric `sequence` scoped
