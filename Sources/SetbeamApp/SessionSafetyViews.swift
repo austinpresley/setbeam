@@ -53,8 +53,9 @@ struct SetupCheckView: View {
             row("Source", detail: model.deniedSourceRequest?.instructions ?? sourceDetail, confirmed: model.setupCheck.picture)
             if model.deniedSourceRequest != nil {
                 SourcePermissionActions(model: model, offersSourceChooser: true)
-            } else if !model.setupCheck.picture {
-                Button("Choose a Source…") { model.openSources() }.disabled(model.busy)
+            } else {
+                Button(model.setupCheck.picture ? "Change Source…" : "Choose a Source…") { model.openSources() }
+                    .disabled(model.busy)
             }
         }
     }
@@ -104,8 +105,9 @@ struct SetupCheckView: View {
                 Text("Sound is required").tag(true as Bool?)
                 Text("Sound isn’t required").tag(false as Bool?)
             }.pickerStyle(.menu).fixedSize()
-            if model.state.sharing {
-                Text(model.audienceAudioLabel).font(.caption).foregroundStyle(.secondary)
+            if model.setup != nil {
+                Text(model.state.sharing ? model.audienceAudioLabel : model.incomingAudioLabel)
+                    .font(.caption).foregroundStyle(.secondary)
             }
             if model.expectsAudio == true && model.state.sharing {
                 Toggle("I enabled sound and heard it on the test device", isOn: $model.testSoundConfirmed)
@@ -128,6 +130,7 @@ struct SetupCheckView: View {
             if model.setupViewingLinkReady, let url = model.viewerURL {
                 HStack(spacing: 16) {
                     QRView(payload: url.absoluteString, size: 112)
+                        .accessibilityLabel("Test QR code. Use Copy Test Link for the viewing link.")
                     VStack(alignment: .leading, spacing: 8) {
                         Text(model.viewingInstructions).font(.caption).fixedSize(horizontal: false, vertical: true)
                         Button(model.copiedIPLink ? "Link Copied" : "Copy Test Link") { model.copyIPLink() }

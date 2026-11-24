@@ -74,6 +74,18 @@ extension SessionSafetyTests {
         XCTAssertEqual(PermissionKind.screenRecording.settingsURL.query, "Privacy_ScreenCapture")
     }
 
+    @MainActor func testSoundExpectationIsClearedWhenTheSourceChanges() {
+        let suite = "setbeam-test-sound-expectation-\(UUID().uuidString)"
+        let preferences = UserDefaults(suiteName: suite)!
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let model = SessionModel(preferences: preferences)
+        model.expectsAudio = false
+        model.source = .sample
+        XCTAssertEqual(model.expectsAudio, false)
+        model.source = .network("rtsp://127.0.0.1/setup-check")
+        XCTAssertNil(model.expectsAudio)
+    }
+
     func testLocalNetworkPermissionUseMatchesPlatformAvailability() {
         XCTAssertEqual(PermissionUses(transmitter: true).needs.contains(.localNetwork), PermissionKind.localNetwork.isAvailable)
         if #available(macOS 15, *) {

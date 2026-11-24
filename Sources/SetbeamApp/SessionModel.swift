@@ -11,7 +11,9 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
 @MainActor final class SessionModel: ObservableObject {
     @Published var title: String { didSet { if !integration { defaults.set(title, forKey: "sessionTitle") }; publishGatewayState() } }
     @Published private(set) var state: SessionState
-    @Published var source: VideoSource = .sample
+    @Published var source: VideoSource = .sample {
+        didSet { if source != oldValue { expectsAudio = nil } }
+    }
     @Published var setup: SourceSetup? {
         didSet {
             let identity = TransmitterWiFiIdentity(setup)
