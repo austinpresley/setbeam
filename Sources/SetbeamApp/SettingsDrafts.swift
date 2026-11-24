@@ -9,6 +9,7 @@ struct SourceDetailsDraft: Equatable {
     var rejoin: Bool
     var password: String
     var openNetwork: Bool
+    var presenterCursorHighlight = false
 
     func needsPassword(for setup: SourceSetup) -> Bool {
         setup.kind == .accsoon && !setup.sourceWiFi.isEmpty && rejoin && !openNetwork && password.isEmpty
@@ -27,7 +28,9 @@ struct SourceDetailsDraft: Equatable {
         return SourceDetailsPlan(source: source, remember: remember, reconnect: reconnects(setup),
             nameOrRememberChanged: name != current.name || remember != current.remember,
             captureRate: setup.kind.isMacCapture ? screenRate : nil,
-            rejoin: rejoinChange ? .init(enabled: rejoin, password: password, openNetwork: openNetwork) : nil)
+            rejoin: rejoinChange ? .init(enabled: rejoin, password: password, openNetwork: openNetwork) : nil,
+            presenterCursorHighlight: setup.kind.isMacCapture && presenterCursorHighlight != current.presenterCursorHighlight
+                ? presenterCursorHighlight : nil)
     }
 }
 
@@ -39,6 +42,7 @@ struct SourceDetailsPlan {
     let nameOrRememberChanged: Bool
     let captureRate: VideoFrameRate?
     let rejoin: Rejoin?
+    let presenterCursorHighlight: Bool?
 }
 
 struct SharingOptionsDraft: Equatable {

@@ -15,7 +15,7 @@ struct SourceDetailsView: View {
         SourceDetailsDraft(name: model.setup?.name ?? "", audioID: model.setup?.audioID ?? "",
             remember: model.rememberSetup, screenRate: model.screenFrameRate,
             rejoin: model.transmitterRejoin, password: model.transmitterWiFiPassword,
-            openNetwork: model.transmitterOpenNetwork)
+            openNetwork: model.transmitterOpenNetwork, presenterCursorHighlight: model.presenterCursorHighlight)
     }
     private var changed: Bool { draft != Self.values(model) }
     private var editing: Binding<SourceDetailsDraft> {
@@ -87,6 +87,11 @@ struct SourceDetailsView: View {
                         }.accessibilityLabel("Capture frame rate")
                         Text("Applies to this Mac and the shared feed. Viewer frame rate can be lower.")
                             .font(.caption).foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Toggle("Highlight my cursor", isOn: editing.presenterCursorHighlight)
+                            Text("Adds a ring to this source’s picture for you and viewers. It updates with the video. At 1 fps, pause over the detail you want to point out.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }.disabled(!model.state.monitoring)
                         LabeledContent("Sound") { Text(setup.kind == .macWindow ? "No sound for application windows" : "No sound for display capture").frame(maxWidth: .infinity, alignment: .trailing) }
                     }.padding(8).frame(maxWidth: .infinity, alignment: .leading)
                 } label: { Text("Capture").font(.headline) }
@@ -181,7 +186,8 @@ struct SourceDetailsView: View {
             guard model.setTransmitterRejoin(rejoin.enabled, password: rejoin.password, openNetwork: rejoin.openNetwork) else { return }
         }
         if let rate = plan.captureRate {
-            model.setVideoSettings(quality: model.audienceQuality, frameRate: model.audienceFrameRate, screenRate: rate)
+            model.setVideoSettings(quality: model.audienceQuality, frameRate: model.audienceFrameRate,
+                                   screenRate: rate, presenterCursorHighlight: plan.presenterCursorHighlight)
         }
         if plan.nameOrRememberChanged { model.renameSource(plan.source.name, remember: plan.remember) }
         if plan.reconnect { model.connect(plan.source, remember: plan.remember) }

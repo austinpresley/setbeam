@@ -21,6 +21,7 @@ public struct RuntimeSnapshot: Sendable {
     public let guestToken: String
     public let sourceHasAudio: Bool
     public let audienceHasAudio: Bool
+    public let presenterCursorHighlight: Bool
 }
 
 enum SourceConfigurationStep: Sendable { case credentials, path }
@@ -77,6 +78,7 @@ public actor MediaRuntime {
     private var audienceQuality = AudienceQuality.best
     private var audienceFrameRate = VideoFrameRate.source
     private var screenFrameRate = VideoFrameRate.source
+    private var presenterCursorHighlight = false
     private let log: SessionLog
     private let serverWarnings = ServerWarnings()
 
@@ -312,6 +314,7 @@ public actor MediaRuntime {
             if case .macWindow(let identity) = source { try MacWindowLocator.require(identity) }
             let pipe = Pipe()
             let capture = MacScreenCapture()
+            capture.setPresenterCursorHighlight(presenterCursorHighlight)
             do {
                 sourcePublisher = try ManagedChild(name: "Screen input", executable: paths.tools.appendingPathComponent("ffmpeg"), arguments: sourceArguments, directory: directory, standardInput: pipe.fileHandleForReading)
                 try pipe.fileHandleForReading.close()
@@ -430,6 +433,7 @@ public actor MediaRuntime {
         sessionState.updateSource(available: false)
         observedFrameAt = nil; observedSourceAudio = false
         sourceNeedsConfiguration = true
+        presenterCursorHighlight = false
         source = validated
         if let inputAddress { self.inputAddress = inputAddress }
         sourceFailures = 0
@@ -524,6 +528,17 @@ public actor MediaRuntime {
     /// Applies to the next audience encode. An active, unheld audience reconnects at the new rate.
     public func setAudienceQuality(_ quality: AudienceQuality) async {
         await setVideoSettings(quality: quality)
+    }
+
+    /// Applies only to the currently selected Mac source, including recovery of its capture.
+    public func setPresenterCursorHighlight(_ enabled: Bool, for expectedSource: VideoSource) async {
+        await acquireOperation()
+        defer { releaseOperation() }
+        guard directory != nil, source.isMacCapture, source == expectedSource,
+              enabled != presenterCursorHighlight else { return }
+        presenterCursorHighlight = enabled
+        screenCapture?.setPresenterCursorHighlight(enabled)
+        publishSnapshot()
     }
 
     /// Applies saved video settings together, replacing at most one source and audience publisher.
@@ -639,7 +654,8 @@ public actor MediaRuntime {
             lastFrameAt: observedFrameAt, message: observedProblem,
             preview: PlaybackDescriptor(origin: "http://127.0.0.1:\(webPort)", path: "local", user: "preview", password: previewPassword),
             audience: PlaybackDescriptor(origin: "http://\(viewerAddress):\(webPort)", path: "live", user: "guest", password: guestPassword), guestToken: guestPassword,
-            sourceHasAudio: observedSourceAudio, audienceHasAudio: observedAudienceAudio)
+            sourceHasAudio: observedSourceAudio, audienceHasAudio: observedAudienceAudio,
+            presenterCursorHighlight: presenterCursorHighlight)
     }
 
     /// Subscribers observe the same authoritative session state as command callers.
@@ -804,6 +820,7 @@ public actor MediaRuntime {
     private func shutdownLocked() {
         if directory != nil { log.record("session.end", ["sharing": sharing, "holding": holding]) }
         sourceNeedsConfiguration = false
+        presenterCursorHighlight = false
         incomingRelay.stop()
         lifetime = UUID(); healthTask?.cancel(); healthTask = nil
         sessionState.end(); observedFrameAt = nil; observedStage = .preparingMonitor

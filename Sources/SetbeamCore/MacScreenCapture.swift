@@ -46,7 +46,11 @@ public final class MacScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate,
     private var pixel: CVPixelBuffer?
     private var timer: DispatchSourceTimer?
     private var active = false
-    private var windowMode = false
+    private var cursorSource: PresenterCursorSource?
+    private var cursorHighlightEnabled = false
+    private var cursorFrame: PresenterCursorFrame?
+    private var highlightedPixel: CVPixelBuffer?
+    private var cursorCompositor: PresenterCursorHighlight?
 
     public static func requestPermission() -> Bool { CGPreflightScreenCaptureAccess() || CGRequestScreenCaptureAccess() }
 
@@ -66,7 +70,9 @@ public final class MacScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate,
         let (width, height) = MacDisplay.dimensions(width: selected.width, height: selected.height)
         let configuration = SCStreamConfiguration()
         configuration.showsCursor = true
-        try await begin(filter: filter, configuration: configuration, width: width, height: height, fps: frameRate.captureRate(for: selected.frameRate))
+        try await begin(filter: filter, configuration: configuration, width: width, height: height,
+                        fps: frameRate.captureRate(for: selected.frameRate),
+                        cursorSource: .display(display.displayID, uuid: selected.id, excluded: Set(excluded.map(\.processID))))
     }
 
     /// Captures only the exact window, wherever it moves, never the desktop around it. Its pixel
@@ -83,7 +89,6 @@ public final class MacScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate,
         guard let window = content.windows.first(where: { $0.windowID == identity.windowID && $0.owningApplication?.processID == identity.processID }) else {
             throw SetbeamError.unavailable(MacWindowLocator.closedMessage)
         }
-        windowMode = true
         let filter = SCContentFilter(desktopIndependentWindow: window)
         let scale = CGFloat(max(1, filter.pointPixelScale))
         let (width, height) = MacDisplay.dimensions(width: max(2, Int((filter.contentRect.width * scale).rounded())),
@@ -93,16 +98,32 @@ public final class MacScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate,
         configuration.scalesToFit = true; configuration.preservesAspectRatio = true
         configuration.captureResolution = .best
         configuration.ignoreShadowsSingleWindow = true; configuration.ignoreGlobalClipSingleWindow = true
-        try await begin(filter: filter, configuration: configuration, width: width, height: height, fps: frameRate.captureRate(for: MacWindow.nativeFrameRate))
+        try await begin(filter: filter, configuration: configuration, width: width, height: height,
+                        fps: frameRate.captureRate(for: MacWindow.nativeFrameRate), cursorSource: .window(identity))
+    }
+
+    func setPresenterCursorHighlight(_ enabled: Bool) {
+        queue.sync {
+            cursorHighlightEnabled = enabled
+            clearCursorFrame()
+            if !enabled { cursorCompositor = nil }
+        }
+    }
+
+    private func clearCursorFrame() {
+        cursorFrame = nil
+        highlightedPixel = nil
     }
 
     private func prepareOutput(_ output: FileHandle) {
         writer = VideoPipeWriter(output: output, queue: queue) { [weak self] in
             self?.active = false; self?.pixel = nil
+            self?.clearCursorFrame()
         }
     }
 
-    private func begin(filter: SCContentFilter, configuration: SCStreamConfiguration, width: Int, height: Int, fps: Int) async throws {
+    private func begin(filter: SCContentFilter, configuration: SCStreamConfiguration, width: Int, height: Int, fps: Int,
+                       cursorSource: PresenterCursorSource) async throws {
         configuration.width = width; configuration.height = height
         configuration.minimumFrameInterval = CMTime(value: 1, timescale: Int32(fps))
         configuration.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
@@ -115,12 +136,13 @@ public final class MacScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate,
         stream = capture
         try capture.addStreamOutput(self, type: .screen, sampleHandlerQueue: queue)
         queue.sync {
+            self.cursorSource = cursorSource
             active = true
             let clock = DispatchSource.makeTimerSource(queue: queue)
             clock.schedule(deadline: .now(), repeating: 1.0 / Double(fps))
             clock.setEventHandler { [weak self] in
                 guard let self, self.active, let pixel = self.pixel else { return }
-                self.encoder?.encode(pixel)
+                self.encoder?.encode(self.presentation(of: pixel))
             }
             timer = clock; clock.resume()
         }
@@ -130,20 +152,44 @@ public final class MacScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate,
     public func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
         guard active, type == .screen,
               let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false) as? [[SCStreamFrameInfo: Any]],
-              let status = attachments.first?[.status] as? Int else { return }
+              let frame = attachments.first, let status = frame[.status] as? Int else { clearCursorFrame(); return }
+        if status == SCFrameStatus.idle.rawValue { return }
+        clearCursorFrame()
         // A minimized, hidden, or closed window reports suspended once and then sends nothing.
         // Stop repeating its last picture so monitoring and viewers see a waiting state.
-        if windowMode, [SCFrameStatus.suspended, .blank, .stopped].map(\.rawValue).contains(status) { pixel = nil; return }
+        if case .window? = cursorSource, [SCFrameStatus.suspended, .blank, .stopped].map(\.rawValue).contains(status) {
+            pixel = nil
+            return
+        }
         guard status == SCFrameStatus.complete.rawValue, let image = sampleBuffer.imageBuffer else { return }
         pixel = image
+        if cursorHighlightEnabled { cursorFrame = cursorSource?.sample(frame, image: image) }
+    }
+
+    private func presentation(of pixel: CVPixelBuffer) -> CVPixelBuffer {
+        guard let cursorFrame else { return pixel }
+        // Revalidate even when the encoder repeats an idle capture at the chosen rate.
+        guard cursorSource?.permitsRing(on: cursorFrame) == true else { clearCursorFrame(); return pixel }
+        if let highlightedPixel { return highlightedPixel }
+        if cursorCompositor == nil {
+            cursorCompositor = PresenterCursorHighlight(width: CVPixelBufferGetWidth(pixel), height: CVPixelBufferGetHeight(pixel))
+        }
+        highlightedPixel = cursorCompositor?.draw(cursorFrame, on: pixel)
+        return highlightedPixel ?? pixel
     }
     public func stream(_ stream: SCStream, didStopWithError error: Error) {
-        queue.async { [weak self] in self?.active = false; self?.pixel = nil; self?.writer?.close() }
+        queue.async { [weak self] in
+            self?.active = false; self?.pixel = nil; self?.clearCursorFrame(); self?.writer?.close()
+        }
     }
     public func stop() {
         if let stream { Task { try? await stream.stopCapture() } }
         stream = nil
-        queue.sync { active = false; timer?.cancel(); timer = nil; pixel = nil; writer?.close(); writer = nil; encoder?.invalidate(); encoder = nil }
+        queue.sync {
+            active = false; timer?.cancel(); timer = nil; pixel = nil
+            clearCursorFrame(); cursorSource = nil; cursorCompositor = nil
+            writer?.close(); writer = nil; encoder?.invalidate(); encoder = nil
+        }
     }
     deinit { stop() }
 }

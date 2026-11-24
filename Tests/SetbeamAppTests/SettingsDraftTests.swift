@@ -39,6 +39,20 @@ final class SettingsDraftTests: XCTestCase {
         XCTAssertEqual(plan.source.window, source.window)
         XCTAssertFalse(plan.reconnect)
     }
+    func testPresenterCursorHighlightIsOptInAndOnlyAppliesToMacCapture() throws {
+        XCTAssertFalse(initial.presenterCursorHighlight)
+        var enabled = initial
+        enabled.presenterCursorHighlight = true
+        for kind in [InputKind.macScreen, .macWindow, .sample, .capture, .network] {
+            let source = SourceSetup(kind: kind, name: "Original", audioID: "old-mic")
+            XCTAssertNil(initial.plan(for: source, current: initial)?.presenterCursorHighlight)
+            let plan = try XCTUnwrap(enabled.plan(for: source, current: initial))
+            XCTAssertEqual(plan.presenterCursorHighlight, kind.isMacCapture ? true : nil)
+            XCTAssertFalse(plan.reconnect)
+            XCTAssertEqual(initial.plan(for: source, current: enabled)?.presenterCursorHighlight,
+                           kind.isMacCapture ? false : nil)
+        }
+    }
     func testBlankPasswordCannotEnableRejoinWithoutAnExplicitOpenNetworkChoice() {
         let source = SourceSetup(kind: .accsoon, name: "Original", sourceWiFi: "Fixture transmitter")
         var draft = initial; draft.rejoin = true; draft.password = ""

@@ -1067,15 +1067,28 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
     func setAudienceQuality(_ quality: AudienceQuality) {
         setVideoSettings(quality: quality, frameRate: audienceFrameRate, screenRate: screenFrameRate)
     }
-    func setVideoSettings(quality: AudienceQuality, frameRate: VideoFrameRate, screenRate: VideoFrameRate) {
-        guard quality != audienceQuality || frameRate != audienceFrameRate || screenRate != screenFrameRate else { return }
+    var presenterCursorHighlight: Bool {
+        currentRuntime?.source == source && currentRuntime?.presenterCursorHighlight == true
+    }
+
+    func setVideoSettings(quality: AudienceQuality, frameRate: VideoFrameRate, screenRate: VideoFrameRate,
+                          presenterCursorHighlight: Bool? = nil) {
+        let ratesChanged = quality != audienceQuality || frameRate != audienceFrameRate || screenRate != screenFrameRate
+        guard ratesChanged || presenterCursorHighlight != nil else { return }
         audienceQuality = quality; audienceFrameRate = frameRate; screenFrameRate = screenRate
-        if !integration {
+        if ratesChanged, !integration {
             defaults.set(quality.rawValue, forKey: "audienceQuality")
             defaults.set(frameRate.rawValue, forKey: "audienceFrameRate")
             defaults.set(screenRate.rawValue, forKey: "screenFrameRate")
         }
-        Task { await runtime.setVideoSettings(quality: quality, frameRate: frameRate, screenFrameRate: screenRate) }
+        Task { [source] in
+            if let presenterCursorHighlight {
+                await runtime.setPresenterCursorHighlight(presenterCursorHighlight, for: source)
+            }
+            if ratesChanged {
+                await runtime.setVideoSettings(quality: quality, frameRate: frameRate, screenFrameRate: screenRate)
+            }
+        }
     }
     /// Opt-in. Joining another Wi-Fi network is never automatic unless the operator enables it here.
     @discardableResult func setTransmitterRejoin(_ enabled: Bool, password: String, openNetwork: Bool = false) -> Bool {
