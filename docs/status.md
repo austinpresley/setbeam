@@ -213,6 +213,31 @@ media probes. The generated Info.plist contains the updated Location
 explanation. Physical Pyro H behavior and macOS Location prompts remain
 unverified.
 
+## Collaboration audit, 2026-11-24
+
+Browser and Mac chat keep unavailable reply targets and stale attachments in
+the draft until the sender replaces or removes them. Browser sends reconcile
+against author-scoped request receipts that survive removal and eviction.
+Chat history still uses one 100-row JSON array. The UTF-8 and encoded string
+limits keep a full response below Android's 1 MiB cap. The response includes
+attachment history alongside current JPEG availability.
+
+Local headless Chromium verified reply and frame decisions, lost send
+acknowledgments, retry with the same ID and payload, recovery after a polling
+error, unread counts, ordered reactions, and scroll and focus preservation.
+The final focused run passed 12 Swift tests, 49 viewer Node checks and 14
+pointer Node checks. Local `scripts/check.sh` ran 330 XCTest cases with two
+opt-in cases skipped and no failures, passed 17 Python tests and all ten
+media probes. The final keyframe probe decoded 504 frames in seven seconds
+with zero decoder errors. The browser used intercepted loopback responses.
+Physical hardware and native chat window interactions remain unverified.
+
+Browser collaboration uses the displayed reader's revision alongside the
+gateway's revision. The parent integration supplies `freshOutgoingPicture`
+for the Mac capture path. Browser capture uses the gateway's live revision
+independently of native preview readiness. The TV contract and both preview
+interfaces are recorded in [collaboration audit interfaces](collaboration-audit-interfaces.md).
+
 ## Unified release candidate, 2026-11-23
 
 The local `release/unified-candidate` branch combines build 41’s signed updates

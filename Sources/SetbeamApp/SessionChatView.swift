@@ -10,7 +10,8 @@ struct SessionChatView: View {
     @State private var showingDetails = false
     @State private var focusedMessage: Int?
     @State private var actionMessage: Int?
-    @State private var pendingChatScroll = false
+    @State private var chatViewportHeight: CGFloat = 0
+    @State private var chatContentBottom: CGFloat = 0
     @FocusState private var conversationFocused: Bool
 
     var body: some View {
@@ -30,11 +31,14 @@ struct SessionChatView: View {
                                 ChatBubbleRow(model: model, message: message, startsGroup: startsGroup(at: index),
                                     keyboardFocused: conversationFocused && focusedMessage == message.id,
                                     showingActions: Binding(get: { actionMessage == message.id }, set: { shown in if shown { actionMessage = message.id; focusedMessage = message.id } else if actionMessage == message.id { actionMessage = nil } })) {
-                                    model.chatReplyTo = message.id; composing = true
+                                    model.chatReplyTo = message.id; model.chatProblem = nil; composing = true
                                 }.id(message.id)
                             }
                         }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
+                            .onGeometryChange(for: CGFloat.self) { $0.frame(in: .named("chat-scroll")).maxY } action: { chatContentBottom = $0 }
                     }
+                    .coordinateSpace(name: "chat-scroll")
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { chatViewportHeight = $0 }
                     .focusable().focusEffectDisabled().focused($conversationFocused)
                     .onKeyPress(.upArrow) { moveMessage(-1); return .handled }
                     .onKeyPress(.downArrow) { moveMessage(1); return .handled }
@@ -43,11 +47,9 @@ struct SessionChatView: View {
                     .onChange(of: focusedMessage) { _, id in if conversationFocused && actionMessage == nil, let id { scroll.scrollTo(id, anchor: .bottom) } }
                     .onAppear { if let id = model.chatMessages.last?.id { scroll.scrollTo(id, anchor: .bottom) } }
                     .onChange(of: model.chatMessages.last?.id) { _, id in
-                        if actionMessage != nil { pendingChatScroll = true }
-                        else if let id { scroll.scrollTo(id, anchor: .bottom) }
-                    }
-                    .onChange(of: actionMessage) { _, id in
-                        if id == nil && pendingChatScroll { pendingChatScroll = false; if let last = model.chatMessages.last?.id { scroll.scrollTo(last, anchor: .bottom) } }
+                        if chatContentBottom - chatViewportHeight < 64, !conversationFocused, actionMessage == nil, let id {
+                            scroll.scrollTo(id, anchor: .bottom)
+                        }
                     }
                 }
                 composer.padding(16)
@@ -55,10 +57,15 @@ struct SessionChatView: View {
                 ContentUnavailableView("Sharing is off", systemImage: "bubble.left.and.bubble.right",
                     description: Text("Start sharing to open a session chat. Chat clears when sharing stops."))
             }
-        }.font(.body).onAppear { model.markChatRead() }
+        }.font(.body)
             .onChange(of: model.chatMessages) { _, messages in
-                if let id = actionMessage, !messages.contains(where: { $0.id == id }) { actionMessage = nil }
-                if let id = focusedMessage, !messages.contains(where: { $0.id == id }) { focusedMessage = nil }
+                if let id = actionMessage, !messages.contains(where: { $0.id == id }) {
+                    actionMessage = nil
+                    conversationFocused = true
+                }
+                if let id = focusedMessage, !messages.contains(where: { $0.id == id }) {
+                    focusedMessage = (messages.first { $0.id > id } ?? messages.last)?.id
+                }
             }
     }
 
@@ -79,15 +86,21 @@ struct SessionChatView: View {
         VStack(alignment: .leading, spacing: 8) {
             VStack(alignment: .leading, spacing: 12) {
                 if let parent = model.chatReplyTo {
-                    draftDetail("Replying to \(model.chatMessages.first { $0.id == parent }?.name ?? "message")",
-                                symbol: "arrowshape.turn.up.left", cancelLabel: "Cancel Reply") { model.chatReplyTo = nil }
+                    let name = model.chatMessages.first { $0.id == parent }?.name
+                    draftDetail(name.map { "Replying to \($0)" } ?? "Original message unavailable",
+                                symbol: "arrowshape.turn.up.left", cancelLabel: "Cancel Reply") {
+                        model.chatReplyTo = nil; model.chatProblem = nil; composing = true
+                    }
                 }
-                if let data = model.chatAttachment, let image = NSImage(data: data) {
+                if let data = model.chatAttachment {
                     HStack(spacing: 8) {
-                        Image(nsImage: image).resizable().scaledToFit().frame(width: 48, height: 32)
-                        Text("Frame attached").font(.caption).foregroundStyle(.secondary)
+                        if !model.chatAttachmentStale, let image = NSImage(data: data) {
+                            Image(nsImage: image).resizable().scaledToFit().frame(width: 48, height: 32)
+                        }
+                        Text(model.chatAttachmentStale ? "Remove or recapture the frame" : "Frame attached")
+                            .font(.caption).foregroundStyle(.secondary)
                         Spacer(minLength: 0)
-                        cancelButton("Remove Frame") { model.clearChatAttachment() }
+                        cancelButton("Remove Frame") { model.clearChatAttachment(discard: true); model.chatProblem = nil; composing = true }
                     }
                 }
                 TextField("Message everyone…", text: $model.chatText, axis: .vertical)
@@ -112,7 +125,7 @@ struct SessionChatView: View {
                     Spacer(minLength: 0)
                     Button("Send") { model.sendChat() }.buttonStyle(.borderedProminent).controlSize(.small)
                         .keyboardShortcut(.return, modifiers: .command).help("Send message (⌘Return)")
-                        .disabled(model.chatText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && model.chatAttachment == nil)
+                        .disabled(!model.canSendChat)
                 }
             }.padding(12)
                 // One quiet border groups the draft and its controls without a second toolbar.
@@ -173,6 +186,7 @@ struct SessionChatView: View {
     }
 }
 
+
 private struct ChatImageAttachment: View {
     let image: NSImage
     let title: String
@@ -205,6 +219,10 @@ private struct ChatBubbleRow: View {
     @FocusState private var paletteFocused: Bool
     @Environment(\.colorSchemeContrast) private var contrast
     private var own: Bool { message.ownMessage }
+    private var expiredFrameLabel: String? {
+        guard !message.hasFrame, message.hadFrame ?? (message.sampleFrame || message.text.isEmpty) else { return nil }
+        return message.sampleFrame ? "Sample image no longer available" : "Image no longer available"
+    }
     private var selected: ChatReaction? { message.reactions.first(where: \.selected)?.reaction }
     private var alignment: HorizontalAlignment { own ? .trailing : .leading }
 
@@ -275,7 +293,7 @@ private struct ChatBubbleRow: View {
                 }.fixedSize(horizontal: false, vertical: true)
             }
             if !message.text.isEmpty { Text(verbatim: message.text).fixedSize(horizontal: false, vertical: true) }
-            else if !message.hasFrame { Text("Image no longer available").font(.caption).foregroundStyle(.secondary) }
+            if let expiredFrameLabel { Text(expiredFrameLabel).font(.caption).foregroundStyle(.secondary) }
             if message.hasFrame, let image = model.chatImages[message.id] {
                 ChatImageAttachment(image: image, title: "Image from \(message.name)", sample: message.sampleFrame) {
                     let allowed = Date() >= suppressImageClickUntil; suppressImageClickUntil = .distantPast
@@ -393,7 +411,7 @@ private struct ChatBubbleRow: View {
             parts.append("Reply to \(original.name): \(original.text.isEmpty ? "Image" : original.text)")
         }
         if !message.text.isEmpty { parts.append(message.text) }
-        else if !message.hasFrame { parts.append("Image no longer available") }
+        if let expiredFrameLabel { parts.append(expiredFrameLabel) }
         if message.hasFrame { parts.append(message.sampleFrame ? "Image attached. Sample media" : "Image attached") }
         parts += message.reactions.map { "\($0.reaction.label), \($0.count)\($0.selected ? ", selected" : "")" }
         return parts.joined(separator: ". ")

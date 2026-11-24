@@ -42,6 +42,7 @@ public struct ChatMessage: Codable, Sendable, Equatable, Identifiable {
     public let sentAt: Double
     public let replyTo: Int?
     public let hasFrame: Bool
+    public let hadFrame: Bool?
     public let sampleFrame: Bool
     public let likes: Int
     public let liked: Bool
@@ -54,16 +55,34 @@ struct ChatAuthor {
     var isOperator: Bool { number == 0 }
 }
 
+enum ChatDraftError: String, LocalizedError {
+    case replyUnavailable, frameStale
+
+    var errorDescription: String? {
+        switch self {
+        case .replyUnavailable: "The original message is no longer available. Cancel the reply to send without it."
+        case .frameStale: "The feed changed. Remove the frame or capture a new one before sending."
+        }
+    }
+}
+
 /// Session-only bounded content. The gateway lock owns every access; no content is logged or saved.
 struct SessionChat {
     static let maxMessages = 100, maxText = 1200, maxFrameBytes = 131_072, maxFrames = 8
+    // Bound encoded histories below Android's 1 MiB HTTP cap, including JSON metadata and escaping.
+    static let maxTextBytes = 6144, maxNameBytes = 160, maxEncodedStringBytes = 8192
+    // Keep receipts after deletion and history eviction. Reject new posts at the session cap
+    // so a successful request ID can never become sendable again in this session.
+    static let maxReceipts = 65_536
     struct Entry {
-        let id: Int, author: ChatAuthor, text: String, sentAt: Date, replyTo: Int?, requestID: String, sampleFrame: Bool
+        let id: Int, author: ChatAuthor, text: String, sentAt: Date, replyTo: Int?, hadFrame: Bool, sampleFrame: Bool
         var frame: Data?
         var reactions: [Int: ChatReaction] = [:]
     }
     private(set) var entries: [Entry] = []
     private var nextID = 1
+    private struct RequestKey: Hashable { let author: Int; let id: String }
+    private var receipts: [RequestKey: Int] = [:]
     private struct Budget { var tokens: Double; var updatedAt: Date }
     private var budgets: [Int: Budget] = [:]
     private var reactionBudgets: [Int: Budget] = [:]
@@ -76,19 +95,41 @@ struct SessionChat {
         }
         return String(String.UnicodeScalarView(scalars)).trimmingCharacters(in: .whitespacesAndNewlines)
     }
-    mutating func post(author: ChatAuthor, text: String, replyTo: Int?, frame: Data?, requestID: String, now: Date, sampleFrame: Bool = false) throws {
-        guard (16...64).contains(requestID.count), requestID.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-") }) else { throw SetbeamError.invalidSource("Retry sending this message.") }
-        if entries.contains(where: { $0.author.number == author.number && $0.requestID == requestID }) { return }
+    func receipt(author: Int, requestID: String) -> Int? {
+        receipts[RequestKey(author: author, id: requestID)]
+    }
+    @discardableResult
+    mutating func post(author: ChatAuthor, text: String, replyTo: Int?, frame: Data?, requestID: String, now: Date, sampleFrame: Bool = false) throws -> Int {
+        guard (16...64).contains(requestID.utf8.count), requestID.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-") }) else { throw SetbeamError.invalidSource("Retry sending this message.") }
+        let key = RequestKey(author: author.number, id: requestID)
+        if let id = receipts[key] { return id }
+        guard receipts.count < Self.maxReceipts else { throw SetbeamError.unavailable("This chat has reached its session message limit.") }
         let text = Self.clean(text)
         guard text.count <= Self.maxText, !text.isEmpty || frame != nil else { throw SetbeamError.invalidSource("Write a message of up to 1,200 characters or attach a frame.") }
-        guard replyTo == nil || entries.contains(where: { $0.id == replyTo }) else { throw SetbeamError.unavailable("The original message is no longer available.") }
+        guard text.utf8.count <= Self.maxTextBytes else { throw SetbeamError.invalidSource("Shorten this message. It exceeds the chat text size limit.") }
+        guard replyTo == nil || entries.contains(where: { $0.id == replyTo }) else { throw ChatDraftError.replyUnavailable }
         guard frame.map({ $0.count <= Self.maxFrameBytes }) ?? true else { throw SetbeamError.invalidSource("This frame is too large. Capture it again.") }
+        var name = ""
+        var nameBytes = 0
+        for character in Self.clean(author.name).prefix(40) {
+            nameBytes += String(character).utf8.count
+            guard nameBytes <= Self.maxNameBytes else { break }
+            name.append(character)
+        }
+        let boundedAuthor = ChatAuthor(number: author.number, name: name.isEmpty ? "Viewer \(author.number)" : name, color: author.color)
+        let encoder = JSONEncoder()
+        guard try encoder.encode(text).count + encoder.encode(boundedAuthor.name).count <= Self.maxEncodedStringBytes else {
+            throw SetbeamError.invalidSource("Shorten this message. It exceeds the chat text size limit.")
+        }
         try Self.rateLimit(author.number, now: now, budgets: &budgets)
-        entries.append(Entry(id: nextID, author: author, text: text, sentAt: now, replyTo: replyTo, requestID: requestID, sampleFrame: sampleFrame, frame: frame))
+        let id = nextID
+        entries.append(Entry(id: id, author: boundedAuthor, text: text, sentAt: now, replyTo: replyTo, hadFrame: frame != nil, sampleFrame: sampleFrame, frame: frame))
+        receipts[key] = id
         nextID += 1
         if entries.count > Self.maxMessages { entries.removeFirst(entries.count - Self.maxMessages) }
         let frames = entries.indices.filter { entries[$0].frame != nil }
         for index in frames.prefix(max(0, frames.count - Self.maxFrames)) { entries[index].frame = nil }
+        return id
     }
     mutating func like(id: Int, author: Int, liked: Bool, now: Date) throws {
         // Older open pages still use heart likes. Removing a heart must not remove another reaction.
@@ -117,7 +158,7 @@ struct SessionChat {
     func messages(for number: Int) -> [ChatMessage] {
         entries.map { ChatMessage(id: $0.id, authorNumber: $0.author.number, name: $0.author.name, color: $0.author.color.rawValue,
             operatorMessage: $0.author.isOperator, text: $0.text, sentAt: $0.sentAt.timeIntervalSince1970,
-            replyTo: $0.replyTo, hasFrame: $0.frame != nil, sampleFrame: $0.sampleFrame,
+            replyTo: $0.replyTo, hasFrame: $0.frame != nil, hadFrame: $0.hadFrame, sampleFrame: $0.sampleFrame,
             likes: $0.reactions.values.filter { $0 == .heart }.count, liked: $0.reactions[number] == .heart,
             ownMessage: $0.author.number == number, reactions: summaries($0, for: number)) }
     }

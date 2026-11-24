@@ -10,6 +10,7 @@ python3 -I -m unittest discover -s Tests/SetbeamReleaseTests > build/logs/releas
 cat build/logs/release-tests.log
 node --test scripts/check-viewer-recovery.js > build/logs/viewer-recovery.log 2>&1 || { cat build/logs/viewer-recovery.log; exit 1; }
 node --test scripts/check-viewer-pointers.js > build/logs/viewer-pointers.log 2>&1 || { cat build/logs/viewer-pointers.log; exit 1; }
+node --test scripts/check-chat-audit.js > build/logs/chat-audit.log 2>&1 || { cat build/logs/chat-audit.log; exit 1; }
 if [[ -z "${SETBEAM_TEST_TOOLS:-}" ]]; then
   scripts/build-preview-bridge.sh
 fi

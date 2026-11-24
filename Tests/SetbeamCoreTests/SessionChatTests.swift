@@ -87,7 +87,52 @@ final class SessionChatTests: XCTestCase {
         }
         XCTAssertEqual(chat.messages(for: 0).first?.text, "")
         XCTAssertEqual(chat.messages(for: 0).first?.hasFrame, false, "An evicted image-only message can be shown as unavailable")
+        XCTAssertEqual(chat.messages(for: 0).first?.hadFrame, true)
         XCTAssertEqual(chat.messages(for: 0).filter(\.hasFrame).count, 8)
+    }
+    func testReceiptsSurviveHistoryEvictionAndRemoval() throws {
+        var chat = SessionChat()
+        let id = UUID().uuidString
+        let other = ChatAuthor(number: 2, name: "Other viewer", color: .blue)
+        XCTAssertEqual(try chat.post(author: viewer, text: "First", replyTo: nil, frame: nil, requestID: id, now: start), 1)
+        XCTAssertNil(chat.receipt(author: other.number, requestID: id))
+        for offset in 1...SessionChat.maxMessages {
+            try chat.post(author: viewer, text: "New message", replyTo: nil, frame: nil, requestID: UUID().uuidString,
+                          now: start.addingTimeInterval(Double(offset)))
+        }
+        XCTAssertEqual(chat.entries.first?.id, 2)
+        XCTAssertEqual(try chat.post(author: viewer, text: "", replyTo: 1, frame: nil, requestID: id, now: start), 1)
+        let otherID = try chat.post(author: other, text: "New message", replyTo: nil, frame: nil, requestID: id, now: start)
+        chat.remove(otherID)
+        XCTAssertEqual(chat.receipt(author: other.number, requestID: id), otherID)
+        XCTAssertEqual(chat.lastMessageID, otherID)
+        chat.reset()
+        XCTAssertNil(chat.receipt(author: viewer.number, requestID: id))
+    }
+    func testFullEscapedUTF8HistoryFitsReceiverLimit() throws {
+        var chat = SessionChat()
+        let author = ChatAuthor(number: 1, name: String(repeating: "😀", count: 40), color: .teal)
+        let text = String(repeating: "\"", count: 1199) + "A" + String(repeating: "\u{0301}", count: (SessionChat.maxTextBytes - 1200) / 2)
+        XCTAssertEqual(text.count, SessionChat.maxText)
+        XCTAssertEqual(text.utf8.count, SessionChat.maxTextBytes)
+        XCTAssertThrowsError(try chat.post(author: author, text: text + "\u{0301}", replyTo: nil, frame: nil, requestID: UUID().uuidString, now: start))
+        for id in 1...SessionChat.maxMessages {
+            let now = start.addingTimeInterval(Double(id))
+            try chat.post(author: author, text: text, replyTo: id > 1 ? id - 1 : nil, frame: Data([1]), requestID: UUID().uuidString,
+                          now: now, sampleFrame: true)
+            for (index, reaction) in ChatReaction.allCases.enumerated() {
+                try chat.react(id: id, author: index + 1, reaction: reaction, now: now)
+            }
+        }
+        let history = chat.messages(for: 1)
+        let json = try JSONEncoder().encode(history)
+        XCTAssertLessThanOrEqual(json.count, 2 + SessionChat.maxMessages * (SessionChat.maxEncodedStringBytes + 1024))
+        XCTAssertLessThan(json.count, 1024 * 1024)
+        XCTAssertEqual(try JSONDecoder().decode([ChatMessage].self, from: json), history)
+        XCTAssertEqual(history.count, SessionChat.maxMessages)
+        XCTAssertEqual(history.first?.reactions.map(\.reaction), ChatReaction.allCases)
+        XCTAssertEqual(history.first?.hadFrame, true)
+        XCTAssertEqual(history.first?.hasFrame, false)
     }
     func testJPEGValidationAndMetadataStripping() throws {
         let jpeg = try Self.jpeg()
@@ -168,6 +213,25 @@ final class ChatGatewayTests: XCTestCase {
         let image = try await call("chat/frame/\(imageID)", pass: pass); XCTAssertEqual(image.0, 200)
         host.setChatFramePermission(false)
         XCTAssertThrowsError(try host.postChat(text: "Late frame", replyTo: nil, frame: frame, revision: 7, token: token, name: "DigiTech", color: .orange, requestID: UUID().uuidString), "An immediate source-switch gate rejects the old revision before runtime changes")
+        let frameRequestID = UUID().uuidString
+        let viewerFrame: [String: Any] = ["action": "post", "text": "", "frame": frame.base64EncodedString(),
+                                          "revision": 7, "requestID": frameRequestID]
+        let viewerSent = try await call("chat", pass: pass, body: viewerFrame)
+        XCTAssertEqual(viewerSent.0, 200, "The browser uses the live revision even when the Mac decoder is unavailable")
+        let viewerReceipt = try XCTUnwrap(JSONSerialization.jsonObject(with: viewerSent.1) as? [String: Any])
+        let viewerImageID = try XCTUnwrap(viewerReceipt["messageID"] as? Int)
+        host.removeChat(id: viewerImageID, token: token)
+        session.revision = 8; host.update(session)
+        let retry = try await call("chat", pass: pass, body: viewerFrame)
+        XCTAssertEqual(retry.0, 200)
+        XCTAssertEqual((try JSONSerialization.jsonObject(with: retry.1) as? [String: Any])?["messageID"] as? Int, viewerImageID)
+        let receipt = try await call("chat", pass: pass, body: ["action": "receipt", "requestID": frameRequestID])
+        XCTAssertEqual(receipt.0, 200)
+        XCTAssertEqual((try JSONSerialization.jsonObject(with: receipt.1) as? [String: Any])?["messageID"] as? Int, viewerImageID)
+        XCTAssertNil(host.chatFrame(id: viewerImageID))
+        let deletedReply = try await call("chat", pass: pass, body: ["action": "post", "requestID": UUID().uuidString, "text": "A reply", "replyTo": viewerImageID])
+        XCTAssertEqual(deletedReply.0, 400)
+        XCTAssertEqual((try JSONSerialization.jsonObject(with: deletedReply.1) as? [String: Any])?["code"] as? String, "replyUnavailable")
         let forbiddenRemoval = try await call("chat", pass: pass, body: ["action": "remove", "id": imageID]); XCTAssertEqual(forbiddenRemoval.0, 400)
         host.removeChat(id: imageID, token: token)
         XCTAssertNil(host.chatFrame(id: imageID))

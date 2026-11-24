@@ -281,3 +281,57 @@ test('a delayed welcome cannot move the page back to an earlier picture (A2, B1 
   p.get('picture').dispatch('pointermove', {clientX: 900, clientY: 500, pointerType: 'mouse'});
   assert.equal(p.moves(socket).at(-1).r, 8, 'Outgoing moves use the current picture');
 });
+
+test('pointers wait for the displayed revision and ignore secondary touches and self snapshots', () => {
+  const p = page();
+  const update = displayedRevision => p.controller.update({enabled: true, live: true, revision: 7, displayedRevision});
+  const ana = {n: 3, label: 'Ana', color: 'green', x: 0.5, y: 0.5, ttl: 4000};
+  const touch = (name, isPrimary) => p.get('picture').dispatch(name, {pointerType: 'touch', isPrimary, button: 0, clientX: 900, clientY: 500});
+  update(undefined);
+  const socket = p.start();
+  socket.message({t: 'pointers', r: 7, items: [ana]});
+  touch('pointerdown', true);
+  assert.equal(p.marks().length, 0);
+  assert.equal(p.moves(socket).length, 0);
+
+  update(7);
+  socket.message({t: 'pointers', r: 7, items: [ana, {...ana, n: 2, label: 'Echo'}]});
+  assert.deepEqual(p.marks().map(mark => mark.label.textContent), ['Ana']);
+  touch('pointerdown', false);
+  assert.equal(p.moves(socket).length, 0);
+  touch('pointerdown', true);
+  touch('pointercancel', false);
+  assert.deepEqual(p.marks().map(mark => mark.label.textContent), ['Ana', 'You']);
+  p.get('pointer-show').checked = false; p.get('pointer-show').dispatch('change');
+  assert.deepEqual(p.marks().map(mark => mark.label.textContent), ['You']);
+  assert.equal(p.get('pointer-layer').hidden, false);
+
+  p.get('pointer-show').checked = true; p.get('pointer-show').dispatch('change');
+  p.get('pointer-share').checked = false; p.get('pointer-share').dispatch('change');
+  touch('pointerdown', true);
+  socket.message({t: 'pointers', r: 7, items: [ana]});
+  assert.deepEqual(p.marks().map(mark => mark.label.textContent), ['Ana']);
+  assert.equal(p.moves(socket).length, 1);
+  socket.message({t: 'pointers', r: 8, items: [ana]});
+  assert.equal(p.marks().length, 0, 'A newer presence revision suppresses pointers on the older picture');
+  p.controller.update({enabled: false, live: false, suspended: true, revision: 8});
+  assert.equal(socket.closed, true, 'Unconfirmed viewer state closes the channel');
+  p.controller.update({enabled: true, live: true, revision: 8, displayedRevision: 8});
+  assert.equal(p.sockets.length, 2, 'The viewer opts in again on the same session after revalidation');
+});
+
+test('an incomplete handshake closes and label text is bounded', () => {
+  const p = page({name: '😀'.repeat(100) + '\u202eextra'});
+  p.controller.update({enabled: true, live: true, revision: 7});
+  p.get('pointer').dispatch('click');
+  const first = p.sockets[0]; first.open();
+  assert.equal(first.sent[0].name, '😀'.repeat(40));
+  p.advance(5000);
+  assert.equal(first.closed, true);
+  p.advance(1000);
+  p.controller.update({enabled: true, live: true, revision: 7});
+  const second = p.sockets[1]; second.open(); second.message({t: 'welcome', n: 2, r: 7});
+  second.message({t: 'pointers', r: 7, items: [{n: 3, label: '\u202e' + '😀'.repeat(100), color: 'green', x: 0.5, y: 0.5, ttl: 4000}]});
+  assert.equal(p.marks()[0].label.textContent, '😀'.repeat(40));
+  assert.ok(parseFloat(p.marks()[0].label.style.maxWidth) <= 144);
+});

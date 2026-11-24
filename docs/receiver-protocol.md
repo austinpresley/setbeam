@@ -220,7 +220,7 @@ viewer reads; the receiver only reads it.
 
 | Status | Body | Meaning |
 | --- | --- | --- |
-| 200 | `[{"id":4,"name":"DigiTech","color":"blue","operatorMessage":true,"text":"…","sentAt":1795000000.1,"replyTo":null,"hasFrame":false,"sampleFrame":false,"reactions":[{"reaction":"heart","count":2,"selected":false}],…}]` | Up to 100 messages, oldest first. |
+| 200 | `[{"id":4,"name":"DigiTech","color":"blue","operatorMessage":true,"text":"…","sentAt":1795000000.1,"replyTo":null,"hasFrame":false,"hadFrame":false,"sampleFrame":false,"reactions":[{"reaction":"heart","count":2,"selected":false}],…}]` | Up to 100 messages, oldest first. |
 | 403 | empty | This pass is not admitted (or sharing stopped). |
 | 404 | | Path retired. |
 
@@ -228,7 +228,10 @@ An admitted heartbeat reply carries `chatLastID`, the newest message id. The
 receiver fetches `chat` when that id changes, and every 5 s while its chat
 panel is open so reactions and removals show. It does not fetch attached
 frames (`chat/frame/<id>`) and never posts. Text is cleaned of control and
-direction-override characters and kept in memory only.
+direction-override characters and kept in memory only. `hasFrame` reports
+current JPEG availability. `hadFrame` stays true after eviction and defaults
+to `hasFrame` on older Macs. The response stays below the receiver's 1 MiB
+body limit.
 
 ### `GET presence` (optional, admitted only, WebSocket)
 

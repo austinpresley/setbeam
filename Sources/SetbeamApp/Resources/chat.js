@@ -6,86 +6,129 @@
     if (!toggle || !panel || !log) return {update() {}};
     const form = $('chat-form'), input = $('chat-input'), send = $('chat-send'), status = $('chat-status');
     const capture = $('chat-capture'), preview = $('chat-preview'), reply = $('chat-reply');
-    let admitted = false, active = false, live = false, revision = -1, open = false, posting = false, polling = false;
-    let attachment, replyTo, requestID, timer, generation = 0, lastJSON = '';
-    let readThrough = 0, lastActivity = 0;
+    const framePreview = $('chat-frame-preview'), removeFrame = $('chat-remove-frame'), cancelReply = $('chat-cancel-reply');
+    let admitted = false, active = false, suspended = false, live = false, revision = -1, open = false, posting = false;
+    let pictureRevision, captureReady = false, attachment, replyTo, replyName, replyUnavailable = false, pendingSend, blockedPass, currentPass;
+    let timer, generation = 0, pollFlight, pollAgain = false, history = [], lastJSON = '', renderedJSON = '';
+    let readThrough = 0, lastActivity = 0, pollProblem = '', actionNotice = '';
     // On a phone held upright the conversation fills the space below the picture, so it stays open there.
     const dockQuery = globalThis.matchMedia?.('(max-width:600px) and (orientation:portrait)');
     const docked = () => !!dockQuery?.matches;
     let dockedOpen = false;
-    function activity(id) {
-      if (!Number.isSafeInteger(id) || id < 0) return;
-      lastActivity = id; if (open) readThrough = Math.max(readThrough, id);
-      const unread = Math.min(99, Math.max(0, lastActivity - readThrough)), badge = $('chat-unread');
+    function updateUnread() {
+      if (open && !document.hidden) readThrough = Math.max(readThrough, history.at(-1)?.id || 0);
+      const unread = history.filter(message => message.id > readThrough && !message.ownMessage).length;
+      const badge = $('chat-unread');
       if (badge) { badge.hidden = !unread; text(badge, String(unread)); }
       toggle.setAttribute('aria-label', unread ? 'Open session chat, ' + unread + ' unread messages' : 'Open session chat');
     }
-    const rows = new Map(), blobs = new Map(), loadingFrames = new Set();
-    const uuid = () => globalThis.crypto?.randomUUID?.() || Math.random().toString(36).slice(2) + Date.now().toString(36);
+    function activity(id) {
+      if (Number.isSafeInteger(id) && id > lastActivity) {
+        lastActivity = id;
+        if (admitted && !open) poll(true);
+      }
+    }
+    const rows = new Map(), blobs = new Map(), loadingFrames = new Map(), reactionWrites = new Map();
+    function uuid() {
+      if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+      const bytes = globalThis.crypto.getRandomValues(new Uint8Array(16));
+      return Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
+    }
     const text = (element, value) => { if (element.textContent === value) return; if (element.childNodes.length === 1 && element.firstChild.nodeType === 3) element.firstChild.nodeValue = value; else element.textContent = value; };
     async function request(path, body) {
       const controller = new AbortController(), timeout = setTimeout(() => controller.abort(), 5000);
+      const epoch = generation;
       try {
         const response = await fetch(path, {method: body ? 'POST' : 'GET', cache: 'no-store', signal: controller.signal,
-          headers: {'X-Setbeam-Pass': options.pass() || '', ...(body ? {'Content-Type': 'application/json'} : {})},
+          headers: {'X-Setbeam-Pass': currentPass || '', ...(body ? {'Content-Type': 'application/json'} : {})},
           ...(body ? {body: JSON.stringify(body)} : {})});
-        if (response.status === 403 || response.status === 404) { reset(); throw Error('Chat access ended.'); }
-        const result = await response.json();
-        if (!response.ok) throw Error(result?.error || 'Chat could not update. Try again.');
-        return result;
+        if (response.status === 403 || response.status === 404) {
+          if (epoch === generation) endAccess();
+          throw Error('Chat access ended.');
+        }
+        if (!response.ok) {
+          const result = await response.json().catch(() => null);
+          throw Object.assign(Error(result?.error || 'Chat could not update. Try again.'), {
+            rejected: response.status === 400 && typeof result?.error === 'string', code: result?.code
+          });
+        }
+        return await response.json();
       } finally { clearTimeout(timeout); }
     }
     function clearAttachment() {
-      if (attachment) requestID = undefined;
-      attachment = undefined; preview.hidden = true; $('chat-frame-preview').removeAttribute('src');
+      attachment = undefined; preview.hidden = true; framePreview.removeAttribute('src');
     }
+    function clearReply() { replyTo = undefined; replyName = undefined; replyUnavailable = false; }
     function sizeDraft() {
       input.style.height='auto';
       input.style.height=Math.min(Math.max(44,input.scrollHeight),player.classList.contains('keyboard-tight')?44:88)+'px';
     }
     function draftState() {
-      send.disabled = posting || !admitted || !active || (!input.value.trim() && !attachment);
-      capture.disabled = !live || posting;
+      const stale = attachment?.stale;
+      const locked = posting || !!pendingSend;
+      send.disabled = posting || !!pendingSend?.checking || !admitted || !active || suspended ||
+        (!pendingSend && (replyUnavailable || stale || (!input.value.trim() && !attachment)));
+      const sendLabel = pendingSend ? 'Retry same message' : 'Send message';
+      send.setAttribute('aria-label', sendLabel); send.title = sendLabel;
+      input.readOnly = locked; capture.disabled = locked || !admitted || !active || !frameReady();
+      cancelReply.disabled = locked; removeFrame.disabled = locked;
       reply.hidden = !replyTo;
+      if (replyTo) text($('chat-reply-label'), replyUnavailable ? 'Original message unavailable' : 'Replying to ' + replyName);
+      framePreview.hidden = !!stale;
+      if (stale) framePreview.removeAttribute('src');
+      text(status, suspended ? 'Reconnecting to chat…'
+        : pendingSend ? (posting ? 'Sending…' : 'Send unconfirmed. Checking delivery. You can retry the same message.')
+        : replyUnavailable ? 'Cancel the reply or choose another message before sending.'
+        : stale ? 'Remove the frame or capture a new one before sending.'
+        : actionNotice || pollProblem);
+    }
+    function schedulePoll() {
+      clearInterval(timer);
+      if (admitted && active) timer = setInterval(poll, open ? 2000 : 5000);
     }
     function show(value) {
       open = !!value && admitted && active; panel.hidden = !open;
       player.classList.toggle('chat-open', open); toggle.setAttribute('aria-expanded', String(open));
-      clearInterval(timer);
-      if (!open) { copyAttempt++; cancelPress(); closeActions(); closeImage(); if(copyDialog.open)closeCopy();$('chat-copy-text').value=''; }
-      if (open) { activity(lastActivity); lastJSON = ''; poll(); timer = setInterval(poll, 2000); }
+      if (!open) { copyAttempt++; cancelPress(); closeActions(); closeImage(); if(copyDialog.open)closeCopy(false);$('chat-copy-text').value=''; }
+      else { updateUnread(); renderHistory(true); poll(true); }
+      schedulePoll();
     }
+    function endAccess() { blockedPass = currentPass; reset(); }
     function reset() {
-      generation++; admitted = false; active = false; show(false); toggle.hidden = true; dockedOpen = false; player.classList.toggle('chat-docked', false);
-      cancelPress();closeActions();closeImage();rovingID=undefined;log.tabIndex=0;
-      rows.clear(); log.replaceChildren(); blobs.forEach(URL.revokeObjectURL); blobs.clear(); loadingFrames.clear();
-      clearAttachment(); input.value = ''; sizeDraft(); replyTo = undefined; lastJSON = ''; draftState();
-      readThrough = 0; lastActivity = 0; activity(0);
+      generation++; admitted = false; active = false; suspended = false; live = false; captureReady = false; posting = false;
+      pendingSend = undefined; pollFlight = undefined; pollAgain = false;
+      show(false); toggle.hidden = true; dockedOpen = false; player.classList.toggle('chat-docked', false);
+      rovingID=undefined;log.tabIndex=0;
+      rows.clear(); log.replaceChildren(); blobs.forEach(URL.revokeObjectURL); blobs.clear(); loadingFrames.clear(); reactionWrites.clear();
+      clearAttachment(); clearReply(); input.value = ''; sizeDraft();
+      history = []; lastJSON = ''; renderedJSON = ''; pollProblem = ''; actionNotice = ''; draftState();
+      readThrough = 0; lastActivity = 0; updateUnread();
     }
     async function loadFrame(message, image) {
       if (blobs.has(message.id)) { image.src = blobs.get(message.id); return; }
       if (loadingFrames.has(message.id)) return;
-      const epoch = generation; loadingFrames.add(message.id);
+      const epoch = generation; loadingFrames.set(message.id, epoch);
       const controller = new AbortController(), timeout = setTimeout(() => controller.abort(), 5000);
       try {
         const response = await fetch('chat/frame/' + message.id, {cache: 'no-store', signal: controller.signal,
-          headers: {'X-Setbeam-Pass': options.pass() || ''}});
-        if (response.status === 403) { reset(); return; }
-        if (!response.ok) { image.alt = 'Frame no longer available'; return; }
+          headers: {'X-Setbeam-Pass': currentPass || ''}});
+        if (response.status === 403) { if (epoch === generation) endAccess(); return; }
+        if (!response.ok) { image.alt = response.status === 404 ? 'Frame no longer available' : 'Frame could not load'; return; }
         const data = await response.blob();
         if (epoch !== generation || !admitted || !rows.get(message.id)?.message.hasFrame) return;
         const url = URL.createObjectURL(data); blobs.set(message.id, url); image.src = url;
       } catch { image.alt = 'Frame could not load. Reopen chat to retry.'; }
-      finally { clearTimeout(timeout); loadingFrames.delete(message.id); }
+      finally { clearTimeout(timeout); if (loadingFrames.get(message.id) === epoch) loadingFrames.delete(message.id); }
     }
     const REACTIONS = [
       ['heart','❤️','Love'], ['thumbsUp','👍','Like'], ['laugh','😂','Laugh'],
       ['surprised','😮','Surprise'], ['sad','😢','Sad'], ['emphasis','‼️','Emphasis']
     ];
     const menu = $('chat-menu'), imageDialog = $('chat-image-dialog'), copyDialog = $('chat-copy-dialog');
-    let menuID, menuReturn, imageID, imageReturn, copyID, rovingID, press, suppressClick, copyAttempt=0, touchOrigin, menuFollowEnd=false;
+    let menuID, menuReturn, imageID, imageReturn, copyID, rovingID, press, suppressClick, copyAttempt=0, touchOrigin, menuFollowEnd = false;
     function summaries(message) {
-      return message.reactions || (message.likes ? [{reaction:'heart', count:message.likes, selected:message.liked}] : []);
+      if (!message.reactions) return message.likes ? [{reaction:'heart', count:message.likes, selected:message.liked}] : [];
+      return REACTIONS.flatMap(([kind]) => message.reactions.filter(item => item.reaction === kind).slice(0, 1));
     }
     function cancelPress() { if (press) clearTimeout(press.timer); press = undefined; }
     function setRoving(id, focus = false) {
@@ -94,10 +137,10 @@
       for (const [key,row] of rows) row.article.tabIndex = key === rovingID ? 0 : -1;
       if (focus) (rows.get(rovingID)?.article || log).focus({preventScroll:true});
     }
-    function closeActions(restore = false, resume = true) {
-      const target = menuReturn, follow=menuFollowEnd; menuFollowEnd=false; menuID = undefined; menuReturn = undefined; menu.hidden = true;
+    function closeActions(restore = false, resume = false) {
+      const target = menuReturn, follow = menuFollowEnd; menuFollowEnd = false; menuID = undefined; menuReturn = undefined; menu.hidden = true;
       for (const row of rows.values()) row.more.setAttribute('aria-expanded','false');
-      if(follow && resume && open && active)log.scrollTop=log.scrollHeight;
+      if (resume && follow && open) log.scrollTop = log.scrollHeight;
       if (restore && target?.isConnected) { setRoving(Number(target.dataset.id)); target.focus({preventScroll:true}); }
     }
     function positionMenu() {
@@ -115,7 +158,8 @@
     function syncMenu() {
       const row = rows.get(menuID); if (!row) { closeActions(); return; }
       const focus=document.activeElement;
-      const selected = summaries(row.message).find(item=>item.selected)?.reaction;
+      const write = reactionWrites.get(row.message.id);
+      const selected = write ? write.reaction : summaries(row.message).find(item=>item.selected)?.reaction;
       for (const button of menu.querySelectorAll('[data-reaction]')) {
         button.setAttribute('aria-checked',String(button.dataset.reaction === selected));
         const choice = REACTIONS.find(item=>item[0] === button.dataset.reaction);
@@ -131,19 +175,41 @@
       if (!admitted || !active || !rows.has(id)) return;
       cancelPress();
       if (menuID === id && !menu.hidden) { syncMenu(); return; }
-      const follow=log.scrollHeight-log.scrollTop-log.clientHeight<64;
-      closeActions(false,false);menuFollowEnd=follow; menuID = id; menuReturn = rows.get(id).article; setRoving(id);
+      closeActions(); menuFollowEnd = log.scrollHeight - log.scrollTop - log.clientHeight < 64; menuID = id; menuReturn = rows.get(id).article; setRoving(id);
       menu.hidden = false; menu.scrollTop=0; rows.get(id).more.setAttribute('aria-expanded','true'); syncMenu();
       menu.querySelector('[role=menuitemradio]').focus({preventScroll:true});
     }
     async function react(id, kind) {
-      const row = rows.get(id); if (!row) return;
-      const selected = summaries(row.message).some(item=>item.reaction === kind && item.selected);
-      const epoch = generation; closeActions(true);
+      const row = rows.get(id); if (!row || suspended) return;
+      closeActions(true);
+      const queued = reactionWrites.get(id);
+      const selected = queued ? queued.reaction : summaries(row.message).find(item => item.selected)?.reaction;
+      const desired = selected === kind ? null : kind;
+      if (queued) { queued.reaction = desired; return; }
+      const write = {reaction: desired};
+      reactionWrites.set(id, write);
+      const epoch = generation;
       try {
-        await request('chat',{action:'react',id,reaction:selected ? null : kind});
-        if (epoch === generation) { text(status,''); await poll(); }
-      } catch(error) { if (epoch === generation) text(status,error.message); }
+        let sent;
+        do {
+          sent = write.reaction;
+          try {
+            const result = await request('chat', {action:'react', id, reaction:sent});
+            if (result?.ok !== true) throw Error('Chat could not update. Try again.');
+            if (epoch === generation) actionNotice = '';
+          } catch (error) {
+            if (epoch === generation) actionNotice = error.message;
+          }
+          if (epoch !== generation) return;
+          await poll(true);
+        } while (epoch === generation && !suspended && sent !== write.reaction);
+      } finally {
+        if (epoch === generation) {
+          reactionWrites.delete(id);
+          if (menuID === id) syncMenu();
+          draftState();
+        }
+      }
     }
     function closeImage(restore = true) {
       if (imageDialog.open) imageDialog.close();
@@ -152,7 +218,7 @@
     }
     function openImage(id) {
       const row = rows.get(id), url = blobs.get(id);
-      if (!row?.message.hasFrame || !url) { text(status,'This image is not available yet. Try again.'); return; }
+      if (!row?.message.hasFrame || !url) { actionNotice = 'This image is not available yet. Try again.'; draftState(); return; }
       closeActions(); setRoving(id); imageID = id; imageReturn = row.article;
       $('chat-image-full').src = url;
       text($('chat-image-title'),'Image from ' + row.message.name);
@@ -173,10 +239,10 @@
       area.style.fontSize="16px"; area.focus({preventScroll:true}); area.select(); area.setSelectionRange(0,value.length); let copied = false;
       try { copied = area.selectionStart===0 && area.selectionEnd===value.length && document.execCommand('copy'); } catch {}
       area.remove();
-      if (copied) { text(status,'Copied'); closeActions(true); return; }
+      if (copied) { actionNotice = 'Copied'; draftState(); closeActions(true); return; }
       if (navigator.clipboard?.writeText) {
         closeActions(true);
-        navigator.clipboard.writeText(value).then(()=>{if(current()){text(status,'Copied');closeActions(true);}}).catch(()=>{if(current())selectableCopy(id,value);});
+        navigator.clipboard.writeText(value).then(()=>{if(current()){actionNotice = 'Copied'; draftState();closeActions(true);}}).catch(()=>{if(current())selectableCopy(id,value);});
       } else selectableCopy(id,value);
     }
     function bindMessage(row) {
@@ -215,7 +281,7 @@
     },{passive:true});
     document.addEventListener('pointercancel',cancelPress,{passive:true});
     document.addEventListener('pointerdown',event=>{
-      if (!menu.hidden && !menu.contains(event.target)) closeActions(false,!log.contains(event.target));
+      if (!menu.hidden && !menu.contains(event.target)) closeActions();
       if (!$('chat-information').contains(event.target) && !$('chat-info').contains(event.target)) {
         $('chat-information').hidden=true;$('chat-info').setAttribute('aria-expanded','false');
       }
@@ -238,7 +304,7 @@
       if (event.key==='ArrowUp'||event.key==='ArrowLeft') next=(index-1+items.length)%items.length;
       if (event.key==='Home') next=0; if (event.key==='End') next=items.length-1;
       if (next!==undefined) {event.preventDefault();items[next].focus({preventScroll:true});items[next].scrollIntoView({block:'nearest'});}
-      if (event.key==='Escape'||event.key==='Tab') {event.preventDefault();event.stopPropagation();closeActions(true);}
+      if (event.key==='Escape'||event.key==='Tab') {event.preventDefault();event.stopPropagation();closeActions(true, true);}
     });
     log.addEventListener('keydown',event=>{
       if (event.target.closest('button')) return;
@@ -257,8 +323,8 @@
       button.addEventListener('click',()=>react(menuID,kind));return button;
     }));
     $('chat-menu-reply').addEventListener('click',()=>{
-      const row=rows.get(menuID);if(!row)return;
-      replyTo=row.message.id;text($('chat-reply-label'),'Replying to '+row.message.name);requestID=undefined;
+      const row=rows.get(menuID);if(!row || posting || pendingSend)return;
+      replyTo=row.message.id; replyName=row.message.name; replyUnavailable=false; actionNotice='';
       closeActions();draftState();input.focus({preventScroll:true});
     });
     $('chat-menu-copy').addEventListener('click',copyMessage);
@@ -275,12 +341,14 @@
       if (!Array.isArray(messages)) return;
       const atEnd = log.scrollHeight - log.scrollTop - log.clientHeight < 64;
       const ids = new Set(messages.map(message => message.id));
-      if (replyTo && !ids.has(replyTo)) { replyTo = undefined; draftState(); }
+      const visibleTop = log.getBoundingClientRect().top;
+      const anchor = [...rows.values()].find(row => ids.has(row.message.id) && row.article.getBoundingClientRect().bottom > visibleTop);
+      const anchorTop = anchor?.article.getBoundingClientRect().top;
       let lostFocus;
       for (const [id,row] of rows) if (!ids.has(id)) {
         const focused=document.activeElement;
         if(row.article.contains(focused)||menuID===id&&menu.contains(focused)||imageID===id&&imageDialog.contains(focused)||copyID===id&&copyDialog.contains(focused))lostFocus=id;
-        if(menuID===id)closeActions(false,false);if(imageID===id)closeImage(false);if(copyID===id)closeCopy(false);
+        if(menuID===id)closeActions();if(imageID===id)closeImage(false);if(copyID===id)closeCopy(false);
         row.article.remove();rows.delete(id);if(blobs.has(id)){URL.revokeObjectURL(blobs.get(id));blobs.delete(id);}
       }
       text($('chat-empty'),messages.length?'':'Send a note or attach a frame. Hold a message to reply or react.');
@@ -308,7 +376,10 @@
         const quote=row.article.querySelector('.chat-quote'),parent=messages.find(item=>item.id===message.replyTo);
         quote.hidden=!message.replyTo;
         text(quote,parent?parent.name+': '+(parent.text||'Image'):'Original message unavailable');
-        text(row.article.querySelector('.chat-text'),message.text||(!message.hasFrame?'Image no longer available':''));
+        const expiredFrame = !message.hasFrame && (message.hadFrame ?? (message.sampleFrame || !message.text));
+        const frameLabel = (message.sampleFrame ? 'Sample image' : 'Image') + ' no longer available';
+        text(row.article.querySelector('.chat-text'), [message.text, expiredFrame ? frameLabel : ''].filter(Boolean).join('\n'));
+        if (!message.hasFrame && row.imageButton.contains(document.activeElement)) lostFocus = message.id;
         row.imageButton.hidden=!message.hasFrame;row.imageButton.setAttribute('aria-label','Open image from '+message.name);
         const image=row.article.querySelector('img');
         row.article.querySelector('.chat-sample').hidden=!message.sampleFrame;
@@ -323,33 +394,68 @@
             chip.className='chat-reaction'+(item.selected?' selected':'');chip.textContent=(kind?.[1]||'')+' '+item.count;return chip;
           }));
         }
-        const label=[message.name+(message.operatorMessage?', operator':''),time,message.replyTo?quote.textContent:'',message.text||(!message.hasFrame?'Image no longer available':''),message.hasFrame?'Image attached':'',message.hasFrame&&message.sampleFrame?'Sample media':'',...reactions.map(item=>(REACTIONS.find(choice=>choice[0]===item.reaction)?.[2]||'Reaction')+', '+item.count+(item.selected?', selected':''))].filter(Boolean).join('. ');
+        const label=[message.name+(message.operatorMessage?', operator':''),time,message.replyTo?quote.textContent:'',message.text,expiredFrame?frameLabel:'',message.hasFrame?'Image attached':'',message.hasFrame&&message.sampleFrame?'Sample media':'',...reactions.map(item=>(REACTIONS.find(choice=>choice[0]===item.reaction)?.[2]||'Reaction')+', '+item.count+(item.selected?', selected':''))].filter(Boolean).join('. ');
         row.article.setAttribute('aria-label',label);previous=message;
       }
       setRoving(rovingID);
-      if(lostFocus!==undefined){const neighbour=messages.find(message=>message.id>lostFocus)||messages.at(-1);setRoving(neighbour?.id,true);}
-      if (atEnd && menuID===undefined) log.scrollTop=log.scrollHeight;
+      if(lostFocus!==undefined){const neighbour=messages.find(message=>message.id>=lostFocus)||messages.at(-1);setRoving(neighbour?.id,true);}
+      if (atEnd && menuID === undefined && !log.contains(document.activeElement)) log.scrollTop=log.scrollHeight;
+      else if (anchor) log.scrollTop += anchor.article.getBoundingClientRect().top - anchorTop;
       if(menuID!==undefined)syncMenu();
-      activity(Math.max(lastActivity,messages.at(-1)?.id||0));
     }
-    async function poll() {
-      if (polling || !admitted || !active || !open) return;
-      polling = true; const epoch = generation;
-      try {
-        const messages = await request('chat');
-        if (epoch !== generation) return;
-        const json = JSON.stringify(messages); if (json !== lastJSON) { render(messages); lastJSON = json; }
-      } catch (error) { if (epoch === generation) text(status, error.message); }
-      finally { polling = false; }
+    function renderHistory(force = false) {
+      if (!open || (!force && renderedJSON === lastJSON)) return;
+      render(history); renderedJSON = lastJSON;
+    }
+    async function poll(force = false) {
+      if (!admitted || !active || suspended) return;
+      if (pollFlight) { pollAgain ||= force; return pollFlight; }
+      const epoch = generation;
+      pollFlight = (async () => {
+        try {
+          const messages = await request('chat');
+          if (epoch !== generation) return;
+          if (!Array.isArray(messages)) throw Error('Chat could not update. Try again.');
+          history = messages;
+          lastJSON = JSON.stringify(messages);
+          if (replyTo && !messages.some(message => message.id === replyTo)) replyUnavailable = true;
+          pollProblem = ''; updateUnread();
+          if (open && renderedJSON === lastJSON) {
+            for (const row of rows.values()) {
+              if (row.message.hasFrame && !blobs.has(row.message.id)) loadFrame(row.message, row.article.querySelector('img'));
+            }
+          } else renderHistory();
+        } catch {
+          if (epoch === generation) pollProblem = 'Chat could not update. Reconnecting…';
+        } finally {
+          if (epoch === generation) {
+            pollFlight = undefined;
+            const again = pollAgain; pollAgain = false;
+            if (again) await poll();
+            if (epoch === generation && pendingSend && !posting) await reconcileSend();
+            if (epoch === generation) draftState();
+          }
+        }
+      })();
+      return pollFlight;
     }
     toggle.addEventListener('click', () => show(!open));
     $('chat-close').addEventListener('click', () => { show(false); toggle.focus(); });
-    $('chat-cancel-reply').addEventListener('click', () => { replyTo = undefined; requestID = undefined; draftState(); });
-    $('chat-remove-frame').addEventListener('click', () => { clearAttachment(); draftState(); });
-    input.addEventListener('input', () => { requestID = undefined; sizeDraft(); draftState(); });
+    cancelReply.addEventListener('click', () => {
+      if (posting || pendingSend) return;
+      clearReply(); actionNotice = ''; draftState(); input.focus({preventScroll:true});
+    });
+    removeFrame.addEventListener('click', () => {
+      if (posting || pendingSend) return;
+      clearAttachment(); actionNotice = ''; draftState(); input.focus({preventScroll:true});
+    });
+    input.addEventListener('input', () => { actionNotice = ''; sizeDraft(); draftState(); });
     input.addEventListener('keydown',event=>{if(event.key==='Enter'&&(event.metaKey||event.ctrlKey)){event.preventDefault();form.requestSubmit();}});
+    const displayedRevision = () => options.displayedRevision ? options.displayedRevision() : pictureRevision;
+    const frameReady = () => !suspended && live && options.live() && Number.isSafeInteger(revision) && revision >= 0 &&
+      displayedRevision() === revision;
     capture.addEventListener('click', () => {
-      if (!live || !options.live()) return;
+      if (capture.disabled || !frameReady()) return;
       const video = $('video');
       if (video.readyState < 2 || !video.videoWidth || !video.videoHeight) return;
       try {
@@ -359,29 +465,53 @@
         let data = canvas.toDataURL('image/jpeg', 0.7);
         if (data.length > 170000) data = canvas.toDataURL('image/jpeg', 0.4);
         if (data.length > 170000) throw Error('This frame is too detailed. Try another frame.');
-        attachment = {data, revision}; requestID = undefined;
-        $('chat-frame-preview').src = data; preview.hidden = false; text(status, 'Frame attached. Send shares it with the session.'); draftState();
-      } catch (error) { text(status, error.message || 'This frame could not be captured.'); }
+        attachment = {data, revision};
+        framePreview.src = data; preview.hidden = false;
+        actionNotice = 'Frame attached. Send shares it with the session.'; draftState();
+      } catch (error) { actionNotice = error.message || 'This frame could not be captured.'; draftState(); }
     });
-    form.addEventListener('submit', async event => {
-      event.preventDefault(); if (posting || !admitted || !active || (!input.value.trim() && !attachment)) return;
-      if (attachment && (!live || attachment.revision !== revision)) { clearAttachment(); text(status, 'The feed changed. Capture a new frame.'); draftState(); return; }
-      posting = true; draftState(); requestID ||= uuid();
-      const epoch = generation, sentText = input.value, sentAttachment = attachment, sentReply = replyTo;
+    function completeSend() {
+      pendingSend = undefined; actionNotice = ''; input.value = ''; sizeDraft(); clearAttachment(); clearReply();
+    }
+    async function reconcileSend() {
+      const draft = pendingSend, epoch = generation;
+      if (!draft || posting || draft.checking || suspended) return false;
+      draft.checking = true; draftState();
       try {
-        await request('chat', {action: 'post', text: sentText, replyTo: sentReply, requestID,
-          ...(attachment ? {frame: attachment.data.split(',')[1], revision: attachment.revision} : {})});
+        const result = await request('chat', {action:'receipt', requestID:draft.body.requestID});
+        if (epoch !== generation || pendingSend !== draft || !Number.isSafeInteger(result?.messageID)) return false;
+        completeSend(); poll(true); return true;
+      } catch { return false; }
+      finally { draft.checking = false; if (epoch === generation) draftState(); }
+    }
+    form.addEventListener('submit', async event => {
+      event.preventDefault();
+      if (send.disabled || posting || pendingSend?.checking) return;
+      if (attachment && !pendingSend && !frameReady()) { attachment.stale = true; draftState(); return; }
+      pendingSend ??= {body: {action:'post', text:input.value, replyTo, requestID:uuid(),
+        ...(attachment ? {frame:attachment.data.split(',')[1], revision:attachment.revision} : {})}};
+      posting = true; draftState();
+      const epoch = generation;
+      try {
+        const result = await request('chat', pendingSend.body);
         if (epoch !== generation) return;
-        if (input.value === sentText) { input.value = ''; sizeDraft(); }
-        if (attachment === sentAttachment) clearAttachment();
-        if (replyTo === sentReply) replyTo = undefined;
-        requestID = undefined; text(status, ''); await poll();
-      } catch (error) { if (epoch === generation) text(status, error.message || 'Message not sent. Try again.'); }
-      finally { posting = false; draftState(); }
+        if (result?.ok !== true) throw Error('Send unconfirmed.');
+        completeSend();
+      } catch (error) {
+        if (epoch !== generation) return;
+        if (error.rejected) {
+          pendingSend = undefined;
+          if (error.code === 'replyUnavailable') replyUnavailable = true;
+          if (error.code === 'frameStale' && attachment) attachment.stale = true;
+          actionNotice = error.message;
+        }
+      } finally {
+        if (epoch === generation) { posting = false; draftState(); poll(true); }
+      }
     });
     document.addEventListener('keydown', event => {
       if (event.key === 'Escape' && open && !event.defaultPrevented) {
-        if (!menu.hidden) { event.preventDefault();closeActions(true);return; }
+        if (!menu.hidden) { event.preventDefault();closeActions(true, true);return; }
         if(imageDialog.open){event.preventDefault();closeImage();return;}
         if(copyDialog.open){event.preventDefault();closeCopy();return;}
         if(!$('chat-information').hidden){event.preventDefault();$('chat-information').hidden=true;$('chat-info').setAttribute('aria-expanded','false');return;}
@@ -407,12 +537,26 @@
       else if (!on && dockedOpen) { dockedOpen = false; if (open) show(false); }
     }
     dockQuery?.addEventListener?.('change', dock);
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) { updateUnread(); poll(true); } });
     return {activity, update(next) {
-      if (!next.admitted || !next.active) { if (admitted || active) reset(); return; }
-      admitted = next.admitted; active = next.active; live = next.live;
-      if (revision !== next.revision || !live) clearAttachment();
-      revision = next.revision; draftState();
-      player.classList.toggle('chat-open', open); dock();
+      const pass = options.pass();
+      if (currentPass !== pass) { reset(); currentPass = pass; blockedPass = undefined; }
+      if (!next.admitted || !next.active) {
+        if (admitted || active) reset();
+        blockedPass = undefined;
+        return;
+      }
+      if (!pass || blockedPass === pass) return;
+      const first = !admitted, suspensionChanged = suspended !== (next.suspended === true);
+      admitted = next.admitted; active = next.active; live = next.live; revision = next.revision;
+      suspended = next.suspended === true;
+      pictureRevision = Object.hasOwn(next, 'displayedRevision') ? next.displayedRevision : (live ? revision : undefined);
+      const ready = frameReady(), stale = attachment && !attachment.stale && (attachment.revision !== revision || !ready);
+      if (stale) attachment.stale = true;
+      if (first || suspensionChanged || captureReady !== ready || stale) draftState();
+      captureReady = ready;
+      if (first) { dock(); poll(); schedulePoll(); }
+      else if (suspensionChanged && !suspended) poll(true);
     }};
   }
   globalThis.SetbeamChat = {attach};

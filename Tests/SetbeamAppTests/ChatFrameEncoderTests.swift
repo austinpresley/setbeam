@@ -37,4 +37,20 @@ final class ChatFrameEncoderTests: XCTestCase {
         XCTAssertTrue(ViewingWiFiDraft(ssid: "Open", password: "", openNetwork: true).canSave)
         XCTAssertTrue(ViewingWiFiDraft(ssid: "Secured", password: "fixture-password").canSave)
     }
+    @MainActor func testUnavailableNativeReplyKeepsDraftAndBlocksSend() throws {
+        var state = SessionState()
+        state.beginMonitoring()
+        try state.startSharing()
+        let model = SessionModel(initialState: state)
+        model.chatText = "Keep this draft"
+        model.chatReplyTo = 1
+        model.refreshChat()
+        XCTAssertTrue(model.chatReplyUnavailable)
+        XCTAssertFalse(model.canSendChat)
+        model.sendChat()
+        XCTAssertEqual(model.chatText, "Keep this draft")
+        XCTAssertEqual(model.chatReplyTo, 1)
+        model.chatReplyTo = nil
+        XCTAssertTrue(model.canSendChat)
+    }
 }

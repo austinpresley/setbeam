@@ -1131,6 +1131,7 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
         apply(stopped)
         publishGatewayState()
         viewers = gateway.viewers
+        refreshChat()
         stoppingSharing = false
         writeExperienceState()
     }
@@ -1150,43 +1151,66 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
             chatImages = chatImages.filter { imageIDs.contains($0.key) }
             for id in imageIDs where chatImages[id] == nil { if let data = gateway.chatFrame(id: id), let image = NSImage(data: data) { chatImages[id] = image } }
             chatMessages = messages
-            if let id = chatReplyTo, !messages.contains(where: { $0.id == id }) { chatReplyTo = nil }
         }
-        if sharingSection == .chat, NSApp.isActive, (sharingInWindow ? sharingWindow : monitorWindow)?.isKeyWindow == true { markChatRead() }
-        if !state.sharing { chatText = ""; chatReplyTo = nil; chatReadThrough = 0; clearChatAttachment() }
+        if (sharingInWindow || sharingCanDock), sharingSection == .chat, NSApp?.isActive == true,
+           (sharingInWindow ? sharingWindow : monitorWindow)?.isKeyWindow == true { markChatRead() }
+        if !state.sharing {
+            if !chatText.isEmpty { chatText = "" }
+            if chatReplyTo != nil { chatReplyTo = nil }
+            if chatReadThrough != 0 { chatReadThrough = 0 }
+            if chatProblem != nil { chatProblem = nil }
+            if chatCapturing || chatAttachment != nil { clearChatAttachment(discard: true) }
+        }
     }
     func chatFrame(id: Int) -> Data? { gateway.chatFrame(id: id) }
-    func clearChatAttachment() { chatCaptureGeneration = UUID(); chatCapturing = false; chatAttachment = nil; chatAttachmentRevision = nil; chatAttachmentLink = nil }
+    var chatReplyUnavailable: Bool {
+        chatReplyTo.map { id in !chatMessages.contains(where: { $0.id == id }) } ?? false
+    }
+    var chatAttachmentStale: Bool {
+        chatAttachment != nil && (chatAttachmentLink != viewingLink || chatAttachmentRevision != currentRuntime?.audienceRevision ||
+            chatAttachmentRevision == nil || !canCaptureChatFrame)
+    }
+    var canSendChat: Bool {
+        state.sharing && !chatCapturing && !chatReplyUnavailable && !chatAttachmentStale &&
+            (!chatText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || chatAttachment != nil)
+    }
+    func clearChatAttachment(discard: Bool = false) {
+        if chatCapturing { chatCaptureGeneration = UUID(); chatCapturing = false }
+        if discard { chatAttachment = nil }
+        chatAttachmentRevision = nil; chatAttachmentLink = nil
+    }
     func captureChatFrame() {
-        guard !chatCapturing, audienceAllowsFrame, let picture = freshOutgoingPicture, let snapshot = currentRuntime else { return }
+        guard !chatCapturing, audienceAllowsFrame, let picture = freshOutgoingPicture,
+              let decoder = audiencePlayer.decoderGeneration, let snapshot = currentRuntime else { return }
         let generation = UUID(), link = viewingLink, revision = snapshot.audienceRevision
         chatCaptureGeneration = generation; chatCapturing = true
         Task {
             let data = await Task.detached(priority: .userInitiated) { ChatFrameEncoder.encode(picture) }.value
             guard chatCaptureGeneration == generation else { return }
             chatCapturing = false
-            guard link == viewingLink, currentRuntime?.audienceRevision == revision, canCaptureChatFrame else { return }
+            guard link == viewingLink, currentRuntime?.audienceRevision == revision,
+                  audiencePlayer.decoderGeneration == decoder, canCaptureChatFrame else { return }
             guard let data else { chatProblem = "The outgoing frame could not be prepared. Try another frame."; return }
             chatAttachment = data; chatAttachmentRevision = revision; chatAttachmentLink = link; chatProblem = nil
         }
     }
     func sendChat() {
-        guard state.sharing, let snapshot = currentRuntime else { return }
+        refreshChat()
+        guard canSendChat, let snapshot = currentRuntime else { return }
         do {
-            if chatAttachment != nil, chatAttachmentLink != viewingLink || chatAttachmentRevision != snapshot.audienceRevision || !canCaptureChatFrame { clearChatAttachment(); throw SetbeamError.unavailable("The feed changed. Capture a new frame before sending.") }
             try gateway.postChat(text: chatText, replyTo: chatReplyTo, frame: chatAttachment, revision: snapshot.audienceRevision,
                                  token: snapshot.guestToken, name: chatOperatorName, color: chatOperatorColor, requestID: UUID().uuidString)
-            chatText = ""; chatReplyTo = nil; clearChatAttachment(); chatProblem = nil; refreshChat()
-        } catch { chatProblem = error.localizedDescription }
+            chatText = ""; chatReplyTo = nil; clearChatAttachment(discard: true); chatProblem = nil; refreshChat()
+        } catch { chatProblem = error.localizedDescription; refreshChat() }
     }
     func likeChat(_ message: ChatMessage) {
-        guard let snapshot = currentRuntime else { return }
-        do { try gateway.likeChat(id: message.id, liked: !message.liked, token: snapshot.guestToken); chatProblem = nil; refreshChat() }
+        guard let snapshot = currentRuntime, let current = chatMessages.first(where: { $0.id == message.id }) else { return }
+        do { try gateway.likeChat(id: message.id, liked: !current.liked, token: snapshot.guestToken); chatProblem = nil; refreshChat() }
         catch { chatProblem = error.localizedDescription }
     }
     func reactChat(_ message: ChatMessage, reaction: ChatReaction) {
-        guard let snapshot = currentRuntime else { return }
-        let selected = message.reactions.contains { $0.reaction == reaction && $0.selected }
+        guard let snapshot = currentRuntime, let current = chatMessages.first(where: { $0.id == message.id }) else { return }
+        let selected = current.reactions.contains { $0.reaction == reaction && $0.selected }
         do { try gateway.reactChat(id: message.id, reaction: selected ? nil : reaction, token: snapshot.guestToken); chatProblem = nil; refreshChat() }
         catch { chatProblem = error.localizedDescription }
     }
