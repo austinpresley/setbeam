@@ -1362,11 +1362,24 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
     }
     func openWiFiSettings() { NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.wifi-settings-extension")!) }
     func openPrivacySettings() { NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_\(screenPermissionDenied || setup?.kind.isMacCapture == true ? "ScreenCapture" : "Camera")")!) }
+    private var savingFrame = false
     func saveFrame() {
-        guard localReady else { return }
+        guard localReady, !savingFrame else { return }
+        guard let generation = localPlayer.decoderGeneration, let picture = localPlayer.freshPicture(for: generation) else {
+            error = "The frame could not be saved. Wait for the picture and try again."
+            return
+        }
+        savingFrame = true
         let panel = NSSavePanel(); panel.nameFieldStringValue = "\(title.isEmpty ? "Setbeam" : title)-frame.jpg"; panel.allowedContentTypes = [.jpeg]
-        guard panel.runModal() == .OK, let destination = panel.url else { return }
-        Task { do { try await runtime.saveFrame(to: destination) } catch { self.error = "The frame could not be saved. Wait for the picture and try again." } }
+        guard panel.runModal() == .OK, let destination = panel.url else { savingFrame = false; return }
+        Task {
+            defer { savingFrame = false }
+            do {
+                try await Task.detached(priority: .userInitiated) { try LocalFrameExport.save(picture, to: destination) }.value
+            } catch {
+                self.error = "The frame could not be saved. Check the destination and try again."
+            }
+        }
     }
     func refreshCaptureDevices() { captureDevices = CaptureDiscovery.devices(); screenDisplays = MacDisplay.connected() }
     func revealSessionLog() {

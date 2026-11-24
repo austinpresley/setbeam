@@ -108,6 +108,47 @@ The notarized Mac disk image and emulator-tested Setbeam Receiver 0.2.1
 developer APK were delivered and verified under Austin Deliveries / Setbeam /
 Build 43. Delivery ID `20261124T042851Z--907151556fc1`.
 
+## Native monitoring audit, 2026-11-24
+
+The playback inbox keeps PCM queued during renderer backpressure. Mute and
+clock changes invalidate queued PCM and packets still being assembled or
+converted. The audio clock pauses for the renderer flush while video
+continues on the shared host-time anchor. The pipe assembles one bounded
+record at a time outside the inbox lock.
+
+Native telemetry records frame publication and per-visible-layer enqueue
+acceptance. A stalled layer retries the latest frame with up to two flushes.
+The floating preview refits after a drag to another display. NV12 keeps pixel
+aspect and supported color tags through the decoder and native sample.
+Save Frame freezes the fresh private picture when invoked and writes an
+aspect-correct sRGB JPEG atomically after destination selection.
+
+The focused Swift suite passed 45 cases using the notarized build 43
+helpers. Its isolated private RTSP probe published 64 frames in 2.5 seconds
+at 1280 × 720 and 24 fps. The two passing runs recorded 7.07 ms and
+12.37 ms maximum publication clock error, with 12 MiB and 11 MiB growth
+in the 4K memory regression. Five Python timing tests and the
+generated-file and loopback bridge probes passed.
+The rebuilt bridge also passed a 382 × 214 NV12 fixture with 4:3 display
+aspect and BT.709 tags. VideoToolbox omitted the fixture's primaries and
+transfer tags on the first attempt. An explicit MP4 color tag fixture now
+checks the bridge's stream-metadata fallback. One repeat with the build 43
+helpers reported `fixture server did not start`. Its isolated retry passed.
+An initial Swift build planned its source list while the export file was
+being added and reported `cannot find 'LocalFrameExport' in scope`.
+Both completed Swift runs included the new file.
+
+The parent integration needs to fence outgoing availability and chat
+attachments on the decoder generation as well as the publisher revision.
+The 384-pixel, 8 fps outgoing decoder still decodes every compressed frame
+before it drops or scales the decoded picture. Measure its process with
+1080p30 and 4K30 live output, including CPU, footprint, wakeups, time to the
+first fresh picture after a transition, and published cadence. Those
+measurements can separate decode cost from scaling and IPC. Audible device
+behavior, physical cross-display dragging, and calibrated color are still
+open. Verification used generated sources and XCTest rather than an
+installed app or the full media suite.
+
 ## Branch verification, 2026-11-21
 
 Local `scripts/check.sh` passed 310 Swift cases with one opt-in soak skipped,
