@@ -27,7 +27,9 @@ window and a generated virtual display at both 1 fps and 30 fps. Decoded
 Chrome frames showed the ring on light and dark content and cleared it
 after the pointer left. Hold, Resume, and Stop kept their expected states
 and left private monitoring available. An interactive window covering the
-cursor suppressed the highlight. The initial test found that Quartz lists
+cursor suppressed the highlight, and a moved and resized window retained it
+at the original browser resolution. Source Details fit in both Mac
+appearances. The initial test found that Quartz lists
 full-screen utilities and cursor sprites above the selected window, so
 window capture now uses AppKit's mouse hit test. The focused cursor and
 settings suite passed 16 tests.
@@ -39,6 +41,17 @@ Busy-workstation runs also reported 1.047 fps against 1.0 fps and 210 frames
 against a 300-frame floor. Isolated reruns passed both checks, with 490 decoded
 frames in seven seconds and no decoder errors in the keyframe run.
 
+The final `scripts/check.sh` run passed with the notarized app's bundled
+helpers and fixtures. It ran 328 XCTest cases with two opt-in cases skipped,
+17 Python tests, 60 Node tests, and all ten media probes. The two timing-probe
+corrections were test-only. The 1 fps check now measures eight seconds after
+a 0.910-second RTP clock interval made its short average miss the 3% tolerance.
+The preview test accepts one bounded initial RTCP shift in either direction
+after an observed 116.300 ms startup interval. In the final run, the slow
+upstream decoded at 1.011 fps and the keyframe check decoded 495 frames in
+seven seconds with zero decoder errors. The opt-in soak runner also passed a
+30-second smoke test with the notarized package's helpers and fixtures.
+
 Android assembled both APKs and passed 86 JVM tests and 102 provisioning tests.
 Lint reported zero errors and eight warnings. The signed developer APK matches
 the build from the November 19 recorded run. The first emulator check received
@@ -47,10 +60,12 @@ A separate playback run reached Android’s package manager and failed with
 `Broken pipe (32)` before a share could start. A fresh 1280 × 720 emulator
 boot passed 11 selected cases including admission, playback, remote controls,
 chat, pointers, Hold, recovery, removal, and Stop. It restored its settings and
-exited with an empty owned process group.
+exited with an empty owned process group. A clean Gradle rerun again passed
+all 86 JVM tests. The staged APK is the exact archive exercised by the emulator.
 
 The physical iPad Safari Sample test passed at 1280 × 720 with Hold, same-tab
-Resume, and Stop. The onn receiver and Accsoon were unavailable for this
+Resume, and Stop. A follow-up received no rotation or lock event during its
+observation window. The onn receiver and Accsoon were unavailable for this
 checkpoint. [Physical evidence](hardware-tests.md)
 
 ## Branch verification, 2026-11-21
