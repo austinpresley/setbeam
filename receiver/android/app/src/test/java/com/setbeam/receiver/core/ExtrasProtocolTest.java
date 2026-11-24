@@ -47,11 +47,17 @@ public class ExtrasProtocolTest {
         assertEquals("❤️ 2", second.reactions);
 
         StringBuilder many = new StringBuilder("[");
-        for (int i = 1; i <= 150; i++) many.append(i > 1 ? "," : "").append("{\"id\":").append(i).append(",\"text\":\"").append("x".repeat(2000)).append("\"}");
+        for (int i = 1; i <= 150; i++) many.append(i > 1 ? "," : "").append("{\"id\":").append(i).append(",\"text\":\"").append("x".repeat(ChatLine.MAX_TEXT_BYTES + 1)).append("\"}");
         List<ChatLine> bounded = ChatLine.parse(new JSONArray(many.append("]").toString()));
         assertEquals(ChatLine.MAX_MESSAGES, bounded.size());
         assertEquals(51, bounded.get(0).id);
-        assertEquals(ChatLine.MAX_TEXT, bounded.get(0).text.length());
+        assertEquals(ChatLine.MAX_TEXT_BYTES, bounded.get(0).text.length());
+    }
+
+    @Test public void chatKeepsAcceptedMultiscalarCharactersOnTheReceiver() throws Exception {
+        String text = "👍🏽".repeat(700);
+        JSONArray messages = new JSONArray().put(new org.json.JSONObject().put("id", 1).put("text", text));
+        assertEquals(text, ChatLine.parse(messages).get(0).text);
     }
 
     @Test public void chatKeepsEvictedAttachmentsAndReadsLegacyArraysNearTheBodyLimit() throws Exception {

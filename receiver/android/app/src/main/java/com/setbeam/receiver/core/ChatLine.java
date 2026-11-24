@@ -14,7 +14,7 @@ import java.util.List;
  */
 public final class ChatLine {
     public static final int MAX_MESSAGES = 100;
-    public static final int MAX_TEXT = 1200;
+    public static final int MAX_TEXT_BYTES = 6144;
 
     public final int id;
     public final String name;
@@ -84,15 +84,17 @@ public final class ChatLine {
     static String cleanText(String value) {
         if (value == null) return "";
         StringBuilder clean = new StringBuilder();
-        int count = 0;
-        for (int i = 0; i < value.length() && count < MAX_TEXT;) {
+        int bytes = 0;
+        for (int i = 0; i < value.length();) {
             int cp = value.codePointAt(i);
             i += Character.charCount(cp);
             if (cp == '\t') cp = ' ';
             int type = Character.getType(cp);
             if (cp != '\n' && (type == Character.CONTROL || type == Character.FORMAT && cp != 0x200D && cp != 0xFE0F)) continue;
+            int encodedBytes = cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4;
+            if (bytes + encodedBytes > MAX_TEXT_BYTES) break;
             clean.appendCodePoint(cp);
-            count++;
+            bytes += encodedBytes;
         }
         return clean.toString().trim().replaceAll("\n{3,}", "\n\n");
     }

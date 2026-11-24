@@ -230,8 +230,9 @@ panel is open so reactions and removals show. It does not fetch attached
 frames (`chat/frame/<id>`) and never posts. Text is cleaned of control and
 direction-override characters and kept in memory only. `hasFrame` reports
 current JPEG availability. `hadFrame` stays true after eviction and defaults
-to `hasFrame` on older Macs. The response stays below the receiver's 1 MiB
-body limit.
+to `hasFrame` on older Macs. A message can contain up to 1,200 characters
+and 6,144 UTF-8 bytes. The response stays below the receiver's 1 MiB body
+limit.
 
 ### `GET presence` (optional, admitted only, WebSocket)
 
