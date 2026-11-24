@@ -51,7 +51,7 @@ public struct NetworkAddress: Hashable, Identifiable, Sendable {
         var interfaces: UnsafeMutablePointer<ifaddrs>?
         guard getifaddrs(&interfaces) == 0 else { return [] }
         defer { freeifaddrs(interfaces) }
-        let routers = serviceRouters()
+        let configuration = interfaceConfiguration()
         let wifi = Dictionary(uniqueKeysWithValues: (CWWiFiClient.shared().interfaces() ?? []).compactMap { interface -> (String, String)? in
             guard let name = interface.interfaceName,
                   let network = interface.ssid().map({ "SSID:" + $0 }) ?? interface.bssid().map({ "BSSID:" + $0 }) else { return nil }
@@ -65,14 +65,15 @@ public struct NetworkAddress: Hashable, Identifiable, Sendable {
             let flags = Int32(current.pointee.ifa_flags)
             guard flags & IFF_UP != 0, flags & IFF_RUNNING != 0, flags & IFF_LOOPBACK == 0 else { continue }
             let name = String(cString: current.pointee.ifa_name)
-            guard !["utun", "awdl", "llw", "bridge", "vmenet"].contains(where: { name.hasPrefix($0) }) else { continue }
+            guard !configuration.inactive.contains(name),
+                  !["utun", "awdl", "llw", "bridge", "vmenet"].contains(where: { name.hasPrefix($0) }) else { continue }
             var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
             if getnameinfo(address, socklen_t(address.pointee.sa_len), &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST) == 0 {
                 let ip = String(cString: host)
                 if !ip.hasPrefix("169.254.") {
                     let subnet = current.pointee.ifa_netmask.map { Self.subnet(address, mask: $0) }
                     result.append(NetworkAddress(interface: name, address: ip, subnet: subnet,
-                                                 router: routers[name]?[ip], wirelessNetwork: wifi[name]))
+                                                 router: configuration.routers[name]?[ip], wirelessNetwork: wifi[name]))
                 }
             }
         }
@@ -83,18 +84,26 @@ public struct NetworkAddress: Hashable, Identifiable, Sendable {
         }
     }
 
-    private static func serviceRouters() -> [String: [String: String]] {
+    private static func interfaceConfiguration() -> (routers: [String: [String: String]], inactive: Set<String>) {
+        let patterns = ["^State:/Network/Service/[^/]+/IPv4$", "^State:/Network/Interface/[^/]+/Link$"]
         guard let store = SCDynamicStoreCreate(nil, "Setbeam viewing network" as CFString, nil, nil),
-              let values = SCDynamicStoreCopyMultiple(store, nil, ["^State:/Network/Service/[^/]+/IPv4$"] as CFArray) as? [String: [String: Any]] else { return [:] }
+              let values = SCDynamicStoreCopyMultiple(store, nil, patterns as CFArray) as? [String: [String: Any]] else { return ([:], []) }
         var routers: [String: [String: String]] = [:]
+        var inactive: Set<String> = []
         for key in values.keys.sorted() {
-            guard let value = values[key],
-                  let interface = value[kSCPropInterfaceName as String] as? String,
+            guard let value = values[key] else { continue }
+            if key.hasSuffix("/Link") {
+                if value[kSCPropNetLinkActive as String] as? Bool == false {
+                    inactive.insert(String(key.split(separator: "/")[3]))
+                }
+                continue
+            }
+            guard let interface = value[kSCPropInterfaceName as String] as? String,
                   let addresses = value[kSCPropNetIPv4Addresses as String] as? [String],
                   let router = value[kSCPropNetIPv4Router as String] as? String else { continue }
             for address in addresses { routers[interface, default: [:]][address] = router }
         }
-        return routers
+        return (routers, inactive)
     }
 
     private static func details(_ bsd: String) -> (String, Bool) {
