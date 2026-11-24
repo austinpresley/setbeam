@@ -35,6 +35,7 @@ public actor MediaRuntime {
     private var directory: URL?
     private var mediaServer: ManagedChild?
     private var screenCapture: MacScreenCapture?
+    private let screenRetirement = ScreenCaptureRetirement()
     private var sourcePublisher: ManagedChild?
     private var audiencePublisher: ManagedChild?
     private var source: VideoSource = .sample
@@ -80,7 +81,6 @@ public actor MediaRuntime {
     private var replacingSource = false
     private let accsoonDiscovery = AccsoonDiscovery()
     private let accsoonReceiver = AccsoonReceiver()
-    private var accsoonVideoPort: UInt16 = 0, accsoonAudioPort: UInt16?
     private var audienceQuality = AudienceQuality.best
     private var audienceFrameRate = VideoFrameRate.source
     private var screenFrameRate = VideoFrameRate.source
@@ -220,12 +220,12 @@ public actor MediaRuntime {
 
     private static func networkRange(for address: String) -> String { NetworkAddress.subnet(for: address) }
 
-    private func makeSourceArguments() throws -> [String] {
+    private func makeSourceArguments(displayFrameRate: Int?, accsoonInput: URL?) throws -> [String] {
         var args = commonFFmpegArguments
         switch source {
-        case .macScreen(let id):
-            let display = try MacDisplay.resolve(id, in: MacDisplay.connected())
-            args += Self.screenInputArguments(frameRate: screenFrameRate.captureRate(for: display.frameRate))
+        case .macScreen:
+            guard let displayFrameRate else { throw SetbeamError.runtime("The selected display has no capture rate.") }
+            args += Self.screenInputArguments(frameRate: displayFrameRate)
         case .macWindow:
             args += Self.screenInputArguments(frameRate: screenFrameRate.captureRate(for: MacWindow.nativeFrameRate))
         case .sample:
@@ -254,22 +254,9 @@ public actor MediaRuntime {
             args += ["-f", "avfoundation"] + (mode?.arguments ?? ["-framerate", "30"]) + ["-video_device_unique_id", videoID]
             if let audioID { args += ["-audio_device_unique_id", audioID] }
             args += ["-i", "none:none"]
-        case .accsoon(let uid):
-            try accsoonDiscovery.start()
-            guard let device = accsoonDiscovery.device(uid), device.recognized, let directory else {
-                throw SetbeamError.unavailable("Join your saved transmitter's Wi-Fi and turn it on. Setbeam will reconnect to that same unit.")
-            }
-            guard device.videoAvailable else { throw SetbeamError.unavailable("Connect a live computer or camera output to the transmitter's HDMI or SDI input.") }
-            accsoonVideoPort = try NetworkAddress.freeRTPPorts()
-            accsoonAudioPort = device.audioAvailable ? try NetworkAddress.freeRTPPorts() : nil
-            var sdp = "v=0\no=- 0 0 IN IP4 127.0.0.1\ns=Setbeam private input\nc=IN IP4 127.0.0.1\nt=0 0\nm=video \(accsoonVideoPort) RTP/AVP 96\na=rtpmap:96 H265/90000\na=recvonly\n"
-            if let audio = accsoonAudioPort {
-                sdp += "m=audio \(audio) RTP/AVP 97\na=rtpmap:97 MPEG4-GENERIC/48000/2\na=fmtp:97 streamtype=5; profile-level-id=1; mode=AAC-hbr; config=1190; SizeLength=13; IndexLength=3; IndexDeltaLength=3\na=recvonly\n"
-            }
-            let file = directory.appendingPathComponent("accsoon.sdp")
-            try sdp.write(to: file, atomically: true, encoding: .utf8)
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
-            args += ["-protocol_whitelist", "file,udp,rtp", "-analyzeduration", "1000000", "-probesize", "2000000", "-i", file.path]
+        case .accsoon:
+            guard let accsoonInput else { throw SetbeamError.runtime("The selected Accsoon input was not prepared.") }
+            args += ["-protocol_whitelist", "file,udp,rtp", "-analyzeduration", "1000000", "-probesize", "2000000", "-i", accsoonInput.path]
         }
         args += ["-map", "0:v:0", "-map", "0:a:0?"]
         // Monitoring relays the received picture untouched. Only raw capture frames need an encoder;
@@ -338,6 +325,8 @@ public actor MediaRuntime {
         guard !sourceNeedsConfiguration else {
             throw SetbeamError.unavailable("The selected input is waiting for its private media configuration.")
         }
+        await screenRetirement.wait()
+        try Task.checkCancellation()
         accsoonReceiver.stop()
         stopPyroHPlayback()
         if case .pyroH(let route) = source {
@@ -346,12 +335,25 @@ public actor MediaRuntime {
         }
         var launched = false
         defer { if !launched { stopPyroHPlayback() } }
-        sourceArguments = try makeSourceArguments()
+        let displayFrameRate: Int?
+        if case .macScreen(let id) = source {
+            let display = try MacDisplay.resolve(id, in: MacDisplay.connected())
+            displayFrameRate = screenFrameRate.captureRate(for: display.frameRate)
+        } else {
+            displayFrameRate = nil
+        }
+        let accsoonInput: URL?
+        if case .accsoon(let uid) = source, let directory {
+            accsoonInput = try await accsoonReceiver.prepareInput(uid: uid, discovery: accsoonDiscovery, directory: directory)
+        } else {
+            accsoonInput = nil
+        }
+        sourceArguments = try makeSourceArguments(displayFrameRate: displayFrameRate, accsoonInput: accsoonInput)
         if source.isMacCapture, let directory {
             // A closed or hidden window fails here, before any helper starts, so retries stay cheap.
             if case .macWindow(let identity) = source { try MacWindowLocator.require(identity) }
             let pipe = Pipe()
-            let capture = MacScreenCapture()
+            let capture = MacScreenCapture(retirement: screenRetirement)
             capture.setPresenterCursorHighlight(presenterCursorHighlight)
             do {
                 sourcePublisher = try ManagedChild(name: "Screen input", executable: paths.tools.appendingPathComponent("ffmpeg"), arguments: sourceArguments, directory: directory, standardInput: pipe.fileHandleForReading)
@@ -359,7 +361,9 @@ public actor MediaRuntime {
                 screenCapture = capture
                 switch source {
                 case .macWindow(let identity): try await capture.start(window: identity, output: pipe.fileHandleForWriting, frameRate: screenFrameRate)
-                case .macScreen(let id): try await capture.start(displayUUID: id, output: pipe.fileHandleForWriting, frameRate: screenFrameRate)
+                case .macScreen(let id):
+                    try await capture.start(displayUUID: id, output: pipe.fileHandleForWriting, frameRate: screenFrameRate,
+                                            expectedFramesPerSecond: displayFrameRate)
                 default: break
                 }
             } catch {
@@ -367,15 +371,14 @@ public actor MediaRuntime {
                 throw error
             }
         } else {
-            sourcePublisher = try child("Source input", "ffmpeg", sourceArguments)
+            do { sourcePublisher = try child("Source input", "ffmpeg", sourceArguments) }
+            catch {
+                if accsoonInput != nil { accsoonReceiver.stop(); try? accsoonDiscovery.start() }
+                throw error
+            }
         }
         launched = true
         sourceStartedAt = Date()
-        if case .accsoon(let uid) = source, let device = accsoonDiscovery.device(uid) {
-            accsoonDiscovery.stop()
-            do { try accsoonReceiver.start(host: device.host, deviceUID: uid, videoPort: accsoonVideoPort, audioPort: accsoonAudioPort) }
-            catch { screenCapture?.stop(); screenCapture = nil; sourcePublisher?.stop(); sourcePublisher = nil; try? accsoonDiscovery.start(); throw error }
-        }
     }
     private func stopPyroHPlayback() {
         pyroHPlayback?.stop(); pyroHPlayback = nil; pyroHProblem = nil
@@ -840,10 +843,11 @@ public actor MediaRuntime {
         if pyroHPlayback?.problem != nil {
             sourcePublisher?.stop(); sourcePublisher = nil
         }
-        if !replacingSource, mediaServer?.isRunning == true, (sourcePublisher?.isRunning != true || sourceStalled || receiverFailed), Date() >= nextSourceRetry {
-            problem = problem ?? (isAccsoonSource ? accsoonReceiver.lastError ?? sourcePublisher?.recentError : sourcePublisher?.recentError)
+        let screenError = screenCapture?.lastError
+        if !replacingSource, mediaServer?.isRunning == true, (sourcePublisher?.isRunning != true || sourceStalled || receiverFailed || screenError != nil), Date() >= nextSourceRetry {
+            problem = problem ?? (isAccsoonSource ? accsoonReceiver.lastError : screenError) ?? sourcePublisher?.recentError
             sourceFailures += 1; nextSourceRetry = Date().addingTimeInterval(min(10, pow(1.6, Double(sourceFailures))))
-            let reason = sourcePublisher == nil ? "not running" : sourcePublisher?.isRunning != true ? "exited" : receiverFailed ? "receiver failed" : "stalled"
+            let reason = sourcePublisher == nil ? "not running" : sourcePublisher?.isRunning != true ? "exited" : receiverFailed ? "receiver failed" : screenError != nil ? "screen capture failed" : "stalled"
             log.record("source.restart", ["reason": reason, "failures": sourceFailures, "exit": Self.exitDescription(sourcePublisher?.terminationStatus),
                                           "error": String((problem ?? "").suffix(300))])
             screenCapture?.stop(); screenCapture = nil; sourcePublisher?.stop(); sourcePublisher = nil
@@ -879,7 +883,9 @@ public actor MediaRuntime {
         let localReady = localPath?["available"] as? Bool ?? false
         let frameFresh = lastFrame.map { Date().timeIntervalSince($0) < 6 } ?? false
         let localDecodable = MediaOutputContract.acceptsMonitoring(path: localPath)
-        let available = !sourceNeedsConfiguration && localReady && frameFresh && localDecodable && (!isAccsoonSource || accsoonReceiver.isRunning)
+        let screenError = screenCapture?.lastError
+        let available = screenError == nil && pyroHPlayback?.problem == nil && !sourceNeedsConfiguration && localReady
+            && frameFresh && localDecodable && (!isAccsoonSource || accsoonReceiver.isRunning)
         if available { sourceFailures = 0; serverFailures = 0 }
         var audiencePath: [String: Any]?
         let generation = audienceGeneration
@@ -911,7 +917,8 @@ public actor MediaRuntime {
                 "frameAge": audiencePublisher?.lastVideoFrameAt.map { Date().timeIntervalSince($0) } ?? -1])
         }
         sessionState.updateSource(available: available); sessionState.updateAudience(available: audienceAvailable)
-        observedFrameAt = lastFrame; observedProblem = available ? nil : (pyroHPlayback?.problem ?? pyroHProblem ?? problem).map(Redaction.text)
+        observedFrameAt = lastFrame
+        observedProblem = available ? nil : (pyroHPlayback?.problem ?? pyroHProblem ?? problem ?? screenError).map(Redaction.text)
         observedSourceAudio = available && MediaTracks.hasAudio(localPath?["tracks"] as? [String] ?? [])
         observedAudienceAudio = audienceAvailable && MediaTracks.hasAudio(audiencePath?["tracks"] as? [String] ?? [])
         publishSnapshot()
@@ -957,6 +964,7 @@ public actor MediaRuntime {
         await acquireOperation()
         defer { releaseOperation() }
         shutdownLocked()
+        await screenRetirement.wait()
     }
     private func shutdownLocked() {
         if directory != nil { log.record("session.end", ["sharing": sharing, "holding": holding]) }
