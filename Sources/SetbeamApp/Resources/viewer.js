@@ -33,6 +33,8 @@
   // Setbeam issues each tab a secret pass. Only that pass identifies this session; under approval
   // it is admitted, declined, or removed by the operator, and a reload keeps that decision.
   const passKey = 'setbeam-pass:' + (globalThis.location?.pathname || '');
+  const tabKeyStorage = passKey + ':tab';
+  let tabKey, tabChannel, tabClaimTimer, checkingTab = false;
   let pass, access = 'joining', approval = false, mediaReady = false;
   // Under approval a new request is sent only when the viewer presses Ask to join. A saved name
   // prefills the form; restoring a pass resumes its request or decision without asking again.
@@ -42,7 +44,7 @@
   // Under approval a name is fixed once the session has one; a session admitted unnamed may set one first label.
   const nameLocked = () => approval && !!pass && !!viewerName;
   const ended = () => unavailable || mode === 'stopped' || refused();
-  const running = () => !suspended && !ended();
+  const running = () => !suspended && !checkingTab && !ended();
   const liveTrack = () => !!mediaStream?.getVideoTracks().some(track => track.readyState === 'live' && !track.muted);
   const playing = () => running() && mode === 'live' && liveTrack() && !video.paused &&
     video.readyState >= 2 && lastFrameAt !== undefined && Date.now() - lastFrameAt < 6000;
@@ -645,7 +647,10 @@
           !['pending', 'admitted', 'declined', 'removed'].includes(response.body.admission)) { failed(); return; }
       else {
         const result = response.body;
-        if (pass !== result.pass) resetAdmission(result.admission);
+        if (pass !== result.pass) {
+          resetAdmission(result.admission);
+          if (tabChannel) rememberTabKey(id);
+        }
         pass = result.pass; access = result.admission; admissionConfirmed = true;
         mediaReady = result.ready !== false;
         joinNumber = Number.isInteger(result.number) ? result.number : undefined;
@@ -862,6 +867,8 @@
     resetMedia();
     heartbeatAgain = false; reportedPlaying = undefined;
     clearInterval(ticker); ticker = undefined; clearTimeout(controlsTimer);
+    clearTimeout(tabClaimTimer); checkingTab = false;
+    tabChannel?.close(); tabChannel = undefined;
     exitPlayerFullscreen(); releaseAwake();
   }
   function terminate() {
@@ -876,11 +883,11 @@
   function resume() {
     if (!suspended || ended()) return;
     suspended = false; eventsRetryAt = 0;
-    startTicks(); revealControls(); pollState(); join(); update();
+    revealControls(); claimViewerTab();
   }
   window.addEventListener('online', () => { pollState(); join(); });
   window.addEventListener('pagehide', () => {
-    if (!running()) return;
+    if (suspended || ended()) return;
     suspended = true; stateKnown = false; admissionConfirmed = false;
     if (asking) { asking = false; joinNote = 'error'; }
     cancelWork(); update();
@@ -913,5 +920,39 @@
   const chat = globalThis.SetbeamChat?.attach({
     pass: () => pass, live: playing, displayedRevision: () => displayedRevision, identityOpen: () => editing
   });
-  startTicks(); pollState(); join(); update();
+
+  function rememberTabKey(key) {
+    tabKey = key;
+    try { sessionStorage.setItem(tabKeyStorage, key); } catch {}
+  }
+
+  function claimViewerTab() {
+    const start = () => { startTicks(); pollState(); join(); update(); };
+    if (typeof BroadcastChannel !== 'function') { start(); return; }
+    try {
+      tabKey = sessionStorage.getItem(tabKeyStorage) || id;
+      sessionStorage.setItem(tabKeyStorage, tabKey);
+      tabChannel = new BroadcastChannel('setbeam-viewing-tabs');
+    } catch { start(); return; }
+
+    // Duplicating a browser tab can clone sessionStorage. Only exchange a random
+    // tab key, so active documents can distinguish a copy without sending passes.
+    const finish = () => { clearTimeout(tabClaimTimer); checkingTab = false; start(); };
+    const channel = tabChannel;
+    channel.onmessage = ({data}) => {
+      if (channel !== tabChannel || data?.key !== tabKey || data.sender === id) return;
+      if (data.type === 'claim' && pass && (!checkingTab || id < data.sender)) {
+        channel.postMessage({type: 'occupied', key: tabKey, sender: id, target: data.sender});
+      } else if (data.type === 'occupied' && checkingTab && data.target === id) {
+        forgetPass();
+        rememberTabKey(id);
+        finish();
+      }
+    };
+    if (!pass) { start(); return; }
+    checkingTab = true;
+    tabClaimTimer = setTimeout(finish, 200);
+    channel.postMessage({type: 'claim', key: tabKey, sender: id});
+  }
+  claimViewerTab();
 })();

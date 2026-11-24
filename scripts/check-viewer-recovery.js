@@ -10,7 +10,7 @@ function browser(options = {}) {
   const joinResponse = () => joinValue;
   const configHeaders = [];
   let now = 1_000, interval, requests = 0, hung = false, deferState = false, releaseState;
-  const timers = new Map(), readers = [], listeners = {}, urls = [], sources = [], locks = [], heartbeats = [], joins = [];
+  const timers = new Map(), readers = [], listeners = {}, urls = [], sources = [], locks = [], heartbeats = [], joins = [], tabMessages = [];
   let joinFails = false, stateGone = false, config = {whepURL: 'http://localhost/live/whep', user: 'guest', pass: 'synthetic'};
   const queuedResponses = new Map(), chatUpdates = [], chatActivity = [];
   let clipFails = options.clipFails, unmuteFails = options.unmuteFails, uuidCounter = 0;
@@ -134,6 +134,15 @@ function browser(options = {}) {
     chatUpdates.viewer = viewer;
     return {update(value) { chatUpdates.push(value); }, activity(value) { chatActivity.push(value); }};
   }};
+  if (options.tabClaims) context.BroadcastChannel = class {
+    postMessage(message) {
+      tabMessages.push(message);
+      if (options.existingTab && message.type === 'claim') {
+        this.onmessage({data: {type: 'occupied', key: message.key, sender: 'existing-viewer', target: message.sender}});
+      }
+    }
+    close() {}
+  };
   element('retry').setAttribute('aria-label', 'Play feed');
   element('video').videoWidth = 1920; element('video').videoHeight = 1200;
   element('player').requestFullscreen = () => { context.document.fullscreenElement = element('player'); return Promise.resolve(); };
@@ -173,7 +182,7 @@ function browser(options = {}) {
     queuedResponses.get(url).push(fn);
   }
   return {
-    chatUpdates, chatActivity, videoTrack,
+    chatUpdates, chatActivity, videoTrack, tabMessages,
     get frameCallback() { return frameCallback; }, get canceledFrames() { return canceledFrames; },
     set config(value) { config = value; }, set clipFails(value) { clipFails = value; },
     set unmuteFails(value) { unmuteFails = value; },
@@ -216,6 +225,28 @@ function browser(options = {}) {
     }
   };
 }
+
+test('a duplicated tab opens a separate request without sharing the original pass', async () => {
+  const oldPass = '1'.repeat(48);
+  const b = browser({tabClaims: true, existingTab: true, storage: {
+    'setbeam-viewer-name': 'Test viewer', 'setbeam-pass:': oldPass, 'setbeam-pass::tab': 'copied-tab-key'
+  }});
+  await b.settle();
+  assert.equal(b.joins[0].pass, undefined);
+  assert.equal(b.tabMessages[0].key, 'copied-tab-key');
+  assert.ok(!JSON.stringify(b.tabMessages).includes(oldPass));
+});
+
+test('a reloaded tab with no live sibling keeps its existing pass', async () => {
+  const oldPass = '1'.repeat(48);
+  const b = browser({tabClaims: true, storage: {
+    'setbeam-viewer-name': 'Test viewer', 'setbeam-pass:': oldPass, 'setbeam-pass::tab': 'owned-tab-key'
+  }});
+  await b.settle();
+  assert.equal(b.count('join'), 0);
+  await b.tick(200);
+  assert.equal(b.joins[0].pass, oldPass);
+});
 
 test('a frozen open peer reconnects without a server revision or operator action', async () => {
   const b = browser(); await b.settle(); await b.track();
