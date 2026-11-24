@@ -1,7 +1,28 @@
 import XCTest
+import ScreenCaptureKit
 @testable import SetbeamCore
 
 final class MacScreenTests: XCTestCase {
+    func testIdleRetainsTheLastFrameAndLossClearsItForEitherSource() {
+        XCTAssertEqual(ScreenFrameUpdate(status: SCFrameStatus.complete.rawValue, hasImage: true), .replace)
+        XCTAssertEqual(ScreenFrameUpdate(status: SCFrameStatus.idle.rawValue, hasImage: false), .retain)
+        for status in [SCFrameStatus.suspended.rawValue, SCFrameStatus.blank.rawValue, SCFrameStatus.complete.rawValue, nil] {
+            XCTAssertEqual(ScreenFrameUpdate(status: status, hasImage: false), .clear)
+        }
+        XCTAssertEqual(ScreenFrameUpdate(status: SCFrameStatus.stopped.rawValue, hasImage: false), .stop)
+    }
+
+    func testRetirementWaitsForEnqueuedStopsInOrder() async {
+        let retirement = ScreenCaptureRetirement()
+        let gate = RetirementGate()
+        retirement.enqueue { await gate.stopFirst() }
+        retirement.enqueue { await gate.stopSecond() }
+        await gate.releaseFirst()
+        await retirement.wait()
+        let completed = await gate.completed
+        XCTAssertEqual(completed, [1, 2])
+    }
+
     func testScreenValidationRequiresDisplayUUID() throws {
         for invalid in ["", "1", "display", "00000000"] {
             XCTAssertThrowsError(try VideoSource.macScreen(displayUUID: invalid).validated())
@@ -57,5 +78,23 @@ final class MacScreenTests: XCTestCase {
         XCTAssertEqual(Array(arguments.prefix(2)), ["-use_wallclock_as_timestamps", "1"])
         XCTAssertFalse(arguments.contains("+genpts"))
         XCTAssertEqual(arguments.suffix(2), ["-i", "pipe:0"])
+    }
+}
+
+
+private actor RetirementGate {
+    private(set) var completed: [Int] = []
+    private var released = false
+    private var waiting: CheckedContinuation<Void, Never>?
+
+    func stopFirst() async {
+        if !released { await withCheckedContinuation { waiting = $0 } }
+        completed.append(1)
+    }
+    func stopSecond() { completed.append(2) }
+    func releaseFirst() {
+        released = true
+        waiting?.resume()
+        waiting = nil
     }
 }

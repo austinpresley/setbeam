@@ -2,6 +2,7 @@ import AppKit
 import ScreenCaptureKit
 import VideoToolbox
 import Darwin
+import os
 
 public struct MacDisplay: Identifiable, Equatable, Sendable {
     public let id: String
@@ -37,10 +38,71 @@ public struct MacDisplay: Identifiable, Equatable, Sendable {
     }
 }
 
+/// The pipe and encoder use fixed dimensions and cadence for one capture.
+struct ScreenDisplayMode: Equatable {
+    let modeID: Int32
+    let width: Int
+    let height: Int
+    let refreshRate: Double
+    let rotation: Double
+
+    static func current(_ id: CGDirectDisplayID, uuid: String) -> Self? {
+        guard CGDisplayIsActive(id) != 0, MacDisplay.identity(id)?.caseInsensitiveCompare(uuid) == .orderedSame,
+              let mode = CGDisplayCopyDisplayMode(id) else { return nil }
+        return Self(modeID: mode.ioDisplayModeID, width: mode.pixelWidth, height: mode.pixelHeight,
+                    refreshRate: mode.refreshRate, rotation: CGDisplayRotation(id))
+    }
+
+    var frameRate: Int {
+        max(1, min(60, Int((refreshRate > 0 ? refreshRate : 60).rounded())))
+    }
+}
+
+/// Owned by the runtime across source replacements. A replacement waits for the
+/// previous stream's startup and stop to finish before opening ScreenCaptureKit.
+final class ScreenCaptureRetirement: Sendable {
+    private let tail = OSAllocatedUnfairLock(initialState: Task<Void, Never>?.none)
+
+    func enqueue(_ retire: @escaping @Sendable () async -> Void) {
+        tail.withLock { task in
+            let previous = task
+            task = Task.detached {
+                await previous?.value
+                await retire()
+            }
+        }
+    }
+
+    func wait() async {
+        let task = tail.withLock { $0 }
+        await task?.value
+    }
+}
+
+enum ScreenFrameUpdate: Equatable {
+    case replace, retain, clear, stop
+
+    init(status: Int?, hasImage: Bool) {
+        switch status.flatMap(SCFrameStatus.init(rawValue:)) {
+        case .idle: self = .retain
+        case .complete where hasImage: self = .replace
+        case .stopped: self = .stop
+        default: self = .clear
+        }
+    }
+}
+
 /// One app-attributed capture of a display or a single window. All native windows read the relay, never another SCStream.
 public final class MacScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendable {
     private let queue = DispatchQueue(label: "app.setbeam.screen")
+    private let queueKey = DispatchSpecificKey<Void>()
+    private let retirement: ScreenCaptureRetirement
     private var stream: SCStream?
+    private var startup: Task<Void, Error>?
+    private var retired = false
+    private var failure: String?
+    private var displayMode: ScreenDisplayMode?
+    private var nextDisplayCheck = 0.0
     private var encoder: ScreenEncoder?
     private var writer: VideoPipeWriter?
     private var pixel: CVPixelBuffer?
@@ -54,12 +116,24 @@ public final class MacScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate,
     private var encoderTick: UInt64 = 0
     private var windowValidation: (tick: UInt64, frame: PresenterCursorFrame, pixel: CVPixelBuffer)?
 
+    public override convenience init() { self.init(retirement: ScreenCaptureRetirement()) }
+
+    init(retirement: ScreenCaptureRetirement) {
+        self.retirement = retirement
+        super.init()
+        queue.setSpecific(key: queueKey, value: ())
+    }
+
+    var lastError: String? { queue.sync { failure } }
+
     public static func requestPermission() -> Bool { CGPreflightScreenCaptureAccess() || CGRequestScreenCaptureAccess() }
 
-    public func start(displayUUID: String, output: FileHandle, frameRate: VideoFrameRate = .source) async throws {
-        prepareOutput(output)
+    public func start(displayUUID: String, output: FileHandle, frameRate: VideoFrameRate = .source,
+                      expectedFramesPerSecond: Int? = nil) async throws {
+        try prepareOutput(output)
+        await retirement.wait()
+        try Task.checkCancellation()
         guard CGPreflightScreenCaptureAccess() else { throw SetbeamError.unavailable("Allow Setbeam in Screen Recording, then retry.") }
-        let selected = try MacDisplay.resolve(displayUUID, in: MacDisplay.connected())
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
         guard let display = content.displays.first(where: { MacDisplay.identity($0.displayID)?.caseInsensitiveCompare(displayUUID) == .orderedSame }) else {
             throw SetbeamError.unavailable("Reconnect the selected display. Setbeam will wait for that same display.")
@@ -69,18 +143,27 @@ public final class MacScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate,
             throw SetbeamError.unavailable("Setbeam could not exclude its own windows. Keep its main window open and retry.")
         }
         let filter = SCContentFilter(display: display, excludingApplications: excluded, exceptingWindows: [])
-        let (width, height) = MacDisplay.dimensions(width: selected.width, height: selected.height)
+        guard let mode = ScreenDisplayMode.current(display.displayID, uuid: displayUUID) else {
+            throw SetbeamError.unavailable("Reconnect the selected display. Setbeam will wait for that same display.")
+        }
+        let fps = frameRate.captureRate(for: mode.frameRate)
+        if let expectedFramesPerSecond, fps != expectedFramesPerSecond {
+            throw SetbeamError.unavailable("The selected display changed its refresh rate. Setbeam will reconnect.")
+        }
+        let (width, height) = MacDisplay.dimensions(width: mode.width, height: mode.height)
         let configuration = SCStreamConfiguration()
         configuration.showsCursor = true
         try await begin(filter: filter, configuration: configuration, width: width, height: height,
-                        fps: frameRate.captureRate(for: selected.frameRate),
-                        cursorSource: .display(display.displayID, uuid: selected.id, excluded: Set(excluded.map(\.processID))))
+                        fps: fps, cursorSource: .display(display.displayID, uuid: displayUUID, excluded: Set(excluded.map(\.processID))),
+                        displayMode: mode)
     }
 
     /// Captures only the exact window, wherever it moves, never the desktop around it. Its pixel
     /// size at start sets the stream size; a later resize is fitted inside without cropping.
     public func start(window identity: MacWindowIdentity, output: FileHandle, frameRate: VideoFrameRate = .source) async throws {
-        prepareOutput(output)
+        try prepareOutput(output)
+        await retirement.wait()
+        try Task.checkCancellation()
         guard CGPreflightScreenCaptureAccess() else { throw SetbeamError.unavailable("Allow Setbeam in Screen Recording, then retry.") }
         // Setbeam's own windows would mirror themselves; the chooser never lists them.
         guard identity.processID != getpid() else { throw SetbeamError.invalidSource("Choose another application's window.") }
@@ -118,56 +201,97 @@ public final class MacScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate,
         highlightedPixel = nil
     }
 
-    private func prepareOutput(_ output: FileHandle) {
-        writer = VideoPipeWriter(output: output, queue: queue) { [weak self] in
-            self?.active = false; self?.pixel = nil
-            self?.clearCursorFrame()
+    private func prepareOutput(_ output: FileHandle) throws {
+        try queue.sync {
+            guard !retired, writer == nil else { throw CancellationError() }
+            writer = VideoPipeWriter(output: output, queue: queue) { [weak self] in
+                self?.fail("The screen capture pipe closed or exceeded its buffer limit.")
+            }
         }
     }
 
     private func begin(filter: SCContentFilter, configuration: SCStreamConfiguration, width: Int, height: Int, fps: Int,
-                       cursorSource: PresenterCursorSource) async throws {
+                       cursorSource: PresenterCursorSource, displayMode: ScreenDisplayMode? = nil) async throws {
+        try Task.checkCancellation()
         configuration.width = width; configuration.height = height
         configuration.minimumFrameInterval = CMTime(value: 1, timescale: Int32(fps))
         configuration.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
         configuration.queueDepth = 3; configuration.capturesAudio = false
-        encoder = try ScreenEncoder(width: width, height: height, fps: fps, queue: queue) { [weak self] bytes in
-            guard let self, self.active else { return }
-            self.writer?.append(bytes)
-        }
         let capture = SCStream(filter: filter, configuration: configuration, delegate: self)
-        stream = capture
-        try capture.addStreamOutput(self, type: .screen, sampleHandlerQueue: queue)
-        queue.sync {
+        let starting = try queue.sync {
+            guard !retired else { throw CancellationError() }
+            encoder = try ScreenEncoder(width: width, height: height, fps: fps, queue: queue, onFailure: { [weak self] error in
+                self?.fail(error.localizedDescription)
+            }) { [weak self] bytes in
+                guard let self, self.active, self.pixel != nil else { return }
+                self.writer?.append(bytes)
+            }
+            try capture.addStreamOutput(self, type: .screen, sampleHandlerQueue: queue)
+            stream = capture
             self.cursorSource = cursorSource
+            self.displayMode = displayMode
             active = true
             let clock = DispatchSource.makeTimerSource(queue: queue)
             clock.schedule(deadline: .now(), repeating: 1.0 / Double(fps))
             clock.setEventHandler { [weak self] in self?.encodeLatestFrame() }
             timer = clock; clock.resume()
+            let task = Task.detached { try await capture.startCapture() }
+            startup = task
+            return task
         }
-        try await capture.startCapture()
+        do {
+            try await starting.value
+            try Task.checkCancellation()
+            try queue.sync {
+                if let failure { throw SetbeamError.unavailable(failure) }
+                guard !retired else { throw CancellationError() }
+            }
+        } catch {
+            stop()
+            await retirement.wait()
+            throw error
+        }
     }
 
     public func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
-        guard active, type == .screen,
-              let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false) as? [[SCStreamFrameInfo: Any]],
-              let frame = attachments.first, let status = frame[.status] as? Int else { clearCursorFrame(); return }
-        if status == SCFrameStatus.idle.rawValue { return }
-        clearCursorFrame()
-        // A minimized, hidden, or closed window reports suspended once and then sends nothing.
-        // Stop repeating its last picture so monitoring and viewers see a waiting state.
-        if case .window? = cursorSource, [SCFrameStatus.suspended, .blank, .stopped].map(\.rawValue).contains(status) {
-            pixel = nil
+        guard active, self.stream === stream, type == .screen else { return }
+        let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false) as? [[SCStreamFrameInfo: Any]]
+        let frame = attachments?.first
+        let image = sampleBuffer.imageBuffer
+        switch ScreenFrameUpdate(status: frame?[.status] as? Int, hasImage: image != nil) {
+        case .retain:
             return
+        case .replace:
+            guard let image, let frame else { return }
+            clearCursorFrame()
+            pixel = image
+            if cursorHighlightEnabled { cursorFrame = cursorSource?.sample(frame, image: image) }
+        case .clear:
+            if pixel != nil {
+                pixel = nil
+                clearCursorFrame()
+                windowValidation = nil
+                // A regained picture starts with a keyframe. Discard old completions.
+                encoder?.resetAfterPictureLoss()
+            }
+        case .stop:
+            fail("The selected screen capture stopped. Setbeam will reconnect.")
         }
-        guard status == SCFrameStatus.complete.rawValue, let image = sampleBuffer.imageBuffer else { return }
-        pixel = image
-        if cursorHighlightEnabled { cursorFrame = cursorSource?.sample(frame, image: image) }
     }
 
     private func encodeLatestFrame() {
-        guard active, let pixel else { return }
+        guard active else { return }
+        if let displayMode, case .display(let id, let uuid, _)? = cursorSource {
+            let now = ProcessInfo.processInfo.systemUptime
+            if now >= nextDisplayCheck {
+                nextDisplayCheck = now + 0.5
+                guard ScreenDisplayMode.current(id, uuid: uuid) == displayMode else {
+                    fail("The selected display changed or disconnected. Setbeam will reconnect to that display.")
+                    return
+                }
+            }
+        }
+        guard let pixel else { return }
         encoderTick &+= 1
         guard let cursorFrame, let cursorSource else { encoder?.encode(pixel); return }
         switch cursorSource {
@@ -210,19 +334,49 @@ public final class MacScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate,
         return cursorCompositor?.draw(frame, on: pixel) ?? pixel
     }
     public func stream(_ stream: SCStream, didStopWithError error: Error) {
+        let stopped = ObjectIdentifier(stream)
+        let message = error.localizedDescription
         queue.async { [weak self] in
-            self?.active = false; self?.pixel = nil; self?.clearCursorFrame(); self?.writer?.close()
+            guard let self, self.active, self.stream.map(ObjectIdentifier.init) == stopped else { return }
+            self.fail("Screen capture stopped. \(message)")
         }
     }
+
+    private func fail(_ message: String) {
+        guard active else { return }
+        failure = message
+        clearOutput()
+        SessionLog.shared.record("screen.capture.failed", ["error": message])
+    }
+
+    private func clearOutput() {
+        active = false; timer?.cancel(); timer = nil; pixel = nil
+        clearCursorFrame(); cursorSource = nil; cursorCompositor = nil
+        windowValidation = nil
+        writer?.close(); writer = nil; encoder?.invalidate(); encoder = nil
+    }
+
     public func stop() {
-        if let stream { Task { try? await stream.stopCapture() } }
-        stream = nil
-        queue.sync {
-            active = false; timer?.cancel(); timer = nil; pixel = nil
-            clearCursorFrame(); cursorSource = nil; cursorCompositor = nil
-            windowValidation = nil
-            writer?.close(); writer = nil; encoder?.invalidate(); encoder = nil
+        // A weak callback can be the last holder of this object on the capture queue.
+        // Move the stream into the retirement task before dropping the queue's reference.
+        let retire = {
+            self.retired = true
+            if let stream = self.stream, let startup = self.startup {
+                self.retirement.enqueue { [queue = self.queue] in
+                    // The capture queue drops its stream reference before stop can release it.
+                    await withCheckedContinuation { continuation in
+                        queue.async { continuation.resume() }
+                    }
+                    _ = try? await startup.value
+                    try? await stream.stopCapture()
+                }
+            }
+            self.stream = nil; self.startup = nil
+            self.clearOutput()
         }
+        if DispatchQueue.getSpecific(key: queueKey) != nil { retire() }
+        else { queue.sync(execute: retire) }
     }
+
     deinit { stop() }
 }

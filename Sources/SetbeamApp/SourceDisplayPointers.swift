@@ -6,6 +6,7 @@ import SetbeamCore
 @MainActor final class SourceDisplayPointers {
     private var panel: NSPanel?
     private var displayID: String?
+    private var captureWindowID: CGWindowID?
     var windowNumber: Int? { panel?.isVisible == true ? panel?.windowNumber : nil }
     static func screen(for identity: String, in screens: [NSScreen] = NSScreen.screens) -> NSScreen? {
         screens.first { screen in
@@ -25,11 +26,20 @@ import SetbeamCore
             panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
             panel.contentView = NSHostingView(rootView: PointerOverlay(presence: presence).accessibilityHidden(true))
             self.panel = panel; displayID = identity
+            captureWindowID = CGWindowID(exactly: panel.windowNumber)
         }
         if panel?.frame != screen.frame { panel?.setFrame(screen.frame, display: true) }
         panel?.orderFrontRegardless()
+        if captureWindowID == nil, let number = panel?.windowNumber {
+            captureWindowID = CGWindowID(exactly: number)
+        }
+        if let captureWindowID { SharedPointerCaptureExclusion.setWindow(captureWindowID, visible: true) }
     }
-    func close() { panel?.orderOut(nil); panel?.close(); panel = nil; displayID = nil }
+    func close() {
+        panel?.orderOut(nil); panel?.close(); panel = nil; displayID = nil
+        if let captureWindowID { SharedPointerCaptureExclusion.setWindow(captureWindowID, visible: false) }
+        captureWindowID = nil
+    }
     private final class PointerPanel: NSPanel {
         override var canBecomeKey: Bool { false }
         override var canBecomeMain: Bool { false }

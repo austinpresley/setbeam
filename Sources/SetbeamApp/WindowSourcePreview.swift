@@ -16,8 +16,12 @@ import SetbeamCore
     private var handles: [MacWindowIdentity: SCWindow] = [:]
     private var visible: Set<MacWindowIdentity> = []
     private var generation = 0
+    private var refreshing = false
+    private var recent: [MacWindowIdentity] = []
+    private var lastAttempt: MacWindowIdentity?
     /// Bounds each refresh pass; rows scrolled out of view are skipped.
     static let picturesPerPass = 9
+    static let cacheLimit = 18
     private let list: @MainActor () async throws -> [(window: MacWindow, handle: SCWindow?)]
     private let capture: @MainActor (MacWindow, SCWindow?) async throws -> CGImage
 
@@ -28,37 +32,62 @@ import SetbeamCore
 
     func refresh(permitted: Bool, monitored: MacWindowIdentity?, captureVisible: Bool = true) async {
         guard permitted else { clear(); return }
+        guard !refreshing else { return }
+        refreshing = true
+        defer { refreshing = false }
         let token = generation
         let found: [(window: MacWindow, handle: SCWindow?)]
         do { found = try await list() } catch {
             guard !Task.isCancelled, token == generation else { return }
-            windows = []; images = [:]; handles = [:]; unavailable = []; loaded = true; listFailed = true; return
+            clearPictures()
+            windows = []; handles = [:]; icons = [:]; loaded = true; listFailed = true; return
         }
         guard !Task.isCancelled, token == generation else { return }
         let ids = Set(found.map(\.window.identity))
         windows = found.map(\.window); loaded = true; listFailed = false
         handles = Dictionary(found.compactMap { item in item.handle.map { (item.window.identity, $0) } }, uniquingKeysWith: { first, _ in first })
         images = images.filter { ids.contains($0.key) && $0.key != monitored }
-        unavailable.formIntersection(ids); visible.formIntersection(ids)
+        unavailable = unavailable.filter { ids.contains($0) && $0 != monitored }
+        recent.removeAll { !ids.contains($0) || $0 == monitored }
+        visible.formIntersection(ids)
         for window in windows where icons[window.identity.processID] == nil {
             icons[window.identity.processID] = NSRunningApplication(processIdentifier: window.identity.processID)?.icon
         }
         icons = icons.filter { pid, _ in windows.contains { $0.identity.processID == pid } }
         // Other categories still list identities for Last connected, without taking hidden previews.
-        guard captureVisible else { images = [:]; unavailable = []; return }
+        guard captureVisible else { clearPictures(); return }
         // Before rows report their visibility, the first rows are the ones on screen.
-        let wanted = windows.filter { $0.identity != monitored && (visible.isEmpty || visible.contains($0.identity)) }.prefix(Self.picturesPerPass)
+        let candidates = windows.filter { $0.identity != monitored && (visible.isEmpty || visible.contains($0.identity)) }
+        let offset = candidates.firstIndex { $0.identity == lastAttempt }.map { ($0 + 1) % candidates.count } ?? 0
+        let wanted = (candidates[offset...] + candidates[..<offset]).prefix(Self.picturesPerPass)
         for window in wanted {
             guard !Task.isCancelled, token == generation else { return }
+            let id = window.identity
+            lastAttempt = id
             do {
                 let image = try await capture(window, handles[window.identity])
                 guard !Task.isCancelled, token == generation, windows.contains(window) else { return }
-                images[window.identity] = image; unavailable.remove(window.identity)
+                remember(id)
+                images[id] = image; unavailable.remove(id)
             } catch {
                 guard !Task.isCancelled, token == generation else { return }
-                images[window.identity] = nil; unavailable.insert(window.identity)
+                remember(id)
+                images[id] = nil; unavailable.insert(id)
             }
         }
+    }
+
+    private func remember(_ id: MacWindowIdentity) {
+        recent.removeAll { $0 == id }
+        if recent.count == Self.cacheLimit {
+            let oldest = recent.removeFirst()
+            images[oldest] = nil; unavailable.remove(oldest)
+        }
+        recent.append(id)
+    }
+
+    private func clearPictures() {
+        images = [:]; unavailable = []; recent = []; lastAttempt = nil
     }
 
     func appeared(_ id: MacWindowIdentity) { visible.insert(id) }
@@ -67,7 +96,8 @@ import SetbeamCore
     /// Invalidates any screenshot still in flight so its result is discarded.
     func clear() {
         generation += 1
-        windows = []; images = [:]; unavailable = []; handles = [:]; visible = []; icons = [:]; loaded = false; listFailed = false
+        clearPictures()
+        windows = []; handles = [:]; visible = []; icons = [:]; loaded = false; listFailed = false
     }
 
     /// Fits the whole window into twice the thumbnail frame, without its shadow or the desktop.

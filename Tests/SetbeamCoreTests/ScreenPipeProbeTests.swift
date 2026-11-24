@@ -80,6 +80,7 @@ final class KeyframeBudgetTests: XCTestCase {
         XCTAssertEqual(budget.observe(bytes: large, keyframe: false), .restart(minimumQP: 32, sending: false))
         for _ in 0..<10 { _ = budget.observe(bytes: large, keyframe: true) }
         XCTAssertEqual(budget.minimumQP, KeyframeBudget.highestFloor)
+        XCTAssertEqual(budget.observe(bytes: large, keyframe: true), .oversize)
     }
     func testTheFloorStepsDownOnlyWhenTheLowerFloorLeavesRoom() {
         var budget = KeyframeBudget()

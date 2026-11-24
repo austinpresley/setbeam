@@ -8,6 +8,7 @@ public final class AccsoonReceiver: @unchecked Sendable {
     private let state = NSLock()
     private let announcements = DispatchQueue(label: "app.setbeam.accsoon.announcements")
     private var session: AccsoonReceiveSession?
+    private var announcementGeneration = UUID()
     private var failure: String?
     private var previousStatistics: [String: Int] = ["running": 0, "tcpConnected": 0]
     private var announcement: (@Sendable (Data, String) -> Void)?
@@ -43,16 +44,18 @@ public final class AccsoonReceiver: @unchecked Sendable {
         guard deviceUID != 0, videoPort != 0, audioPort != 0, audioPort != videoPort else {
             throw SetbeamError.unavailable("The Accsoon connection has invalid device or local media settings.")
         }
-        state.lock(); failure = nil; state.unlock()
+        state.lock(); failure = nil; let generation = announcementGeneration; state.unlock()
         do {
             let next = try AccsoonReceiveSession(host: host, deviceUID: deviceUID, videoPort: videoPort, audioPort: audioPort,
                 onFailure: { [weak self] message in
                     guard let self else { return }
                     self.state.lock(); self.failure = message; self.state.unlock()
                 }, onAnnouncement: { [weak self] packet in
-                    guard let self else { return }
-                    self.state.lock(); let callback = self.announcement; self.state.unlock()
-                    if let callback { self.announcements.async { callback(packet, host) } }
+                    self?.announcements.async { [weak self] in
+                        guard let self else { return }
+                        let callback = self.state.withLock { self.announcementGeneration == generation ? self.announcement : nil }
+                        callback?(packet, host)
+                    }
                 })
             state.lock(); session = next; state.unlock()
             next.start()
@@ -62,6 +65,70 @@ public final class AccsoonReceiver: @unchecked Sendable {
         }
     }
 
+    /// Open one upstream session and prepare the private SDP for its downstream publisher.
+    func prepareInput(uid: UInt32, discovery: AccsoonDiscovery, directory: URL) async throws -> URL {
+        try discovery.start()
+        guard let device = discovery.device(uid), device.recognized else {
+            throw SetbeamError.unavailable("Join your saved transmitter's Wi-Fi and turn it on. Setbeam will reconnect to that same unit.")
+        }
+        guard device.videoAvailable else {
+            throw SetbeamError.unavailable("Connect a live computer or camera output to the transmitter's HDMI or SDI input.")
+        }
+        let videoPort = try NetworkAddress.freeRTPPorts()
+        var audioPort: UInt16?
+        if device.audioAvailable {
+            for _ in 0..<4 {
+                let port = try NetworkAddress.freeRTPPorts()
+                if abs(Int(port) - Int(videoPort)) >= 2 { audioPort = port; break }
+            }
+        }
+        discovery.stop()
+        do {
+            try start(host: device.host, deviceUID: uid, videoPort: videoPort, audioPort: audioPort)
+            let includeAudio = if audioPort != nil { try await waitForSupportedAudio() } else { false }
+            guard isRunning else {
+                throw SetbeamError.unavailable(lastError ?? "The selected Accsoon transmitter disconnected.")
+            }
+            try Task.checkCancellation()
+            let input = directory.appendingPathComponent("accsoon.sdp")
+            try Self.sdp(videoPort: videoPort, audioPort: includeAudio ? audioPort : nil).write(to: input, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: input.path)
+            return input
+        } catch {
+            stop(); try? discovery.start(); throw error
+        }
+    }
+
+    static func sdp(videoPort: UInt16, audioPort: UInt16?) -> String {
+        var sdp = "v=0\no=- 0 0 IN IP4 127.0.0.1\ns=Setbeam private input\nc=IN IP4 127.0.0.1\nt=0 0\nm=video \(videoPort) RTP/AVP 96\na=rtpmap:96 H265/90000\na=recvonly\n"
+        if let audioPort {
+            sdp += "m=audio \(audioPort) RTP/AVP 97\na=rtpmap:97 MPEG4-GENERIC/48000/2\na=fmtp:97 streamtype=5; profile-level-id=1; mode=AAC-hbr; config=1190; SizeLength=13; IndexLength=3; IndexDeltaLength=3\na=recvonly\n"
+        }
+        return sdp
+    }
+
+    /// FFmpeg must know at startup whether to map audio. An advertised AAC input
+    /// that never sends compatible sound can block publication of valid video.
+    private func waitForSupportedAudio() async throws -> Bool {
+        guard let current = state.withLock({ session }) else { return false }
+        let clock = ContinuousClock()
+        let deadline = clock.now + .seconds(4)
+        var videoGrace: ContinuousClock.Instant?
+        while current.isRunning {
+            try Task.checkCancellation()
+            let counts = current.statistics
+            if (counts["supportedAudioMessages"] ?? 0) > 0 { return true }
+            if (counts["unsupportedAudioMessages"] ?? 0) > 0 { return false }
+            let now = clock.now
+            if videoGrace == nil, (counts["forwardedVideoRTPPackets"] ?? 0) > 0 {
+                videoGrace = now + .seconds(1)
+            }
+            guard now < min(deadline, videoGrace ?? deadline) else { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        return false
+    }
+
     /// Waits for the owned socket worker to finish before discovery can bind again.
     public func stop() {
         lifecycle.lock(); defer { lifecycle.unlock() }
@@ -69,7 +136,7 @@ public final class AccsoonReceiver: @unchecked Sendable {
     }
 
     private func stopSession() -> Bool {
-        state.lock(); let previous = session; state.unlock()
+        state.lock(); announcementGeneration = UUID(); let previous = session; state.unlock()
         guard previous?.stop() != false else { return false }
         let snapshot = previous?.statistics
         state.lock()
@@ -97,6 +164,7 @@ private final class AccsoonReceiveSession: @unchecked Sendable {
     private let onFailure: @Sendable (String) -> Void
     private let onAnnouncement: @Sendable (Data) -> Void
     private var assembler = AccsoonRTMSAssembler()
+    private var audioAssembler = AccsoonRTMSAssembler(maximumBytes: 1_024 * 1_024)
     private var videoRTP = AccsoonRTPPacketizer(payloadType: 96)
     private var audioRTP = AccsoonRTPPacketizer(payloadType: 97)
     private var tcpInput = Data()
@@ -224,7 +292,7 @@ private final class AccsoonReceiveSession: @unchecked Sendable {
                     statusAt = now
                 }
                 if now - acknowledgedAt >= 0.25 {
-                    for acknowledgement in assembler.acknowledgements {
+                    for acknowledgement in assembler.acknowledgements + audioAssembler.acknowledgements {
                         var body = Data([acknowledgement.stream.stream, acknowledgement.stream.substream])
                         body.appendLE(UInt16(0x8000)); body.appendLE(ackSequence); body.appendLE(acknowledgement.message)
                         try enqueue(packet(channel: 1, command: 50, body: body)); ackSequence &+= 1
@@ -233,7 +301,7 @@ private final class AccsoonReceiveSession: @unchecked Sendable {
                     acknowledgedAt = now
                 }
                 if now - requestedAt >= 0.1 {
-                    for request in assembler.missingFragments(now: now) {
+                    for request in assembler.missingFragments(now: now) + audioAssembler.missingFragments(now: now) {
                         var body = Data([request.stream.stream, request.stream.substream])
                         body.appendLE(nakSequence); body.appendLE(UInt16(request.messages.count))
                         for message in request.messages {
@@ -253,6 +321,10 @@ private final class AccsoonReceiveSession: @unchecked Sendable {
                         counters.add("negativeAcknowledgements")
                     }
                     requestedAt = now
+                }
+                if audioAssembler.hasExpiredGap(now: now) {
+                    audioAssembler.reset()
+                    counters.add("discardedAudioGaps")
                 }
                 if assembler.hasExpiredGap(now: now) {
                     throw SetbeamError.unavailable("The Accsoon picture lost data that could not be recovered. Reconnecting to the transmitter is needed.")
@@ -342,7 +414,18 @@ private final class AccsoonReceiveSession: @unchecked Sendable {
             counters.add("unsubscribedStreamFragments"); return
         }
         counters.add(data[12] == 1 ? "videoFragments" : "audioFragments")
-        for complete in try assembler.receive(data, now: now) {
+        let messages: [AccsoonRTMSAssembler.Complete]
+        if data[12] == 1 {
+            messages = try assembler.receive(data, now: now)
+        } else {
+            do { messages = try audioAssembler.receive(data, now: now) }
+            catch {
+                audioAssembler.reset()
+                counters.add("discardedAudioGaps")
+                return
+            }
+        }
+        for complete in messages {
             counters.add(complete.stream.stream == 1 ? "completedVideoMessages" : "completedAudioMessages")
             guard let media = AccsoonEncodedMessage(complete.data) else { counters.add("invalidEncodedMessages"); continue }
             if complete.stream.stream == 1 {
@@ -353,10 +436,12 @@ private final class AccsoonReceiveSession: @unchecked Sendable {
                     if try send(packet, destination: &videoDestination) { counters.add("forwardedVideoRTPPackets") }
                 }
             } else if var destination = audioDestination {
-                guard media.codec == 37 else {
-                    throw SetbeamError.unavailable("This Accsoon audio format is not supported. Reconnect with audio disabled.")
+                guard media.codec == 37, let packets = try? audioRTP.aac(media.payload, timestamp: media.timestamp) else {
+                    counters.add("unsupportedAudioMessages")
+                    continue
                 }
-                for packet in try audioRTP.aac(media.payload, timestamp: media.timestamp) {
+                counters.add("supportedAudioMessages")
+                for packet in packets {
                     if try send(packet, destination: &destination) { counters.add("forwardedAudioRTPPackets") }
                 }
             }
@@ -450,6 +535,7 @@ final class AccsoonReceiveCounters: @unchecked Sendable {
         "invalidHeaderPackets", "rejectedUIDPackets", "matchingUIDPackets", "announcements",
         "mediaFragments", "unsubscribedStreamFragments", "videoFragments", "audioFragments",
         "completedVideoMessages", "completedAudioMessages", "invalidEncodedMessages",
+        "supportedAudioMessages", "unsupportedAudioMessages", "discardedAudioGaps",
         "forwardedVideoRTPPackets", "forwardedAudioRTPPackets", "droppedLoopbackRTPPackets"
     ].map { ($0, 0) })
 
@@ -488,7 +574,15 @@ struct AccsoonRTMSAssembler {
         var gapBegan: Double? { messages.values.lazy.map(\.began).min() }
     }
     private var streams: [AccsoonRTMSStream: Stream] = [:]
+    private let maximumBytes: Int
     private var bytes = 0
+
+    init(maximumBytes: Int = 16 * 1_024 * 1_024) { self.maximumBytes = maximumBytes }
+
+    mutating func reset() {
+        streams.removeAll()
+        bytes = 0
+    }
 
     var acknowledgements: [Acknowledgement] {
         streams.compactMap { key, value in value.acknowledged.map { Acknowledgement(stream: key, message: $0) } }
@@ -506,7 +600,7 @@ struct AccsoonRTMSAssembler {
         var message = stream.messages[id] ?? Message(count: Int(count), began: now)
         guard message.count == Int(count), message.complete == nil, message.parts[Int(index)] == nil else { return [] }
         let fragment = Data(data.dropFirst(24))
-        guard message.bytes + fragment.count <= 8 * 1_024 * 1_024, bytes + fragment.count <= 16 * 1_024 * 1_024 else {
+        guard message.bytes + fragment.count <= 8 * 1_024 * 1_024, bytes + fragment.count <= maximumBytes else {
             throw SetbeamError.unavailable("The Accsoon picture exceeded its receive limit. Reconnect to the transmitter.")
         }
         message.parts[Int(index)] = fragment; message.bytes += fragment.count; bytes += fragment.count

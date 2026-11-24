@@ -63,6 +63,26 @@ final class AccsoonReceiverTests: XCTestCase {
         XCTAssertTrue(assembler.hasExpiredGap(now: 7.2))
     }
 
+    func testSDPOnlyMapsConfirmedAudio() {
+        let video = AccsoonReceiver.sdp(videoPort: 40000, audioPort: nil)
+        XCTAssertTrue(video.contains("m=video 40000 RTP/AVP 96"))
+        XCTAssertFalse(video.contains("m=audio"))
+        let withSound = AccsoonReceiver.sdp(videoPort: 40000, audioPort: 40002)
+        XCTAssertTrue(withSound.hasPrefix(video))
+        XCTAssertTrue(withSound.contains("MPEG4-GENERIC/48000/2"))
+    }
+
+    func testResetClearsAnAssemblyGapAndReturnsItsByteBudget() throws {
+        var assembler = AccsoonRTMSAssembler(maximumBytes: 4)
+        _ = try assembler.receive(fragment(id: 10, count: 2, bytes: [1, 2, 3]), now: 0)
+        XCTAssertThrowsError(try assembler.receive(fragment(id: 11, bytes: [4, 5]), now: 1))
+        XCTAssertTrue(assembler.hasExpiredGap(now: 4))
+        assembler.reset()
+        XCTAssertFalse(assembler.hasExpiredGap(now: 4))
+        let next = try assembler.receive(fragment(id: 20, bytes: [1, 2, 3, 4]), now: 4.1)
+        XCTAssertEqual(next.map(\.data), [Data([1, 2, 3, 4])])
+    }
+
     func testMalformedFragmentsAndHeadersDoNotBecomeMedia() throws {
         var assembler = AccsoonRTMSAssembler()
         XCTAssertTrue(try assembler.receive(fragment(id: 1, count: 0, bytes: [1]), now: 0).isEmpty)

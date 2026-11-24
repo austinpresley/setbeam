@@ -36,6 +36,23 @@ import ScreenCaptureKit
         XCTAssertEqual(captured, [11, 12])
     }
 
+    func testRefreshRotatesPastTheFirstRowsAndBoundsTheCache() async {
+        let windows = (1...27).map { window(UInt32($0)) }
+        let picture = image()
+        var captured: [MacWindowIdentity] = []
+        let previews = WindowSourcePreviews(list: { windows.map { ($0, nil) } }, capture: { window, _ in
+            captured.append(window.identity)
+            return picture
+        })
+        for _ in 0..<3 {
+            await previews.refresh(permitted: true, monitored: nil)
+            XCTAssertLessThanOrEqual(previews.images.count, WindowSourcePreviews.cacheLimit)
+        }
+        XCTAssertEqual(captured, windows.map(\.identity))
+        XCTAssertNil(previews.images[windows[0].identity])
+        XCTAssertNotNil(previews.images[windows[26].identity])
+    }
+
     func testClosingTheChooserDiscardsALateScreenshot() async throws {
         let gate = CaptureGate(), target = window(7), picture = image()
         let previews = WindowSourcePreviews(list: { [(target, nil)] }, capture: { _, _ in await gate.wait(); return picture })

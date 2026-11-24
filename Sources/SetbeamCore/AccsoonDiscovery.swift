@@ -61,22 +61,72 @@ public enum AccsoonAnnouncement {
     }
 }
 
+/// Status enriches the identity for one observed host. A newer beacon owns the
+/// current media flags, and a discovery handoff invalidates all pending queries.
+struct AccsoonDiscoveryRecords {
+    struct Query: Equatable, Sendable {
+        let token = UUID()
+        let device: AccsoonDevice
+    }
+
+    private(set) var devices: [UInt32: AccsoonDevice] = [:]
+    private var queries: [UInt32: Query] = [:]
+
+    mutating func observe(_ announcement: AccsoonDevice) -> Query? {
+        var device = announcement
+        if let previous = devices[device.id], previous.host == device.host,
+           device.lastSeen.timeIntervalSince(previous.lastSeen) < 8 {
+            device.productID = previous.productID; device.firmware = previous.firmware; device.hardware = previous.hardware
+        } else {
+            queries.removeValue(forKey: device.id)
+        }
+        devices[device.id] = device
+        guard device.productID == nil, queries[device.id] == nil, queries.count < 8 else { return nil }
+        let query = Query(device: device)
+        queries[device.id] = query
+        return query
+    }
+
+    mutating func complete(_ query: Query, info: AccsoonStatus.Info?, now: Date = Date()) -> Bool {
+        let original = query.device
+        guard queries[original.id] == query else { return false }
+        queries.removeValue(forKey: original.id)
+        guard let info, var device = devices[original.id], device.host == original.host,
+              now.timeIntervalSince(device.lastSeen) < 8 else { return false }
+        device.productID = info.product; device.firmware = info.firmware; device.hardware = info.hardware
+        if device.lastSeen == original.lastSeen {
+            device.videoAvailable = info.video; device.audioAvailable = info.audio
+        }
+        devices[device.id] = device
+        return true
+    }
+
+    func contains(_ query: Query) -> Bool { queries[query.device.id] == query }
+
+    mutating func invalidateQueries() { queries.removeAll() }
+}
+
 public final class AccsoonDiscovery: @unchecked Sendable {
     private let lock = NSLock()
     private let queue = DispatchQueue(label: "app.setbeam.accsoon-discovery")
+    private let queueKey = DispatchSpecificKey<Void>()
     private var socketFD: Int32 = -1
     private var generation = 0
-    private var records: [UInt32: AccsoonDevice] = [:]
-    private var querying = Set<UInt32>()
-    public var onChange: (@Sendable ([AccsoonDevice]) -> Void)?
-    public init() {}
+    private var records = AccsoonDiscoveryRecords()
+    private var change: (@Sendable ([AccsoonDevice]) -> Void)?
+    public var onChange: (@Sendable ([AccsoonDevice]) -> Void)? {
+        get { lock.lock(); defer { lock.unlock() }; return change }
+        set { lock.lock(); change = newValue; lock.unlock() }
+    }
+    public init() { queue.setSpecific(key: queueKey, value: ()) }
     public var devices: [AccsoonDevice] {
         lock.lock(); defer { lock.unlock() }
-        return records.values.filter { Date().timeIntervalSince($0.lastSeen) < 8 }.sorted { $0.wifiName < $1.wifiName }
+        return records.devices.values.filter { Date().timeIntervalSince($0.lastSeen) < 8 }.sorted { $0.wifiName < $1.wifiName }
     }
     public func device(_ id: UInt32) -> AccsoonDevice? { devices.first { $0.id == id } }
     public func start() throws {
-        lock.lock(); let active = socketFD >= 0; lock.unlock(); guard !active else { return }
+        lock.lock(); defer { lock.unlock() }
+        guard socketFD < 0 else { return }
         let fd = socket(AF_INET, SOCK_DGRAM, 0)
         guard fd >= 0 else { throw SetbeamError.unavailable("Wireless discovery could not start.") }
         var address = sockaddr_in(); address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size); address.sin_family = sa_family_t(AF_INET); address.sin_port = UInt16(28001).bigEndian
@@ -84,7 +134,7 @@ public final class AccsoonDiscovery: @unchecked Sendable {
         guard bound == 0 else { close(fd); throw SetbeamError.unavailable("Close Accsoon SEE to let Setbeam connect directly to the transmitter.") }
         var timeout = timeval(tv_sec: 0, tv_usec: 250_000)
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
-        lock.lock(); socketFD = fd; generation += 1; let current = generation; lock.unlock()
+        socketFD = fd; generation += 1; records.invalidateQueries(); let current = generation
         queue.async { [weak self] in
             defer { close(fd) }
             var buffer = [UInt8](repeating: 0, count: 65_535)
@@ -94,63 +144,79 @@ public final class AccsoonDiscovery: @unchecked Sendable {
                 guard count > 0 else { continue }
                 var host = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
                 guard inet_ntop(AF_INET, &peer.sin_addr, &host, socklen_t(host.count)) != nil else { continue }
-                self.observe(Data(buffer.prefix(count)), host: String(cString: host))
+                self.observe(Data(buffer.prefix(count)), host: String(cString: host), socketGeneration: current)
             }
         }
     }
     private func running(_ fd: Int32, generation: Int) -> Bool { lock.lock(); defer { lock.unlock() }; return socketFD == fd && self.generation == generation }
     public func stop() {
-        lock.lock(); let active = socketFD >= 0; socketFD = -1; generation += 1; lock.unlock()
-        if active { queue.sync {} }
-    }
-    public func observe(_ data: Data, host: String) {
-        guard var value = AccsoonAnnouncement.decode(data, host: host) else { return }
         lock.lock()
-        if let old = records[value.id] { value.productID = old.productID; value.firmware = old.firmware; value.hardware = old.hardware }
-        records[value.id] = value
-        let query = value.productID == nil && !querying.contains(value.id)
-        if query { querying.insert(value.id) }
+        let active = socketFD >= 0
+        socketFD = -1; generation += 1; records.invalidateQueries()
+        lock.unlock()
+        if active, DispatchQueue.getSpecific(key: queueKey) == nil { queue.sync {} }
+    }
+    public func observe(_ data: Data, host: String) { observe(data, host: host, socketGeneration: nil) }
+
+    private func observe(_ data: Data, host: String, socketGeneration: Int?) {
+        guard let value = AccsoonAnnouncement.decode(data, host: host) else { return }
+        lock.lock()
+        if let socketGeneration, socketGeneration != generation { lock.unlock(); return }
+        let query = records.observe(value)
         lock.unlock()
         onChange?(devices)
-        if query {
-            let selected = value
+        if let query {
             DispatchQueue.global(qos: .utility).async { [weak self] in
+                guard self?.isPending(query) == true else { return }
+                let selected = query.device
                 let info = try? AccsoonStatus.read(host: selected.host, expectedUID: selected.id)
                 guard let self else { return }
                 self.lock.lock()
-                if let info, var device = self.records[selected.id] {
-                    device.productID = info.product; device.firmware = info.firmware; device.hardware = info.hardware
-                    device.videoAvailable = info.video; device.audioAvailable = info.audio; self.records[selected.id] = device
-                }
-                self.querying.remove(selected.id); self.lock.unlock(); self.onChange?(self.devices)
+                let applied = self.records.complete(query, info: info)
+                self.lock.unlock()
+                if applied { self.onChange?(self.devices) }
             }
         }
     }
+    private func isPending(_ query: AccsoonDiscoveryRecords.Query) -> Bool {
+        lock.withLock { records.contains(query) }
+    }
+
     deinit { stop() }
 }
 
-private enum AccsoonStatus {
+enum AccsoonStatus {
     struct Info { let product: Int; let firmware: Int; let hardware: Int; let video: Bool; let audio: Bool }
     static func read(host: String, expectedUID: UInt32) throws -> Info {
         let fd = socket(AF_INET, SOCK_STREAM, 0)
         guard fd >= 0 else { throw SetbeamError.unavailable("The transmitter did not respond.") }
         defer { close(fd) }
         var noSignal: Int32 = 1; setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSignal, socklen_t(MemoryLayout<Int32>.size))
-        fcntl(fd, F_SETFL, O_NONBLOCK)
+        let unavailable = SetbeamError.unavailable("The transmitter did not respond.")
+        let deadline = ProcessInfo.processInfo.systemUptime + 3
+        guard fcntl(fd, F_SETFL, O_NONBLOCK) == 0,
+              fcntl(fd, F_SETFD, FD_CLOEXEC) == 0 else { throw unavailable }
+        func wait(_ event: Int32) throws {
+            var descriptor = pollfd(fd: fd, events: Int16(event), revents: 0)
+            while true {
+                let remaining = deadline - ProcessInfo.processInfo.systemUptime
+                guard remaining > 0 else { throw unavailable }
+                let ready = poll(&descriptor, 1, Int32(ceil(remaining * 1_000)))
+                if ready > 0 { return }
+                if ready < 0, errno == EINTR { continue }
+                throw unavailable
+            }
+        }
+
         var peer = sockaddr_in(); peer.sin_len = UInt8(MemoryLayout<sockaddr_in>.size); peer.sin_family = sa_family_t(AF_INET); peer.sin_port = UInt16(28010).bigEndian
         guard inet_pton(AF_INET, host, &peer.sin_addr) == 1 else { throw SetbeamError.invalidSource("The transmitter address is invalid.") }
         let result = withUnsafePointer(to: &peer) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) } }
         if result != 0 {
-            guard errno == EINPROGRESS else { throw SetbeamError.unavailable("The transmitter did not respond.") }
-            var descriptor = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
-            guard poll(&descriptor, 1, 1500) > 0 else { throw SetbeamError.unavailable("The transmitter did not respond.") }
+            guard errno == EINPROGRESS else { throw unavailable }
+            try wait(POLLOUT)
             var problem: Int32 = 0, length = socklen_t(MemoryLayout<Int32>.size)
-            getsockopt(fd, SOL_SOCKET, SO_ERROR, &problem, &length)
-            guard problem == 0 else { throw SetbeamError.unavailable("The transmitter did not respond.") }
+            guard getsockopt(fd, SOL_SOCKET, SO_ERROR, &problem, &length) == 0, problem == 0 else { throw unavailable }
         }
-        fcntl(fd, F_SETFL, 0)
-        var timeout = timeval(tv_sec: 1, tv_usec: 0)
-        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size)); setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
         let client = UInt32.random(in: 1...UInt32.max)
         func sendCommand(_ command: UInt16, channel: UInt8 = 0, body: Data = Data()) throws {
             var payload = Data(); payload.rtmsAppend(UInt32(0x78776e93)); payload.rtmsAppend(client); payload.append(contentsOf: [0x40, channel]); payload.rtmsAppend(command); payload.append(body)
@@ -158,16 +224,22 @@ private enum AccsoonStatus {
             try frame.withUnsafeBytes { raw in
                 var sent = 0
                 while sent < raw.count {
+                    try wait(POLLOUT)
                     let count = Darwin.send(fd, raw.baseAddress!.advanced(by: sent), raw.count - sent, 0)
-                    guard count > 0 else { throw SetbeamError.unavailable("The transmitter did not respond.") }; sent += count
+                    if count < 0, [EINTR, EAGAIN, EWOULDBLOCK].contains(errno) { continue }
+                    guard count > 0 else { throw unavailable }
+                    sent += count
                 }
             }
         }
         func exact(_ count: Int) throws -> Data {
             var result = Data(), buffer = [UInt8](repeating: 0, count: count)
             while result.count < count {
+                try wait(POLLIN)
                 let received = recv(fd, &buffer, count - result.count, 0)
-                guard received > 0 else { throw SetbeamError.unavailable("The transmitter did not respond.") }; result.append(contentsOf: buffer.prefix(received))
+                if received < 0, [EINTR, EAGAIN, EWOULDBLOCK].contains(errno) { continue }
+                guard received > 0 else { throw unavailable }
+                result.append(contentsOf: buffer.prefix(received))
             }
             return result
         }

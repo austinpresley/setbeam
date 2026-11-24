@@ -4,6 +4,7 @@ import CoreMedia
 import CoreVideo
 import ScreenCaptureKit
 import Darwin
+import os
 
 /// Quartz screen coordinates and ScreenCaptureKit's top-left content rectangle for one picture.
 struct PresenterCursorFrame: Sendable {
@@ -63,6 +64,20 @@ struct PresenterCursorFrame: Sendable {
         valid(a) && valid(b) && abs(a.minX - b.minX) <= 1 && abs(a.minY - b.minY) <= 1 &&
             abs(a.maxX - b.maxX) <= 1 && abs(a.maxY - b.maxY) <= 1
     }
+}
+
+/// Shared display pointers are click-through Setbeam windows. Their full display
+/// bounds must not suppress the ring over the underlying captured application.
+public enum SharedPointerCaptureExclusion {
+    private static let windows = OSAllocatedUnfairLock(initialState: Set<CGWindowID>())
+
+    public static func setWindow(_ id: CGWindowID, visible: Bool) {
+        windows.withLock { ids in
+            if visible { ids.insert(id) } else { ids.remove(id) }
+        }
+    }
+
+    static var windowIDs: Set<CGWindowID> { windows.withLock { $0 } }
 }
 
 enum PresenterCursorSource: Sendable {
@@ -128,8 +143,9 @@ enum PresenterCursorSource: Sendable {
         guard rows.count == windows.count, let current = CGEvent(source: nil)?.location,
               abs(cursor.x - current.x) <= 4, abs(cursor.y - current.y) <= 4 else { return false }
         let now = CMClockGetTime(clock)
-        return ownsDisplayCursor(frame, at: cursor, windows: windows, now: now) &&
-            ownsDisplayCursor(frame, at: current, windows: windows, now: now)
+        let pointerOverlays = SharedPointerCaptureExclusion.windowIDs
+        return ownsDisplayCursor(frame, at: cursor, windows: windows, pointerOverlays: pointerOverlays, now: now) &&
+            ownsDisplayCursor(frame, at: current, windows: windows, pointerOverlays: pointerOverlays, now: now)
     }
 
     @MainActor static func windowCursorHit(_ identity: MacWindowIdentity, for frame: PresenterCursorFrame) -> CGPoint? {
@@ -163,10 +179,11 @@ enum PresenterCursorSource: Sendable {
         }
     }
 
-    func ownsDisplayCursor(_ frame: PresenterCursorFrame, at cursor: CGPoint, windows: [Window], now: CMTime = .invalid) -> Bool {
+    func ownsDisplayCursor(_ frame: PresenterCursorFrame, at cursor: CGPoint, windows: [Window], pointerOverlays: Set<CGWindowID> = [], now: CMTime = .invalid) -> Bool {
         guard case .display(_, _, let excluded) = self, frame.acceptsCurrentCursor(cursor, now: now) else { return false }
         return !windows.contains {
             excluded.contains($0.owner) && $0.alpha != 0 &&
+                !($0.owner == getpid() && pointerOverlays.contains($0.id)) &&
                 (!PresenterCursorFrame.valid($0.bounds) || $0.bounds.contains(frame.cursor) || $0.bounds.contains(cursor))
         }
     }

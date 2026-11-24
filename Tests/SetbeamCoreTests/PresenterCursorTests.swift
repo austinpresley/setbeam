@@ -70,6 +70,19 @@ final class PresenterCursorTests: XCTestCase {
         XCTAssertFalse(source.ownsDisplayCursor(frame, at: cursor, windows: [.init(id: 1, owner: 100, bounds: area)]))
     }
 
+    func testOnlyTheRegisteredClickThroughOverlayIsExemptFromDisplayRingSuppression() throws {
+        let area = CGRect(x: 0, y: 0, width: 500, height: 300)
+        let cursor = CGPoint(x: 100, y: 100)
+        let frame = try XCTUnwrap(PresenterCursorFrame(screen: area, contentInPoints: area, scale: 1,
+                                                      imageSize: area.size, cursor: cursor))
+        let source = PresenterCursorSource.display(1, uuid: "display", excluded: [getpid()])
+        let overlay = PresenterCursorSource.Window(id: 1, owner: getpid(), bounds: area)
+        let panel = PresenterCursorSource.Window(id: 2, owner: getpid(), bounds: area)
+        XCTAssertFalse(source.ownsDisplayCursor(frame, at: cursor, windows: [overlay]))
+        XCTAssertTrue(source.ownsDisplayCursor(frame, at: cursor, windows: [overlay], pointerOverlays: [1]))
+        XCTAssertFalse(source.ownsDisplayCursor(frame, at: cursor, windows: [overlay, panel], pointerOverlays: [1]))
+    }
+
     func testCursorCanMoveWithinAFreshPictureButMustStillBeOwned() throws {
         let screen = CGRect(x: 0, y: 0, width: 800, height: 600)
         let captured = CMTime(value: 100, timescale: 100)

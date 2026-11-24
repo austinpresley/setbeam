@@ -18,6 +18,36 @@ final class AccsoonDiscoveryTests: XCTestCase {
     private let host = "192.0.2.1"
     private let now = Date(timeIntervalSince1970: 1_000)
 
+    func testStatusFromAnEarlierHostOrDiscoveryRunCannotReplaceTheCurrentRecord() throws {
+        var records = AccsoonDiscoveryRecords()
+        var device = AccsoonDevice(id: identifier, host: host, wifiName: "Fixture", lastSeen: now)
+        let first = try XCTUnwrap(records.observe(device))
+        device.host = "192.0.2.2"
+        let second = try XCTUnwrap(records.observe(device))
+        let info = AccsoonStatus.Info(product: 24, firmware: 798, hardware: 256, video: true, audio: true)
+        XCTAssertFalse(records.complete(first, info: info, now: now))
+        records.invalidateQueries()
+        let third = try XCTUnwrap(records.observe(device))
+        XCTAssertFalse(records.complete(second, info: info, now: now))
+        XCTAssertTrue(records.complete(third, info: info, now: now))
+        XCTAssertEqual(records.devices[identifier]?.host, device.host)
+        XCTAssertEqual(records.devices[identifier]?.productID, 24)
+    }
+
+    func testDelayedStatusEnrichesIdentityWithoutRestoringAnOlderMediaFlag() throws {
+        var records = AccsoonDiscoveryRecords()
+        var device = AccsoonDevice(id: identifier, host: host, wifiName: "Fixture", lastSeen: now)
+        let query = try XCTUnwrap(records.observe(device))
+        device.lastSeen = now.addingTimeInterval(1)
+        device.videoAvailable = true
+        XCTAssertNil(records.observe(device))
+        let status = AccsoonStatus.Info(product: 21, firmware: 798, hardware: 256, video: false, audio: true)
+        XCTAssertTrue(records.complete(query, info: status, now: device.lastSeen))
+        XCTAssertEqual(records.devices[identifier]?.productID, 21)
+        XCTAssertEqual(records.devices[identifier]?.videoAvailable, true)
+        XCTAssertEqual(records.devices[identifier]?.audioAvailable, false)
+    }
+
     func testAnnouncementPreservesIdentityAndSSIDWithoutClaimingARecognizedModel() throws {
         let packet = try announcement(profile: ["uid": identifier], custom: ["public_ssid": "Accsoon_TEST"])
         let device = try XCTUnwrap(AccsoonAnnouncement.decode(packet, host: host, now: now))
