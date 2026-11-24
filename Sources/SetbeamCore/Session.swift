@@ -16,6 +16,7 @@ public enum VideoSource: Equatable, Sendable {
     case macScreen(displayUUID: String)
     case macWindow(MacWindowIdentity)
     case network(String)
+    case pyroH(PyroHRoute)
     case capture(video: Int, audio: Int?)
     case captureDevice(videoID: String, audioID: String?)
     case incoming(port: UInt16, key: String)
@@ -28,6 +29,7 @@ public enum VideoSource: Equatable, Sendable {
         case .macWindow: return "Application window"
         case .sample: return "Sample feed"
         case .network(let address): return Self.safeAddress(address)
+        case .pyroH(let route): return route.address
         case .capture, .captureDevice: return "USB / capture device"
         case .incoming: return "Incoming stream"
         case .accsoon: return "Accsoon CineView Master 4K"
@@ -50,6 +52,9 @@ public enum VideoSource: Equatable, Sendable {
             guard identity.isComplete else { throw SetbeamError.invalidSource("Choose an open application window.") }
             return self
         case .sample: return self
+        case .pyroH(let route):
+            try route.validate()
+            return self
         case .network(let address):
             guard !address.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }),
                   let components = URLComponents(string: address),

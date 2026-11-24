@@ -179,7 +179,7 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
     private let integration: Bool
     private let integrationSessionFile = IntegrationSessionFile(arguments: CommandLine.arguments)
     private let store: ProvenSetupStore
-    private let runtime = MediaRuntime(paths: AppAssets.runtimePaths)
+    private let runtime: MediaRuntime
     private let gateway = ViewerGateway(assets: AppAssets.viewerAssets)
     private var currentRuntime: RuntimeSnapshot?
     private var gatewayPort: UInt16?
@@ -212,8 +212,13 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
         let args = CommandLine.arguments
         if args.contains("--preferences-suite"), let index = args.firstIndex(of: "--pyro-h-fixture-port"), index + 1 < args.count,
            let port = UInt16(args[index + 1]), port > 0 {
-            sourceBrowser = SourceBrowser(pyroHNetworks: { [.init(interface: "lo0", address: "127.0.0.1", router: "127.0.0.1")] }, pyroHPorts: [port])
-        } else { sourceBrowser = SourceBrowser() }
+            let fixtureNetworks: @Sendable () -> [PyroHNetwork] = { [.loopbackFixture] }
+            sourceBrowser = SourceBrowser(pyroHNetworks: fixtureNetworks, pyroHPorts: [port])
+            runtime = MediaRuntime(paths: AppAssets.runtimePaths, pyroHNetworks: fixtureNetworks)
+        } else {
+            sourceBrowser = SourceBrowser()
+            runtime = MediaRuntime(paths: AppAssets.runtimePaths)
+        }
         windowListBundle = args.contains("--preferences-suite") ? args.firstIndex(of: "--window-fixture-bundle").flatMap { $0 + 1 < args.count ? args[$0 + 1] : nil } : nil
         if let preferences { defaults = preferences }
         else if let index = args.firstIndex(of: "--preferences-suite"), index + 1 < args.count {
@@ -536,7 +541,7 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
         if setup.kind == .capture { return "Connect the selected device to this Mac. If it is connected, check the HDMI or SDI cable and turn on the source. Setbeam keeps trying this same input." }
         if setup.kind == .network {
             if setup.networkProfile == .pyroH {
-                return "Turn on the Pyro H and its computer or camera output. Rejoin the transmitter's Wi-Fi and close HollyView or other direct viewers. Setbeam keeps retrying the selected stream. Choose Enter Stream Address if its address has changed."
+                return pyroHRouteProblem ?? "Turn on the Pyro H and its computer or camera output. Rejoin the original Wi-Fi and close HollyView or other direct viewers."
             }
             return setup.sourceWiFi.isEmpty ? "Turn on the source and check that this Mac is on its network. Your picture will return here automatically." : "Turn on the source and join \(setup.sourceWiFi) in Wi-Fi Settings. Your picture will return here automatically."
         }
@@ -735,6 +740,11 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
         var candidate = SourceSetup(kind: .accsoon, name: "CineView Master 4K", deviceName: device.name, sourceWiFi: device.wifiName)
         candidate.wirelessUID = device.id; connect(candidate)
     }
+    var pyroHRouteProblem: String? {
+        guard setup?.networkProfile == .pyroH else { return nil }
+        return error ?? [PyroHRoute.changedWiFi, PyroHRoute.verifyWiFi].first { $0 == currentRuntime?.message }
+    }
+    func requestPyroHLocation() { transmitterWiFi.requestLocation() }
     var canDiscoverPyroH: Bool { !(state.monitoring && setup?.kind == .network) }
     func connectPyroH(_ device: PyroHSource) {
         var candidate = device.setup
@@ -752,8 +762,9 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
     }
     func openNetworkSource() {
         present(.networkSource) {
-            savedNetworkURL = Self.networkSourcePrefill(kind: setup?.kind, activeAddress: activeNetworkURL)
-                ?? provenSetup.flatMap { $0.kind == .network ? SecureSettings.read($0.credentialAccount) : nil } ?? ""
+            let activeAddress = setup?.networkProfile == .pyroH ? nil : activeNetworkURL
+            savedNetworkURL = Self.networkSourcePrefill(kind: setup?.kind, activeAddress: activeAddress)
+                ?? provenSetup.flatMap { $0.kind == .network && $0.networkProfile == nil ? SecureSettings.read($0.credentialAccount) : nil } ?? ""
         }
     }
     nonisolated static func networkSourcePrefill(kind: InputKind?, activeAddress: String?) -> String? {
@@ -787,9 +798,15 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
             if !state.monitoring { setup = saved; windowPresence = .closed }
             return
         }
+        if saved.networkProfile == .pyroH && saved.pyroHRoute == nil {
+            error = PyroHRoute.rediscover
+            if !state.monitoring { setup = saved }
+            return
+        }
         let address = saved.kind == .network || saved.kind == .incoming ? SecureSettings.read(saved.credentialAccount) : nil
         if (saved.kind == .network || saved.kind == .incoming) && address == nil {
-            error = "The saved address is unavailable. Reconnect this source using Enter Stream Address."
+            error = saved.networkProfile == .pyroH ? PyroHRoute.rediscover
+                : "The saved address is unavailable. Reconnect this source using Enter Stream Address."
             if !state.monitoring { setup = saved }
             return
         }
@@ -799,7 +816,10 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
         guard !busy, !shuttingDown else { return }
         let chosen: VideoSource
         do { chosen = try candidate.source(address: address).validated() }
-        catch { self.error = error.localizedDescription; return }
+        catch {
+            if candidate.networkProfile == .pyroH, !state.monitoring { setup = candidate }
+            self.error = error.localizedDescription; return
+        }
         busy = true; error = nil; permissionDenied = false; screenPermissionDenied = false; pendingScreenPermission = nil; sheet = nil
         let discovery = sourceBrowser.stop()
         rejoinAttempt?.revoke()
@@ -882,10 +902,15 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
                     if state.holding && state.audienceAvailable { audienceControl.complete(state) }
                     else { audienceControl.fail(.hold, session: state); outgoingTransition.reset() }
                 }
-                self.error = state.sharing && !stoppingSharing
-                    ? (audiencePresentation.confirmedHold ? "The new input could not start. Viewers remain on Hold. Retry or return to the previous source."
-                       : "The new input could not start and holding output is not confirmed. Retry Hold or stop sharing.")
-                    : "The connection could not start. Retry, or return to the previous source."
+                if case .pyroH = chosen, case SetbeamError.unavailable(let message) = error,
+                   [PyroHRoute.changedWiFi, PyroHRoute.verifyWiFi].contains(message) {
+                    self.error = message
+                } else {
+                    self.error = state.sharing && !stoppingSharing
+                        ? (audiencePresentation.confirmedHold ? "The new input could not start. Viewers remain on Hold. Retry or return to the previous source."
+                           : "The new input could not start and holding output is not confirmed. Retry Hold or stop sharing.")
+                        : "The connection could not start. Retry, or return to the previous source."
+                }
                 lastRuntimeProblem = Redaction.text(error.localizedDescription)
                 publishGatewayState()
             }

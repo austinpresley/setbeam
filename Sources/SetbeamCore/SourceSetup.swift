@@ -43,6 +43,12 @@ public struct SourceSetup: Codable, Equatable, Identifiable, Sendable {
             guard let videoID, !videoID.isEmpty else { throw SetbeamError.unavailable("Choose the capture device you want to use.") }
             return .captureDevice(videoID: videoID, audioID: audioID)
         case .network:
+            if networkProfile == .pyroH || pyroHRoute != nil {
+                guard let route = pyroHRoute, address == route.address else {
+                    throw SetbeamError.unavailable(PyroHRoute.rediscover)
+                }
+                return try VideoSource.pyroH(route).validated()
+            }
             guard let address, !address.isEmpty else { throw SetbeamError.unavailable("Reconnect this source to restore its saved address.") }
             return try VideoSource.network(address).validated()
         case .incoming:

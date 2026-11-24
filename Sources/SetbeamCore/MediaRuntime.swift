@@ -44,6 +44,9 @@ public actor MediaRuntime {
     private var sourceArguments: [String] = []
     private var rtspPort: UInt16 = 0, apiPort: UInt16 = 0, webPort: UInt16 = 0, icePort: UInt16 = 0, rtmpPort: UInt16 = 0
     private let incomingRelay = IncomingStreamRelay()
+    private let pyroHNetworks: @Sendable () -> [PyroHNetwork]
+    private var pyroHPlayback: PyroHPlayback?
+    private var pyroHProblem: String?
     private var publisherPassword = MediaRuntime.secret(), previewPassword = MediaRuntime.secret(), adminPassword = MediaRuntime.secret()
     private var guestPassword = MediaRuntime.secret()
     /// Under viewer approval the shared guest reader is absent; each admitted browser session
@@ -85,8 +88,9 @@ public actor MediaRuntime {
     private let log: SessionLog
     private let serverWarnings = ServerWarnings()
 
-    public init(paths: RuntimePaths, log: SessionLog = .shared) {
-        self.paths = paths; self.log = log
+    public init(paths: RuntimePaths, log: SessionLog = .shared,
+                pyroHNetworks: @escaping @Sendable () -> [PyroHNetwork] = { PyroHNetwork.connected() }) {
+        self.paths = paths; self.log = log; self.pyroHNetworks = pyroHNetworks
         beforeSourceConfigurationStep = { _ in }
         beforeViewerAccessStep = { _ in }
         let discovery = accsoonDiscovery
@@ -96,6 +100,7 @@ public actor MediaRuntime {
     init(paths: RuntimePaths, beforeSourceConfigurationStep: @escaping @Sendable (SourceConfigurationStep) async throws -> Void,
          beforeViewerAccessStep: @escaping @Sendable (ViewerAccessStep) async throws -> Void = { _ in }) {
         self.paths = paths; self.log = .shared
+        self.pyroHNetworks = { PyroHNetwork.connected() }
         self.beforeSourceConfigurationStep = beforeSourceConfigurationStep
         self.beforeViewerAccessStep = beforeViewerAccessStep
         let discovery = accsoonDiscovery
@@ -113,6 +118,7 @@ public actor MediaRuntime {
         await acquireOperation()
         defer { releaseOperation() }
         try Task.checkCancellation()
+        if case .pyroH(let route) = validated { try route.requireCurrent(pyroHNetworks()) }
         shutdownLocked()
         var prepared = false
         defer { if !prepared { shutdownLocked() } }
@@ -224,10 +230,16 @@ public actor MediaRuntime {
             args += Self.screenInputArguments(frameRate: screenFrameRate.captureRate(for: MacWindow.nativeFrameRate))
         case .sample:
             args += ["-re", "-stream_loop", "-1", "-i", paths.fixtures.appendingPathComponent("Demo.mp4").path]
-        case .network, .incoming:
+        case .network, .incoming, .pyroH:
+            let input: String
+            if case .pyroH = source {
+                guard let playback = pyroHPlayback else { throw SetbeamError.unavailable(PyroHRoute.rediscover) }
+                input = playback.inputURL
+                args += ["-protocol_whitelist", "tcp,rtp"]
+            } else { input = publisherURL("source") }
             // External encodings can contain B pictures. Keep FFmpeg's DTS discovery
             // before stream copy; bypassing it can collapse/reorder their timestamps.
-            args += ["-analyzeduration", "2000000", "-fpsprobesize", "0", "-probesize", "1000000", "-rtsp_transport", "tcp", "-i", publisherURL("source")]
+            args += ["-analyzeduration", "2000000", "-fpsprobesize", "0", "-probesize", "1000000", "-rtsp_transport", "tcp", "-i", input]
         case .capture(let video, let audio):
             // Request the device's own format and cadence; a fixed rate halves 60p inputs
             // or fails on devices without that mode.
@@ -327,6 +339,13 @@ public actor MediaRuntime {
             throw SetbeamError.unavailable("The selected input is waiting for its private media configuration.")
         }
         accsoonReceiver.stop()
+        stopPyroHPlayback()
+        if case .pyroH(let route) = source {
+            do { pyroHPlayback = try PyroHPlayback(route: route, currentNetworks: pyroHNetworks) }
+            catch { pyroHProblem = error.localizedDescription; throw error }
+        }
+        var launched = false
+        defer { if !launched { stopPyroHPlayback() } }
         sourceArguments = try makeSourceArguments()
         if source.isMacCapture, let directory {
             // A closed or hidden window fails here, before any helper starts, so retries stay cheap.
@@ -350,6 +369,7 @@ public actor MediaRuntime {
         } else {
             sourcePublisher = try child("Source input", "ffmpeg", sourceArguments)
         }
+        launched = true
         sourceStartedAt = Date()
         if case .accsoon(let uid) = source, let device = accsoonDiscovery.device(uid) {
             accsoonDiscovery.stop()
@@ -357,6 +377,10 @@ public actor MediaRuntime {
             catch { screenCapture?.stop(); screenCapture = nil; sourcePublisher?.stop(); sourcePublisher = nil; try? accsoonDiscovery.start(); throw error }
         }
     }
+    private func stopPyroHPlayback() {
+        pyroHPlayback?.stop(); pyroHPlayback = nil; pyroHProblem = nil
+    }
+
     private var isAccsoonSource: Bool { if case .accsoon = source { return true }; return false }
 
     public func updateViewerAddress(_ address: String) async throws {
@@ -384,6 +408,7 @@ public actor MediaRuntime {
         defer { releaseOperation() }
         accsoonReceiver.stop()
         screenCapture?.stop(); screenCapture = nil; sourcePublisher?.stop(); sourcePublisher = nil; nextSourceRetry = .distantPast
+        stopPyroHPlayback()
         sessionState.updateSource(available: false); observedSourceAudio = false
         publishSnapshot()
     }
@@ -449,6 +474,7 @@ public actor MediaRuntime {
         defer { releaseOperation() }
         try Task.checkCancellation()
         guard directory != nil, !replacingSource else { throw SetbeamError.unavailable("Connect a source before changing inputs.") }
+        if case .pyroH(let route) = validated { try route.requireCurrent(pyroHNetworks()) }
         replacingSource = true
         defer { replacingSource = false }
         log.record("source.replace", ["source": validated.label, "sharing": sharing])
@@ -468,6 +494,7 @@ public actor MediaRuntime {
         } else { incomingRelay.stop() }
         accsoonReceiver.stop(); accsoonDiscovery.stop()
         screenCapture?.stop(); screenCapture = nil; sourcePublisher?.stop(); sourcePublisher = nil
+        stopPyroHPlayback()
         sessionState.updateSource(available: false)
         observedFrameAt = nil; observedSourceAudio = false
         sourceNeedsConfiguration = true
@@ -794,7 +821,7 @@ public actor MediaRuntime {
         _ = await refreshSnapshot(problem: problem)
     }
     private func reconcile() async -> String? {
-        var problem: String?
+        var problem: String? = pyroHPlayback?.problem ?? pyroHProblem
         let serverUnhealthy = mediaServer?.isRunning != true || controllerFailures >= 3
         if !replacingSource, directory != nil, serverUnhealthy {
             problem = "The video service is restarting. Your selected source has not changed."
@@ -802,14 +829,19 @@ public actor MediaRuntime {
                 serverFailures += 1; nextServerRetry = Date().addingTimeInterval(min(10, pow(1.6, Double(serverFailures))))
                 log.record("server.restart", ["failures": serverFailures, "controllerFailures": controllerFailures, "exit": Self.exitDescription(mediaServer?.terminationStatus), "error": mediaServer?.recentError.suffix(300).description ?? ""])
                 screenCapture?.stop(); screenCapture = nil; sourcePublisher?.stop(); sourcePublisher = nil; audiencePublisher?.stop(); audiencePublisher = nil; mediaServer?.stop(timeout: 0); mediaServer = nil
+                stopPyroHPlayback()
                 do { try await launchServer(); try? await launchSource(); if sharing { try? launchAudience() } }
                 catch { problem = "The video service is retrying. Your preview will return here." }
             }
         }
         let sourceStalled = Date().timeIntervalSince(sourcePublisher?.lastVideoFrameAt ?? sourceStartedAt) > 12
         let receiverFailed = isAccsoonSource && sourcePublisher != nil && !accsoonReceiver.isRunning
+        // The relay can close before FFmpeg reports EOF or empties its buffers.
+        if pyroHPlayback?.problem != nil {
+            sourcePublisher?.stop(); sourcePublisher = nil
+        }
         if !replacingSource, mediaServer?.isRunning == true, (sourcePublisher?.isRunning != true || sourceStalled || receiverFailed), Date() >= nextSourceRetry {
-            problem = isAccsoonSource ? accsoonReceiver.lastError ?? sourcePublisher?.recentError : sourcePublisher?.recentError
+            problem = problem ?? (isAccsoonSource ? accsoonReceiver.lastError ?? sourcePublisher?.recentError : sourcePublisher?.recentError)
             sourceFailures += 1; nextSourceRetry = Date().addingTimeInterval(min(10, pow(1.6, Double(sourceFailures))))
             let reason = sourcePublisher == nil ? "not running" : sourcePublisher?.isRunning != true ? "exited" : receiverFailed ? "receiver failed" : "stalled"
             log.record("source.restart", ["reason": reason, "failures": sourceFailures, "exit": Self.exitDescription(sourcePublisher?.terminationStatus),
@@ -879,7 +911,7 @@ public actor MediaRuntime {
                 "frameAge": audiencePublisher?.lastVideoFrameAt.map { Date().timeIntervalSince($0) } ?? -1])
         }
         sessionState.updateSource(available: available); sessionState.updateAudience(available: audienceAvailable)
-        observedFrameAt = lastFrame; observedProblem = available ? nil : problem.map(Redaction.text)
+        observedFrameAt = lastFrame; observedProblem = available ? nil : (pyroHPlayback?.problem ?? pyroHProblem ?? problem).map(Redaction.text)
         observedSourceAudio = available && MediaTracks.hasAudio(localPath?["tracks"] as? [String] ?? [])
         observedAudienceAudio = audienceAvailable && MediaTracks.hasAudio(audiencePath?["tracks"] as? [String] ?? [])
         publishSnapshot()
@@ -939,6 +971,7 @@ public actor MediaRuntime {
         accsoonReceiver.stop(); accsoonDiscovery.stop()
         audiencePublisher?.stop(); audiencePublisher = nil
         screenCapture?.stop(); screenCapture = nil; sourcePublisher?.stop(); sourcePublisher = nil
+        stopPyroHPlayback()
         mediaServer?.stop(); mediaServer = nil
         if let directory { try? FileManager.default.removeItem(at: directory) }
         directory = nil
