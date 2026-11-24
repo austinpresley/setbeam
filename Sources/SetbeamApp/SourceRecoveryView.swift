@@ -5,6 +5,7 @@ import SetbeamCore
 struct SourceRecoveryView: View {
     @ObservedObject var model: SessionModel
     @State private var showingDetails = false
+    @AccessibilityFocusState private var recoveryHeadingFocused: Bool
 
     private var kind: InputKind { model.setup?.kind ?? .sample }
     private var needsWiFi: Bool { kind == .accsoon || kind == .network }
@@ -12,14 +13,13 @@ struct SourceRecoveryView: View {
         !model.permissionDenied && (model.error != nil || model.wirelessDiscoveryProblem != nil || !needsWiFi && kind != .incoming)
     }
     private var title: String {
-        if model.permissionDenied { return "Allow access to your selected input" }
+        if model.permissionDenied { return model.recoveryTitle }
         if model.busy { return model.connectionStageTitle ?? model.recoveryTitle }
         if model.error != nil { return "Unable to open \(model.sourceLabel)" }
         if kind == .accsoon && !model.state.sourceAvailable { return "Waiting for \(model.sourceLabel)" }
         return model.recoveryTitle
     }
     private var detail: String {
-        if model.permissionDenied, let error = model.error { return error }
         return model.recoveryDetail
     }
     private var retryDetail: String {
@@ -44,13 +44,14 @@ struct SourceRecoveryView: View {
                         .font(.system(size: 36, weight: .regular)).foregroundStyle(.secondary).accessibilityHidden(true)
                     VStack(spacing: 8) {
                         Text(title).font(.title3.weight(.semibold)).accessibilityAddTraits(.isHeader)
+                            .accessibilityFocused($recoveryHeadingFocused)
                         Text(detail).font(.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     }
                     actions
                     if model.busy {
                         HStack(spacing: 8) { ProgressView().controlSize(.small); Text(model.connectionStageTitle ?? "Opening the selected picture") }
                             .font(.caption).foregroundStyle(.secondary)
-                    } else if model.state.monitoring && !model.permissionDenied {
+                    } else if model.state.monitoring && !model.permissionDenied && !windowClosed {
                         Label(retryDetail,
                               systemImage: needsWiFi ? "wifi" : "arrow.clockwise")
                             .font(.caption).foregroundStyle(.secondary)
@@ -62,7 +63,7 @@ struct SourceRecoveryView: View {
                             if let error = model.error, !model.permissionDenied { Text(error).foregroundStyle(.primary) }
                             if let stage = model.connectionStageTitle { Text(stage) }
                             if model.lastFrameAt != nil { Text(model.frameAgeLabel) }
-                            if !model.busy && !retryIsPrimary { Button("Retry Now") { model.retry() } }
+                            if !model.busy && !retryIsPrimary && !model.permissionDenied && !windowClosed { Button("Retry Now") { model.retry() } }
                             if needsWiFi && (model.error != nil || model.wirelessDiscoveryProblem != nil) {
                                 Button("Open Wi-Fi Settings") { model.openWiFiSettings() }
                             }
@@ -80,30 +81,61 @@ struct SourceRecoveryView: View {
                 .padding(20).frame(maxWidth: .infinity, minHeight: max(0, geometry.size.height))
             }
         }
+        .task { if model.permissionDenied { recoveryHeadingFocused = true } }
         .background(MonitorStyle.stage)
         .accessibilityElement(children: .contain).accessibilityLabel("Source recovery")
     }
 
-    private var actions: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 12) { primaryAction; chooseSource }
-            VStack(spacing: 8) { primaryAction; chooseSource }
-        }.disabled(model.busy)
-    }
-    @ViewBuilder private var primaryAction: some View {
+    @ViewBuilder private var actions: some View {
         if model.permissionDenied {
-            Button("Open Privacy Settings") { model.openPrivacySettings() }.buttonStyle(.borderedProminent)
+            SourcePermissionActions(model: model, offersSourceChooser: true)
+        } else {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 12) { primaryAction; if !windowClosed { chooseSource } }
+                VStack(spacing: 8) { primaryAction; if !windowClosed { chooseSource } }
+            }.disabled(model.busy)
+        }
+    }
+    private var windowClosed: Bool { kind == .macWindow && model.windowPresence == .closed }
+
+    @ViewBuilder private var primaryAction: some View {
+        if windowClosed {
+            Button("Choose a Window…") { model.openSources(category: .windows) }.buttonStyle(.borderedProminent)
         } else if retryIsPrimary {
             Button("Retry Now") { model.retry() }.buttonStyle(.borderedProminent)
         } else if needsWiFi {
             Button("Open Wi-Fi Settings") { model.openWiFiSettings() }.buttonStyle(.borderedProminent)
         } else if kind == .incoming {
-            Button("Open Accsoon Setup…") { model.present(.incoming) }.buttonStyle(.borderedProminent)
+            Button("Open Accsoon SEE Setup…") { model.present(.incoming) }.buttonStyle(.borderedProminent)
         } else {
             Button("Retry Now") { model.retry() }.buttonStyle(.borderedProminent)
         }
     }
     private var chooseSource: some View {
         Button("Choose Another Source…") { model.openSources() }.buttonStyle(.bordered)
+    }
+}
+
+struct SourcePermissionActions: View {
+    @ObservedObject var model: SessionModel
+    var offersSourceChooser = false
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 12) { actions }.fixedSize(horizontal: true, vertical: false)
+            VStack(spacing: 8) { actions }
+        }.disabled(model.busy)
+    }
+
+    @ViewBuilder private var actions: some View {
+        if let request = model.deniedSourceRequest {
+            Button("Open \(request.permission.title) Settings") { model.openPrivacySettings() }
+                .accessibilityHint("Open Privacy & Security in System Settings")
+            Button("Retry Now") { model.retry() }
+                .accessibilityHint("Retry \(request.candidate.name)")
+            if offersSourceChooser {
+                Button("Choose Another Source…") { model.openSources() }
+            }
+        }
     }
 }

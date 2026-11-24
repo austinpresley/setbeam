@@ -15,7 +15,7 @@ struct MainView: View {
 
     private enum MonitorPopover { case source, sound }
     private var inlineSharing: Bool { model.sharingSection != nil && !model.sharingInWindow }
-    private var showingSourceRecovery: Bool { model.setup != nil && !model.localReady }
+    private var showingSourceRecovery: Bool { (model.setup != nil || model.deniedSourceRequest != nil) && !model.localReady }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -62,6 +62,11 @@ struct MainView: View {
         .onChange(of: model.sheet) { _, sheet in
             if sheet != nil { popover = nil }
             model.sharingCanDock = windowPresentation.canEmbedSharing && sheet == nil
+        }
+        .onChange(of: model.deniedSourceRequest) { _, request in
+            if let request, model.localReady, NSApp.keyWindow === model.monitorWindow {
+                AccessibilityNotification.Announcement(request.instructions).post()
+            }
         }
         .onChange(of: model.sharingSection) { _, section in
             if let section { lastSharingSection = section }
@@ -191,13 +196,15 @@ struct MainView: View {
 
     private var feedback: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if !showingSourceRecovery, let message = model.error {
-                issue(message) { model.error = nil }
-                if model.permissionDenied {
-                    HStack(spacing: 12) {
-                        Button("Open Privacy Settings") { model.openPrivacySettings() }
-                        Button("Retry Now") { model.retry() }.disabled(model.busy)
-                    }.buttonStyle(.link).font(.caption)
+            if !showingSourceRecovery {
+                if let request = model.deniedSourceRequest {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(request.instructions)
+                        SourcePermissionActions(model: model).buttonStyle(.link)
+                    }.font(.caption).padding(8).frame(maxWidth: .infinity, alignment: .leading)
+                        .background(.quaternary.opacity(0.60), in: RoundedRectangle(cornerRadius: 8))
+                } else if let message = model.error {
+                    issue(message) { model.error = nil }
                 }
             }
             if model.networkChanged {
@@ -206,7 +213,7 @@ struct MainView: View {
         }.padding(.horizontal, 20).padding(.vertical, hasFeedback ? 8 : 0)
     }
     private var hasFeedback: Bool {
-        !showingSourceRecovery && model.error != nil || model.networkChanged
+        !showingSourceRecovery && (model.error != nil || model.permissionDenied) || model.networkChanged
     }
 
     private func issue(_ message: String, dismiss: @escaping () -> Void) -> some View {

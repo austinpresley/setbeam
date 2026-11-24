@@ -16,8 +16,8 @@ struct PermissionUses: Equatable {
         var kinds = Set<PermissionKind>()
         if screen { kinds.insert(.screenRecording) }
         if camera { kinds.formUnion([.camera, .microphone]) }
-        if transmitter { kinds.formUnion([.localNetwork, .location]) }
-        if sharing { kinds.insert(.localNetwork) }
+        if transmitter { kinds.insert(.location) }
+        if (transmitter || sharing) && PermissionKind.localNetwork.isAvailable { kinds.insert(.localNetwork) }
         return kinds
     }
 }
@@ -49,9 +49,17 @@ enum PermissionKind: String, CaseIterable, Identifiable {
         case .camera: return "Uses the USB camera or capture device you select."
         case .microphone: return "Optional. Only for sound from a capture input you choose in Source Details."
         case .localNetwork: return "Finds transmitters on this Mac's Wi-Fi and lets viewers on this network open your link."
-        case .location: return "macOS uses Location access to identify Wi-Fi networks. Setbeam may ask for it when verifying Pyro H Wi-Fi or when you enable automatic transmitter rejoin."
+        case .location: return "Lists Wi-Fi names when requested, verifies Pyro H Wi-Fi, and supports automatic transmitter rejoin when enabled."
         }
     }
+    var isAvailable: Bool {
+        if self == .localNetwork {
+            if #available(macOS 15, *) { return true }
+            return false
+        }
+        return true
+    }
+
     /// The Privacy & Security pane for this access.
     var settingsURL: URL {
         let pane: String
@@ -108,6 +116,7 @@ enum PermissionState: Equatable {
     func state(_ kind: PermissionKind, needed: Bool) -> PermissionState { needed ? states[kind] ?? .unknown : .notNeeded }
 
     func request(_ kind: PermissionKind, model: SessionModel) {
+        guard kind.isAvailable else { return }
         switch kind {
         case .screenRecording:
             _ = MacScreenCapture.requestPermission(); screenRequested = true; refresh()
@@ -127,6 +136,7 @@ enum PermissionState: Equatable {
 struct PermissionsView: View {
     @ObservedObject var model: SessionModel
     @StateObject private var guide = PermissionGuide()
+    @AccessibilityFocusState private var headingFocused: Bool
     @State private var uses: PermissionUses
     var inSettings = false
 
@@ -136,6 +146,7 @@ struct PermissionsView: View {
         VStack(alignment: .leading, spacing: 20) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Permissions").font(.title2.weight(.semibold))
+                    .accessibilityAddTraits(.isHeader).accessibilityFocused($headingFocused)
                 Text(inSettings ? "Access for monitoring and sharing on this Mac. Allow only what you need; optional access is explained below." : "macOS asks once for each kind of access. Choose what you'll use, and Setbeam asks only for what that needs, when you press Allow.")
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
@@ -144,13 +155,15 @@ struct PermissionsView: View {
                     Toggle("This Mac's screen or an app window", isOn: $uses.screen).accessibilityLabel("This Mac's screen or an app window")
                     Toggle("A camera or capture device", isOn: $uses.camera).accessibilityLabel("A camera or capture device")
                     Toggle("A wireless transmitter", isOn: $uses.transmitter).accessibilityLabel("A wireless transmitter")
-                    Toggle("Sharing with viewers on this network", isOn: $uses.sharing).accessibilityLabel("Sharing with viewers on this network")
+                    if PermissionKind.localNetwork.isAvailable {
+                        Toggle("Sharing with viewers on this network", isOn: $uses.sharing)
+                    }
                     Text("The sample feed needs no access. Turn on each kind of source you use.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 }
                 Section("Access") {
-                    ForEach(PermissionKind.allCases) { kind in row(kind) }
+                    ForEach(PermissionKind.allCases.filter(\.isAvailable)) { kind in row(kind) }
                 }
             }.formStyle(.grouped).frame(height: 400)
             if !inSettings { HStack {
@@ -162,6 +175,7 @@ struct PermissionsView: View {
                     .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
             } }
         }.padding(24).frame(width: inSettings ? nil : 640)
+            .task { if !inSettings { headingFocused = true } }
             .onChange(of: uses) { _, value in if inSettings { model.permissionUses = value } }
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in guide.refresh() }
     }
@@ -200,6 +214,7 @@ struct PermissionsView: View {
                 Button("Open Settings") { NSWorkspace.shared.open(kind.settingsURL) }
             case (_, .notAsked):
                 Button("Allow…") { guide.request(kind, model: model) }.help("Ask macOS for \(kind.title) access now")
+                if kind == .screenRecording { Button("Open Settings") { NSWorkspace.shared.open(kind.settingsURL) } }
             default:
                 Button("Open Settings") { NSWorkspace.shared.open(kind.settingsURL) }.help("Turn on Setbeam in Privacy & Security > \(kind.title)")
             }
@@ -243,5 +258,20 @@ struct PermissionsView: View {
     private func finish(openSources: Bool) {
         model.permissionUses = uses
         if openSources { model.openSources() } else { model.sheet = nil }
+    }
+}
+
+/// The denied attempt is independent of the source already on the monitor.
+struct DeniedSourceRequest: Equatable {
+    let candidate: SourceSetup
+    let address: String?
+    let remember: Bool
+    let permission: PermissionKind
+
+    var instructions: String {
+        if permission == .screenRecording {
+            return "Allow Setbeam in Screen & System Audio Recording to use \(candidate.name), then retry. macOS may ask you to quit and reopen Setbeam."
+        }
+        return "Allow Setbeam in Privacy & Security > \(permission.title) to use \(candidate.name), then retry."
     }
 }

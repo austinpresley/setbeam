@@ -144,9 +144,8 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
     @Published var copiedLink = false
     @Published var copiedIPLink = false
     @Published var lastFrameAt: Date?
-    private var pendingScreenPermission: (setup: SourceSetup, remember: Bool)?
-    private var screenPermissionDenied = false
-    @Published var permissionDenied = false
+    @Published private(set) var deniedSourceRequest: DeniedSourceRequest?
+    var permissionDenied: Bool { deniedSourceRequest != nil }
     @Published var networkChanged = false
     @Published var diagnosticCopied = false
     @Published var incomingServer = ""
@@ -511,7 +510,7 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
         return "Private preview"
     }
     var recoveryTitle: String {
-        if permissionDenied { return "Allow access to your selected input" }
+        if let request = deniedSourceRequest { return "Allow \(request.permission.title) Access" }
         guard let setup else { return "Your picture starts here" }
         if connectingToPicture { return "Connecting to \(setup.name)" }
         if setup.kind == .capture && !captureDevices.contains(where: { $0.id == setup.videoID && !$0.audio }) { return "Connect \(setup.deviceName ?? setup.name)" }
@@ -543,7 +542,7 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
         }
     }
     var recoveryDetail: String {
-        if permissionDenied { return "Enable Setbeam in Privacy & Security, then retry. Access is only needed for the input you chose." }
+        if let request = deniedSourceRequest { return request.instructions }
         if connectingToPicture { return "Opening the selected source on this Mac." }
         guard let setup else { return "Connect a receiver, camera, or computer output. You can also try a clearly labeled sample." }
         if setup.kind == .macWindow {
@@ -834,7 +833,7 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
             if candidate.networkProfile == .pyroH, !state.monitoring { setup = candidate }
             self.error = error.localizedDescription; return
         }
-        busy = true; error = nil; permissionDenied = false; screenPermissionDenied = false; pendingScreenPermission = nil; sheet = nil
+        busy = true; error = nil; deniedSourceRequest = nil; sheet = nil
         let discovery = sourceBrowser.stop()
         rejoinAttempt?.revoke()
         Task {
@@ -842,25 +841,10 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
             await viewingWiFiScan?.value
             await discovery?.value
             guard !shuttingDown else { return }
-            if candidate.kind.isMacCapture {
-                let allowed = await Task.detached { MacScreenCapture.requestPermission() }.value
+            if let denied = await Self.deniedPermission(for: candidate) {
                 guard !shuttingDown else { return }
-                if !allowed {
-                    pendingScreenPermission = (candidate, remember)
-                    screenPermissionDenied = true; permissionDenied = true; error = "Allow Setbeam in Screen Recording, then retry."
-                    setup = state.monitoring ? setup : candidate
-                    return
-                }
-            }
-            if candidate.kind == .capture {
-                let videoAllowed = await Self.requestPermission(.video)
-                let audioAllowed = candidate.audioID == nil ? true : await Self.requestPermission(.audio)
-                guard !shuttingDown else { return }
-                if !videoAllowed || !audioAllowed {
-                    permissionDenied = true; error = "Allow access to the selected video or sound input in Privacy & Security, then retry."
-                    setup = state.monitoring ? setup : candidate
-                    return
-                }
+                recordDeniedSource(DeniedSourceRequest(candidate: candidate, address: address, remember: remember, permission: denied))
+                return
             }
             guard !shuttingDown else { return }
             let changingSource = state.monitoring
@@ -960,6 +944,22 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
         guard !busy, let previousSource else { return }
         connect(previousSource.setup, address: previousSource.address, remember: previousSource.remember)
     }
+    private static func deniedPermission(for candidate: SourceSetup) async -> PermissionKind? {
+        if candidate.kind.isMacCapture {
+            let allowed = await Task.detached { MacScreenCapture.requestPermission() }.value
+            return allowed ? nil : .screenRecording
+        }
+        guard candidate.kind == .capture else { return nil }
+        guard await requestPermission(.video) else { return .camera }
+        if candidate.audioID != nil, !(await requestPermission(.audio)) { return .microphone }
+        return nil
+    }
+
+    func recordDeniedSource(_ request: DeniedSourceRequest) {
+        deniedSourceRequest = request
+        SessionLog.shared.record("source.permission.denied", ["permission": request.permission.rawValue])
+    }
+
     private static func requestPermission(_ media: AVMediaType) async -> Bool {
         switch AVCaptureDevice.authorizationStatus(for: media) {
         case .authorized: return true
@@ -987,11 +987,11 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
     }
     func retry() {
         guard !busy else { return }; error = nil
-        if let pending = pendingScreenPermission {
-            connect(pending.setup, remember: pending.remember)
+        if let request = deniedSourceRequest {
+            connect(request.candidate, address: request.address, remember: request.remember)
             return
         }
-        if state.monitoring && !permissionDenied {
+        if state.monitoring {
             busy = true
             connectedAt = Date()
             Task {
@@ -1001,7 +1001,6 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
             }
             return
         }
-        permissionDenied = false
         if let setup { connect(setup, address: activeNetworkURL ?? SecureSettings.read(setup.credentialAccount), remember: rememberSetup) }
         else { openSources() }
     }
@@ -1675,7 +1674,10 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
         return nil
     }
     func openWiFiSettings() { NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.wifi-settings-extension")!) }
-    func openPrivacySettings() { NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_\(screenPermissionDenied || setup?.kind.isMacCapture == true ? "ScreenCapture" : "Camera")")!) }
+    func openPrivacySettings() {
+        guard let request = deniedSourceRequest else { return }
+        NSWorkspace.shared.open(request.permission.settingsURL)
+    }
     private var savingFrame = false
     func saveFrame() {
         guard localReady, !savingFrame else { return }

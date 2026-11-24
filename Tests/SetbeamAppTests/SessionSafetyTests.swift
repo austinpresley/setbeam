@@ -46,3 +46,40 @@ final class SessionSafetyTests: XCTestCase {
         XCTAssertNotNil(model.error)
     }
 }
+
+extension SessionSafetyTests {
+    @MainActor func testDeniedReplacementRetainsItsOwnCandidateAndPermission() throws {
+        let suite = "setbeam-permission-recovery-\(UUID().uuidString)"
+        let preferences = UserDefaults(suiteName: suite)!
+        defer { preferences.removePersistentDomain(forName: suite) }
+        var state = SessionState()
+        state.beginMonitoring()
+        try state.startSharing()
+        let model = SessionModel(initialState: state, preferences: preferences)
+        let active = SourceSetup(kind: .sample, name: "Current sample")
+        model.setup = active
+        var candidate = SourceSetup(kind: .capture, name: "Camera to try")
+        candidate.videoID = "camera-id"
+        candidate.audioID = "sound-id"
+        let denied = DeniedSourceRequest(candidate: candidate, address: nil, remember: false, permission: .microphone)
+        model.recordDeniedSource(denied)
+
+        XCTAssertEqual(model.deniedSourceRequest, denied)
+        XCTAssertEqual(model.setup, active)
+        XCTAssertTrue(model.state.sharing)
+        XCTAssertEqual(model.recoveryTitle, "Allow Microphone Access")
+        XCTAssertTrue(model.recoveryDetail.contains(candidate.name))
+        XCTAssertEqual(model.deniedSourceRequest?.permission.settingsURL.query, "Privacy_Microphone")
+        XCTAssertEqual(PermissionKind.camera.settingsURL.query, "Privacy_Camera")
+        XCTAssertEqual(PermissionKind.screenRecording.settingsURL.query, "Privacy_ScreenCapture")
+    }
+
+    func testLocalNetworkPermissionUseMatchesPlatformAvailability() {
+        XCTAssertEqual(PermissionUses(transmitter: true).needs.contains(.localNetwork), PermissionKind.localNetwork.isAvailable)
+        if #available(macOS 15, *) {
+            XCTAssertTrue(PermissionKind.localNetwork.isAvailable)
+        } else {
+            XCTAssertFalse(PermissionKind.localNetwork.isAvailable)
+        }
+    }
+}
