@@ -1,5 +1,19 @@
 # Setbeam status
 
+## Simpler v2 proposal, 2026-11-24
+
+Austin asked for another ease-of-use rethink with before/after mockups,
+minimal text and clear icons. The [proposal](simpler-v2-proposal.md) has six
+pairs: sources on the empty stage, Go Live opening the codes with a
+self-filling readiness strip in place of Test My Setup, one People tab with
+the panel cut from four tabs to two, audience options in the LIVE menu,
+permission tiles, and viewers watching before naming themselves when Ask
+first is off. Befores are captures from the current build and the viewer
+redesign. Afters are HTML mockups under ignored `design/mockups/simpler-v2/`.
+Design only: no app source changed, and no build, check or physical test ran.
+Austin has not chosen what to build. The [gallery, PNGs and proposal](https://drive.google.com/drive/folders/1p0o9iaqaVQad1HfLfZRyKepVawfE2HWK)
+are delivered with remote verification, delivery `20261124T201432Z--07f3e81cf660`.
+
 ## Audit remediation, 2026-11-24
 
 The local `improve/audit-findings` branch starts at `250e738`, the source
