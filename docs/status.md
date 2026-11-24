@@ -238,6 +238,39 @@ for the Mac capture path. Browser capture uses the gateway's live revision
 independently of native preview readiness. The TV contract and both preview
 interfaces are recorded in [collaboration audit interfaces](collaboration-audit-interfaces.md).
 
+## Source capture audit, 2026-11-24
+
+Screen capture keeps the last complete picture during ScreenCaptureKit idle.
+Blank or suspended capture drops it, including queued encoder output. Display
+mode changes, stopped streams, and persistent VideoToolbox errors trigger
+recovery for the selected source. The runtime waits for stream retirement
+before opening the next input. The click-through shared pointer panel leaves
+the presenter ring visible. The chooser rotates through eligible window
+thumbnails and caches at most 18 results.
+
+The AVFoundation patch opens the microphone object from the exact match and
+bounds the first-sample waits. A local rebuild of pinned FFmpeg rejected
+fabricated video and audio IDs with the disconnected-device errors. A
+generated depth pixel produced VideoToolbox status `-12905` and one terminal
+encoder failure after repeated errors.
+
+A fake Master 4K on alternate loopback ports kept one upstream RTMS4 media
+subscription for each of four runs. HEVC stayed live with unsupported audio,
+absent audio packets, valid stereo AAC, and a change from valid to unsupported
+audio after startup. Supported audio is mapped only if it arrives during the
+startup check. An audio track already mapped at startup remains negotiated for
+that publisher. Delayed status results no longer replace newer beacon media
+flags or update a different host or discovery run.
+
+The 49 focused tests passed, including the generated 4K screen pipe decode.
+Local `scripts/check.sh` passed with the rebuilt helpers. The run reported
+336 Swift tests with two opt-in skips, 17 Python tests, 60 Node tests, and all
+ten media probes.
+Real display mode changes, live ScreenCaptureKit stop timing, and capture-device
+first-sample timing need physical verification. Hardware compatibility remains
+limited to the recorded evidence. Packaging applies the updated AVFoundation
+patch to pristine FFmpeg and rebuilds helpers when the patch changes.
+
 ## Unified release candidate, 2026-11-23
 
 The local `release/unified-candidate` branch combines build 41’s signed updates
