@@ -1035,6 +1035,9 @@ class Run:
         if "Session Receiver integration" not in details["text"]:
             raise Failure("the session name is missing from on-demand diagnostics")
         self.device.png("connection-info")
+        self.device.key(20, 20, 20, 20, 20, 20, 20, 20)
+        self.wait("receiver version in scrollable connection info", lambda: "Receiver 0." in self.device.screen()["text"], 10)
+        self.device.png("connection-info-scrolled")
         self.device.key(4)
         self.wait("connection info hidden by Back", lambda: not self.device.screen()["diag"], 15)
         self.device.key(23)

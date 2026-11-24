@@ -186,19 +186,26 @@
             android:textSize="16sp" />
     </LinearLayout>
 
-    <TextView
-        android:id="@+id/diagnostics"
-        android:layout_width="wrap_content"
+    <ScrollView
+        android:id="@+id/diagnostics_panel"
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_gravity="bottom|start"
         android:layout_marginHorizontal="@dimen/tv_safe_horizontal"
         android:layout_marginVertical="@dimen/tv_safe_vertical"
         android:background="@color/diag"
-        android:fontFamily="monospace"
-        android:padding="12dp"
-        android:textColor="@color/ink"
-        android:textSize="13sp"
-        android:visibility="gone" />
+        android:focusable="true"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/diagnostics"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:fontFamily="monospace"
+            android:padding="12dp"
+            android:textColor="@color/ink"
+            android:textSize="13sp" />
+    </ScrollView>
 
     <LinearLayout
         android:id="@+id/controls"

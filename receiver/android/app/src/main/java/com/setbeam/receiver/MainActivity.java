@@ -72,6 +72,7 @@ public final class MainActivity extends Activity implements PairingChanges.Recei
     private ViewGroup card;
     private ImageView cardIcon;
     private TextView cardTitle, cardMessage, cardDetail, sample, diagnostics;
+    private android.widget.ScrollView diagnosticsPanel;
     private Button askAgain, openOptions, connectionInfo, macSettings, openChat, soundToggle, popupsToggle, pointersToggle;
     private PointerOverlay pointerView;
     private View chatPanel;
@@ -117,6 +118,7 @@ public final class MainActivity extends Activity implements PairingChanges.Recei
         cardDetail = findViewById(R.id.card_detail);
         sample = findViewById(R.id.sample);
         diagnostics = findViewById(R.id.diagnostics);
+        diagnosticsPanel = findViewById(R.id.diagnostics_panel);
         askAgain = findViewById(R.id.ask_again);
         openOptions = findViewById(R.id.open_options);
         connectionInfo = findViewById(R.id.connection_info);
@@ -131,10 +133,9 @@ public final class MainActivity extends Activity implements PairingChanges.Recei
         chatText = findViewById(R.id.chat_text);
         chatStatus = findViewById(R.id.chat_status);
         chatToasts = findViewById(R.id.chat_toasts);
-        diagnostics.setFocusable(true);
         if (android.os.Build.VERSION.SDK_INT >= 28) {
             controls.setAccessibilityPaneTitle(getText(R.string.receiver_options));
-            diagnostics.setAccessibilityPaneTitle(getText(R.string.connection_info));
+            diagnosticsPanel.setAccessibilityPaneTitle(getText(R.string.connection_info));
             chatPanel.setAccessibilityPaneTitle(getText(R.string.chat_button));
         }
 
@@ -415,11 +416,12 @@ public final class MainActivity extends Activity implements PairingChanges.Recei
     private void setDiagnostics(boolean visible) {
         if (visible) hideChat();
         showDiagnostics = visible;
-        diagnostics.setVisibility(visible ? View.VISIBLE : View.GONE);
+        diagnosticsPanel.setVisibility(visible ? View.VISIBLE : View.GONE);
         if (visible) {
             updateCardInteraction();
             diagnostics.setText(R.string.connection_info);
-            diagnostics.requestFocus();
+            diagnosticsPanel.scrollTo(0, 0);
+            diagnosticsPanel.requestFocus();
             if (player != null) player.collect(snapshot -> main.post(() -> renderDiagnostics(snapshot)));
         } else restorePlaybackFocus();
     }
@@ -585,6 +587,10 @@ public final class MainActivity extends Activity implements PairingChanges.Recei
                     .append("   revision ").append(v.revision).append("   updates ").append(v.stateFeed).append('\n');
             if (!v.reason.isEmpty()) text.append("Last issue ").append(v.reason).append('\n');
         }
+        SessionExtras.Snapshot e = lastExtras;
+        text.append("Chat ").append(e == null ? "not admitted" : e.chatStatus)
+                .append("   pointers ").append(!settings.pointers() ? "off on this TV" : e == null ? "off" : e.pointerStatus + (e.pointers.isEmpty() ? "" : ", " + e.pointers.size() + " shown"))
+                .append("   sound ").append(settings.sound() ? "on" : "off").append('\n');
         String pinned = settings.pinnedMacId();
         text.append("Bonjour id hint ").append(pinned == null ? "none" : pinned.substring(0, 8) + "… (unverified, not authentication)").append('\n');
         text.append("Discovery ").append(discovery.status()).append('\n');
@@ -615,10 +621,6 @@ public final class MainActivity extends Activity implements PairingChanges.Recei
         text.append("Audio ").append(a.isEmpty() ? (s.hasAudio ? "track, no stats" : "none negotiated")
                 : "packets " + a.get("packetsReceived") + "   concealed " + a.get("concealedSamples") + "   level " + a.get("audioLevel")).append('\n');
         text.append("Connection ").append(s.connection).append(s.candidatePair.isEmpty() ? "" : "   " + s.candidatePair).append('\n');
-        SessionExtras.Snapshot e = lastExtras;
-        text.append("Chat ").append(e == null ? "not admitted" : e.chatStatus)
-                .append("   pointers ").append(!settings.pointers() ? "off on this TV" : e == null ? "off" : e.pointerStatus + (e.pointers.isEmpty() ? "" : ", " + e.pointers.size() + " shown"))
-                .append("   sound ").append(settings.sound() ? "on" : "off").append('\n');
         text.append("Receiver ").append(version()).append("   this TV ").append(localAddresses());
         diagnostics.setText(text.toString());
     }
