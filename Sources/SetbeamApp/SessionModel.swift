@@ -47,7 +47,9 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
     private(set) var viewingLink = 0
     /// Requests to join, announced once each with a card that keeps this Mac's other apps in front.
     let joinRequests = JoinRequestCenter()
-    @Published var viewers: [ViewerActivity] = [] { didSet { observeJoinRequests() } }
+    @Published var viewers: [ViewerActivity] = [] {
+        didSet { observeJoinRequests(); revalidateSetupSound() }
+    }
     @Published var busy = false
     @Published private(set) var stoppingSharing = false
     @Published private var startingSharing = false
@@ -78,8 +80,8 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
     @Published private(set) var audienceControl = AudienceControlState()
     @Published var sourceHasAudio = false
     @Published var audienceHasAudio = false
-    @Published var expectsAudio = false
-    @Published var testSoundConfirmed = false
+    @Published var expectsAudio: Bool? { didSet { if expectsAudio != oldValue { confirmedSetupSound = nil } } }
+    @Published private var confirmedSetupSound: SetupCheckOutput?
     let sourceBrowser: SourceBrowser
     @Published var pipVisible = false
     @Published var sheet: AppSheet?
@@ -385,6 +387,7 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
         guard !busy, !applyingViewerApproval, enabled != viewerApproval else { return }
         applyingViewerApproval = true
         viewerApproval = enabled
+        confirmedSetupSound = nil
         if !integration { defaults.set(enabled, forKey: "viewerApproval") }
         SessionLog.shared.record("viewers.approval", ["enabled": enabled])
         gateway.setAccess(approval: enabled, pointers: sharedPointers)
@@ -480,10 +483,41 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
             self?.accessSync = nil
         }
     }
+    var setupViewingLinkReady: Bool {
+        viewingInvitation != nil
+    }
+    var setupApprovalReady: Bool { !applyingViewerApproval && (!state.sharing || viewerApproval == appliedApproval) }
+
+    private var setupCheckOutput: SetupCheckOutput? {
+        guard setupViewingLinkReady, setupApprovalReady, audiencePresentation.phase == .sharing,
+              let revision = currentRuntime?.audienceRevision else { return nil }
+        return SetupCheckOutput(link: viewingLink, revision: revision, route: viewerAddress, reports: gateway.viewers)
+    }
+    var setupCheckPlayingCount: Int { setupCheckOutput?.viewerCount ?? 0 }
+    var canConfirmSetupSound: Bool { setupCheckPlayingCount > 0 && audienceHasAudio && expectsAudio == true }
+
+    var testSoundConfirmed: Bool {
+        get {
+            guard let output = setupCheckOutput, output.viewerCount > 0 else { return false }
+            return audienceHasAudio && expectsAudio == true && confirmedSetupSound == output
+        }
+        set {
+            let output = newValue ? setupCheckOutput : nil
+            confirmedSetupSound = audienceHasAudio && expectsAudio == true && (output?.viewerCount ?? 0) > 0 ? output : nil
+        }
+    }
+
+    private func revalidateSetupSound() {
+        if let confirmedSetupSound, setupCheckOutput != confirmedSetupSound {
+            self.confirmedSetupSound = nil
+        }
+    }
+
     var setupCheck: SetupCheck {
-        SetupCheck(picture: localReady, viewingAddress: viewingInvitation != nil,
-            otherDevicePlaying: otherDeviceViewers > 0, expectsAudio: expectsAudio,
-            outgoingAudio: state.audience == .live && audienceHasAudio, soundConfirmed: testSoundConfirmed)
+        let output = setupCheckOutput
+        return SetupCheck(picture: localReady && !permissionDenied, viewingAddress: setupViewingLinkReady,
+            otherDevicePlaying: (output?.viewerCount ?? 0) > 0, expectsAudio: expectsAudio,
+            outgoingAudio: audienceHasAudio, soundConfirmed: output != nil && output == confirmedSetupSound)
     }
     var incomingAudioLabel: String { !state.sourceAvailable ? "Input audio: waiting" : sourceHasAudio ? "Input audio: track received" : "Input audio: no track" }
     var audienceAudioLabel: String {
@@ -647,6 +681,9 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
               !stoppingSharing || !snapshot.session.sharing else { return }
         if !snapshot.session.sharing || snapshot.source != .sample { integrationSessionFile?.clear() }
         if currentRuntime?.audienceRevision != snapshot.audienceRevision || snapshot.session.audience != .live { clearChatAttachment() }
+        if currentRuntime?.audienceRevision != snapshot.audienceRevision || snapshot.session.audience != .live || !snapshot.audienceHasAudio {
+            confirmedSetupSound = nil
+        }
         currentRuntime = snapshot; preview = snapshot.session.monitoring ? snapshot.preview : nil
         sourceHasAudio = snapshot.sourceHasAudio; audienceHasAudio = snapshot.audienceHasAudio
         state = snapshot.session
@@ -1267,6 +1304,7 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
         viewingNetwork = selected
         viewerInterface = selected?.interface ?? "lo0"
         viewerNetworkNeedsUpdate = true
+        confirmedSetupSound = nil
         SessionLog.shared.record("network.viewing", ["interface": viewerInterface, "sharing": state.sharing])
         viewerAddress = address
         do {
