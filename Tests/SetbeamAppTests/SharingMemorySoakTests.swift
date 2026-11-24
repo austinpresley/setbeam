@@ -8,24 +8,6 @@ import XCTest
 /// Opt-in endurance check of the same native preview and sharing runtime as the app.
 /// SETBEAM_MEMORY_SOAK_SECONDS=1800 swift test -c release --filter SharingMemorySoakTests
 final class SharingMemorySoakTests: XCTestCase {
-    private func memory(_ pid: pid_t) throws -> UInt64 {
-        var usage = rusage_info_v0()
-        let status = withUnsafeMutablePointer(to: &usage) {
-            $0.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) { proc_pid_rusage(pid, RUSAGE_INFO_V0, $0) }
-        }
-        guard status == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
-        return usage.ri_phys_footprint
-    }
-
-    private func descendants(_ parent: pid_t) throws -> [pid_t] {
-        var children = [pid_t](repeating: 0, count: 64)
-        let size = Int32(children.count * MemoryLayout<pid_t>.size)
-        let count = children.withUnsafeMutableBytes { proc_listchildpids(parent, $0.baseAddress, size) }
-        guard count >= 0, count < children.count else { throw SetbeamError.runtime("Could not enumerate all memory-test children.") }
-        let direct = Array(children.prefix(Int(count))).filter { $0 > 0 }
-        return try direct + direct.flatMap { try descendants($0) }
-    }
-
     @MainActor func testSharingMemoryRemainsBounded() async throws {
         let environment = ProcessInfo.processInfo.environment
         guard let value = environment["SETBEAM_MEMORY_SOAK_SECONDS"], let duration = Double(value), (30...14400).contains(duration) else {
@@ -84,12 +66,12 @@ final class SharingMemorySoakTests: XCTestCase {
             // Warm native renderer, decoder and encoder pools before measuring growth.
             // Large frame allocations can be cached after release. Measure the warm-up
             // envelope, rather than comparing a later peak with one low instant in that cycle.
-            var warmupPeak = try memory(getpid())
+            var warmupPeak = try SoakProcess.footprint(getpid())
             for _ in 0..<50 {
-                warmupPeak = max(warmupPeak, try memory(getpid()))
+                warmupPeak = max(warmupPeak, try SoakProcess.footprint(getpid()))
                 try await Task.sleep(nanoseconds: 200_000_000)
             }
-            let baseline = try memory(getpid()), began = Date()
+            let baseline = try SoakProcess.footprint(getpid()), began = Date()
             var peak = baseline, measurements: [[String: Any]] = [], previousFrames = player.diagnostics.presentedFrames
             var nextTransition = 0
             while Date().timeIntervalSince(began) < duration {
@@ -107,12 +89,12 @@ final class SharingMemorySoakTests: XCTestCase {
                 let snapshot = await runtime.snapshot()
                 publish(snapshot); player.checkHealth(sourceAvailable: snapshot.sourceAvailable)
                 outgoing.checkHealth(sourceAvailable: snapshot.audienceAvailable)
-                let footprint = try memory(getpid()); peak = max(peak, footprint)
+                let footprint = try SoakProcess.footprint(getpid()); peak = max(peak, footprint)
                 var heap = malloc_statistics_t()
                 malloc_zone_statistics(nil, &heap)
                 // Include native decoders and the media children of packaged supervisors.
-                let pids = try descendants(getpid())
-                let helperBytes = try pids.reduce(UInt64(0)) { try $0 + memory($1) }
+                let pids = try SoakProcess.descendants(getpid())
+                let helperBytes = try pids.reduce(UInt64(0)) { try $0 + SoakProcess.footprint($1) }
                 measurements.append(["seconds": elapsed, "appBytes": footprint, "runtimeBytes": helperBytes,
                                      "frames": player.diagnostics.presentedFrames, "queueBytes": player.diagnostics.videoQueueBytes,
                                      "mallocLiveBytes": UInt64(heap.size_in_use), "mallocReservedBytes": UInt64(heap.size_allocated),
