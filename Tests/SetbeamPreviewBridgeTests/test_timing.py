@@ -13,7 +13,7 @@ class PreviewTimingTests(unittest.TestCase):
                 for i, value in enumerate(pts)]
 
     def test_initial_rtcp_alignment_can_move_either_direction(self):
-        for adjustment in [0, -16345, -18000]:
+        for adjustment in [0, -16345, -18000, 99633]:
             with self.subTest(adjustment=adjustment):
                 validate_live_timing(self.video(adjustment))
 
@@ -30,7 +30,7 @@ class PreviewTimingTests(unittest.TestCase):
             validate_live_timing(video)
 
     def test_late_or_unbounded_clock_jumps_fail(self):
-        for adjustment, at in [(-18000, 50), (-200000, 1), (200000, 1)]:
+        for adjustment, at in [(-18000, 50), (99633, 50), (-200000, 1), (200000, 1)]:
             with self.subTest(adjustment=adjustment, at=at), self.assertRaises(AssertionError):
                 validate_live_timing(self.video(adjustment, at))
 
