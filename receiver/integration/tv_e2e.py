@@ -730,8 +730,11 @@ class Run:
         elapsed = time.time() - t1
         d1, d2 = s1["decoded"], s2["decoded"]
         moved = changed(sig1, sig2)
-        if d1 is None or d2 is None or d2 - d1 < 3 * seconds:
-            raise Failure(f"{label}: decoded frames did not advance ({d1} -> {d2} in {elapsed:.0f}s); screen {s2['lines'][:12]}")
+        if d1 is None or d2 is None:
+            raise Failure(f"{label}: could not read decoded-frame counters ({d1} -> {d2}); screen {s2['lines'][:12]}")
+        minimum = 3 * seconds
+        if d2 - d1 < minimum:
+            raise Failure(f"{label}: decoded {d2 - d1} additional frames in {elapsed:.0f}s, below {minimum}; screen {s2['lines'][:12]}")
         if self.motion_required and moved < 20:
             raise Failure(f"{label}: screen picture region did not change while live ({moved}/960 sampled points)")
         if not s2["sample_label"]:
