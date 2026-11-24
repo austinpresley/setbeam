@@ -17,9 +17,12 @@ See `Setbeam.app/Contents/Resources/Licenses` for the complete notices, pinned v
 
 `setbeam-preview` is a separate executable linked with the pinned LGPL FFmpeg libraries and BSD Opus library. Its complete bridge source and `build-preview-bridge.sh` are bundled with the runtime source materials so the helper can be rebuilt and relinked with modified compatible libraries. The Swift app does not link FFmpeg libraries. Rebuild the runtime first, then run `scripts/build-preview-bridge.sh`; replace and re-sign the preview helper in a local app copy as with the other helpers.
 
+The bundled MediaMTX reader includes Setbeam patches. The upstream and bundled
+SHA-256 digests and a patch description are in `runtime-lock.json`.
+
 To rebuild the runtime, use this repository's `scripts/build-runtime.sh`. Source archives from the bundle can be copied into `Vendor/cache/` to reuse them. The build script downloads the pinned MediaMTX archive and verifies all archive hashes. Replace the matching helpers in a local copy of the app and re-sign that copy for local use.
 
-Setbeam applies the bundled `patch-avfoundation.py` to FFmpeg's LGPL AVFoundation adapter. It adds exact video/audio device identity options, failing when the selected device is missing rather than selecting a different device. The unmodified archive, patch script, and build script reproduce the modified helper. Keep the two scripts together under a `scripts` directory when rebuilding from the bundled source materials.
+Setbeam applies the bundled `patch-avfoundation.py` to FFmpeg's LGPL AVFoundation adapter. It adds exact video/audio device identity options, failing when the selected device is missing rather than selecting a different device. The unmodified archive, patch script, and build script reproduce the modified helper. Keep the build script, `build-support.py`, and patch script together under a `scripts` directory when rebuilding from the bundled source materials.
 
 The demonstration portrait is a generated fictional image, not camera-test evidence. Its prompt and generation method are in `Fixtures/sample-image-notes.txt`. The bundled MP4 contains H.264 video and a generated test tone; the holding MP4 uses a plain background and silence. Apple frameworks are supplied by macOS.
 

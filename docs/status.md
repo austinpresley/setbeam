@@ -20,6 +20,32 @@ contains the file Setbeam wrote. The first focused local check passed 18
 XCTest cases for these settings, permission gates, and export behavior. The
 candidate still needs integrated media, UI, receiver, and packaging checks.
 
+## Release and packaging audit fixes, 2026-11-24
+
+The publisher verifies each candidate against the origin branch and tag, the
+configured Sparkle public key, and the disk image's signed app. It resumes a
+matching draft or public prerelease from verified assets. The Pages push uses
+the same branch commit whose appcast was checked. A stale candidate can refresh
+its feed while keeping the same verified disk image and tag.
+
+Packaging builds into private scratch, audits the fresh app before replacing
+the previous output, and checks cached runtime bytes against the pinned
+archives, build flags, AVFoundation patch and toolchain. The bundle records
+both the upstream and patched reader digests.
+
+All 31 offline Python release and packaging tests passed, including the
+temporary bare Git fixtures. Shell and Swift syntax checks also passed. The first server-race
+fixture tried to update a Git ref from inside the receive quarantine and got
+`ref updates forbidden inside quarantine environment`. The corrected fixture
+uses a separate ref update and verifies that Git rejects the stale push.
+
+The packaged capture patch can land independently. Use the fresh-extraction
+runtime build when combining the two changes, and refresh the bundled reader
+digest after merging the browser reader changes. A real clean-checkout package
+build, macOS 14 installation and update, and the startup Force Quit regression
+remain to be exercised with disposable builds. Supervisor lifecycle code was
+left for that runtime check.
+
 ## Unified release candidate, 2026-11-23
 
 The local `release/unified-candidate` branch combines build 41’s signed updates

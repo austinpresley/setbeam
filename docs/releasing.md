@@ -1,61 +1,115 @@
 # Releasing Setbeam
 
-Public builds are signed with Developer ID, notarized, stapled and shipped as a
-disk image. Installed release builds update themselves through a signed Sparkle
-feed. Developer builds from `scripts/build-app.sh` stay ad-hoc signed and never
-check for updates.
+Setbeam ships as a Developer ID-signed, notarized disk image for Apple Silicon
+Macs. Sparkle verifies the signed feed and the disk image. Builds from
+`scripts/build-app.sh` default to ad-hoc signing with updates off.
 
-## What must exist on the releasing Mac
+## Releasing Mac
+
+Start from a clean checkout on an Apple Silicon Mac with macOS 14 or later.
+Install Xcode with Swift 6, Python 3.12 or newer, `make`, `pkg-config`, `curl`,
+and the GitHub CLI. Confirm that Xcode is selected and its first-launch setup
+has finished. The first run resolves the pinned Swift package and downloads
+checksum-pinned runtime source archives. It can start with empty `.build/`,
+`build/`, `Vendor/`, and `dist/` directories.
 
 | Item | Where | Check |
 | --- | --- | --- |
-| Developer ID Application certificate, team `G2R8798RLT` | login Keychain | `security find-identity -v -p codesigning` |
-| notarytool profile `DFA` (override with `SETBEAM_NOTARY_PROFILE`) | login Keychain | `xcrun notarytool history --keychain-profile DFA` |
-| Sparkle EdDSA private key, account `Setbeam` | login Keychain | `.build/artifacts/sparkle/Sparkle/bin/generate_keys --account Setbeam -p` prints the `SUPublicEDKey` in `scripts/signing/update-configuration.plist` |
-| `gh` signed in with push access | GitHub CLI | `gh auth status` |
+| Developer ID Application certificate, team `G2R8798RLT` | Login Keychain | `security find-identity -v -p codesigning` |
+| Notary profile `DFA`, overridable with `SETBEAM_NOTARY_PROFILE` | Login Keychain | `xcrun notarytool history --keychain-profile DFA` |
+| Sparkle EdDSA private key, account `Setbeam` | Login Keychain | Preflight compares its public key with `scripts/signing/update-configuration.plist` |
+| Release and Pages permissions on `austinpresley/setbeam` | GitHub CLI | `gh auth status --hostname github.com` |
 
-The Sparkle private key signs every update. Losing it strands installed copies
-on their current build, so keep it when moving Macs. Export a backup with
-`generate_keys --account Setbeam -x <file>` to private storage, never into Git.
-Notarization also needs the Apple Developer Program agreements to be current;
-an expired agreement makes `notarytool` return HTTP 403.
+Both URLs for `origin` must point to `austinpresley/setbeam`. Preflight checks
+the source commit against branches advertised by that remote. Keep the Apple
+Developer Program agreements current so notarization can submit.
 
-## Stage, then publish
+## Stage and verify
 
-1. Write `docs/releases/<version>-build<N>.md`. Use absolute HTTPS links:
-   Sparkle shows these notes inside the app.
-2. Commit and push. The candidate must match a pushed commit.
-3. `scripts/release.py --version 0.3.0 --build N --notes docs/releases/0.3.0-buildN.md --preflight`
-   checks the identity, notary profile, update key, notes, tree and tag
-   without building.
-4. Run the same command without `--preflight`. It builds with the hardened
-   runtime, audits every executable, notarizes and staples the app and the disk
-   image, confirms that the image's app matches the notarized app file for file,
-   and writes a signed `appcast.xml` that keeps the published feed's earlier
-   items. Output goes to `dist/Setbeam-<version>-build<N>-release/`; nothing is
-   published.
-5. Install the staged disk image on a Mac and check the release as usual.
-6. `scripts/publish-release.py dist/Setbeam-<version>-build<N>-release` creates
-   the GitHub prerelease with the disk image and checksum, confirms an
-   anonymous download matches, then pushes the feed to the `gh-pages` branch
-   and waits until `https://austinpresley.github.io/setbeam/appcast.xml` serves it.
-   The first publication also enables GitHub Pages for that branch.
-   Rerunning resumes after a partial failure: an existing release is reused
-   only if it is this candidate's prerelease, and an identical published feed
-   counts as done. The feed is read from the `gh-pages` branch. Publishing
-   stops if that feed changed after staging; stage again. A build number must
-   be higher than every published one.
-7. Point the README, setup guide and previous release page at the new build.
+1. Write and commit `docs/releases/<version>-build<N>.md`. Use absolute HTTPS
+   links in notes shown by Sparkle. Push the source commit to an origin branch.
+   Pick a build number higher than both the public feed and all builds already
+   distributed privately. Build 43 was delivered privately and has the same
+   bundle ID and update feed.
+2. Run `scripts/release.py --version 0.3.1 --build N --notes docs/releases/0.3.1-buildN.md --preflight`.
+   This checks the checkout, origin, tag, notes, and signing prerequisites.
+3. Run the same command without `--preflight`. It checks the published build
+   order before compiling, builds a fresh release app, audits the app, and
+   notarizes and staples the app and DMG. The staging directory holds the
+   signed appcast, checksums, manifest, and logs. Failed staging prints the
+   private working directory. The notary submission ID is recorded before
+   waiting, so an interrupted wait can be inspected with `notarytool info` or
+   `notarytool wait`.
+4. Run `scripts/publish-release.py dist/Setbeam-<version>-build<N>-release --verify-only`.
+   This checks the exact disk image, mounted app, Git origin and tag, and
+   appcast. Sparkle signatures are verified with the configured public key.
+   This mode needs read access to origin and the local Apple verification tools.
+5. Install the staged disk image on a test Mac. Exercise a quarantined clean
+   install on macOS 14 and update a disposable copy of the previous build,
+   including interactive installation and relaunch. Check update behavior
+   with an active share and confirm that the owned helper group exits on Quit
+   and Force Quit. Run all validation locally.
 
-`SETBEAM_VERSION`, `SETBEAM_BUILD`, `SETBEAM_UPDATES=1` and
-`SETBEAM_SIGNING_IDENTITY` select the release build inside `build-app.sh`;
-`release.py` sets all four.
+## Publish or resume
+
+Run `scripts/publish-release.py dist/Setbeam-<version>-build<N>-release`.
+The publisher verifies or creates the origin tag at the candidate commit. It
+uploads missing assets to a draft prerelease and verifies their bytes before
+making the release public. It verifies the DMG and checksum through anonymous
+downloads before updating Pages. Verify the release page and update the
+download links in the README and setup guide after Pages serves the feed.
+
+If a run stops, rerun it with the same candidate. An existing draft or public
+prerelease must have the expected tag, commit, notes, and assets. Completed
+assets are verified and reused. A conflicting or incomplete asset requires
+explicit inspection before retrying. If the exact feed is already on the
+Pages branch, the publisher resumes with the Pages checks.
+
+The push checks the old Pages commit advertised by Git and builds directly on
+that commit. If the branch moves, stop using that appcast. To keep the same
+verified DMG when the build is still newer than every published item, run
+`scripts/publish-release.py CANDIDATE --refresh-feed NEW_CANDIDATE` with the
+current Sparkle signing key. Verify and publish the new candidate directory.
+The refresh signs a replacement appcast and retains the original DMG. If the
+feed has reached that build number, stage a higher build with a fresh tag.
+Older staging directories without the new provenance fields need restaging.
+
+## Withdraw or repair an update
+
+Keep the last good DMG, signed feed and candidate logs. To withdraw an offer,
+remove the affected item from the current feed, sign and verify the edited
+feed with the current Sparkle key, then publish it as a normal fast-forward
+commit on the current Pages tip. Check that the HTTPS feed has updated before
+altering the release assets. For installs already on the withdrawn build,
+ship a higher-numbered repair built from the last good source plus any needed
+data migration. Keep the same bundle ID and trusted signers and exercise the
+repair on disposable copies.
+
+Back up the Sparkle private key to private storage using
+`generate_keys --account Setbeam -x <file>`. A Developer ID certificate
+renewal within the same team keeps the configured Sparkle key. Verify the
+upgrade from an installed old build with the replacement certificate before
+publication. The standard scripts support one Sparkle public key per feed.
+If the update key is lost, the Developer ID team changes, or a deliberate
+Sparkle key rotation is needed, use a separately distributed, notarized
+manual installer and a new feed for the new key. Keep the old feed and
+installer available for recovery. Test the manual migration with a disposable
+install before handing it to operators.
+
+## Bundled runtime
+
+The runtime cache verifies downloaded archives before installing them. Changes
+to the pinned archives, AVFoundation patch, configure options, or recorded
+toolchain invalidate the runtime. The rebuild starts from fresh extractions.
+The app includes the lock, input and output hashes, patched build scripts,
+license files, and relinking sources. The reader entry in the lock records
+both the upstream MediaMTX file and the exact patched file shipped in Setbeam.
+Update the bundled hash and change description when changing `reader.js`.
 
 ## Update behavior
 
-The app checks daily by default; Settings → Updates turns that off. Installing
+The app checks daily by default. Settings → Updates turns that off. Installing
 an update quits and reopens Setbeam through the normal Quit path, which stops
-its owned processes. An update found by a scheduled check while sharing is
-active waits as a menu item. Launches with command-line arguments, which every
-integration and QA launch uses, and `SETBEAM_DISABLE_UPDATES=1` never contact
-the feed.
+its owned processes. A scheduled update found during a share appears as a menu
+item. Launches with command-line arguments or `SETBEAM_DISABLE_UPDATES=1`
+skip the feed.

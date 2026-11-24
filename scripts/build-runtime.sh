@@ -1,59 +1,44 @@
 #!/bin/bash
 set -euo pipefail
+umask 077
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
-[[ "$(uname -m)" == arm64 ]] || { echo 'This prototype runtime build targets Apple Silicon.' >&2; exit 1; }
+[[ "$(uname -m)" == arm64 ]] || { echo 'The runtime build requires Apple Silicon.' >&2; exit 1; }
+command -v pkg-config >/dev/null || { echo 'Install pkg-config before building the runtime.' >&2; exit 1; }
+python3 -c 'import sys; sys.exit(sys.version_info < (3, 12))' || { echo 'Install Python 3.12 or newer.' >&2; exit 1; }
+xcrun --sdk macosx --find clang >/dev/null
+if [[ -z "${SETBEAM_BUILD_LOCK_FD:-}" ]]; then
+  exec python3 scripts/build-support.py lock "$ROOT/scripts/build-runtime.sh" "$@"
+fi
 JOBS="${SETBEAM_BUILD_JOBS:-6}"
-mkdir -p Vendor/cache Vendor/sources Vendor/bin Vendor/licenses build/logs
-python3 - <<'PY'
-import hashlib,json,subprocess,tarfile
-from pathlib import Path
-root=Path.cwd();lock=json.loads((root/'runtime-lock.json').read_text())
-for item in lock['dependencies']:
-    archive=root/'Vendor/cache'/item['archive']
-    if not archive.exists():
-        subprocess.run(['curl','-fL','--retry','3','--connect-timeout','20','--max-time','180',item['url'],'-o',str(archive)],check=True)
-    digest=hashlib.sha256(archive.read_bytes()).hexdigest()
-    if digest!=item['sha256']:raise SystemExit('Checksum mismatch: '+item['name'])
-    destination=root/'Vendor/sources'
-    if item['name']=='mediamtx':destination=destination/'mediamtx';destination.mkdir(exist_ok=True)
-    marker=destination/(item['name']+'-'+item['version']) if item['name']!='mediamtx' else destination/'mediamtx'
-    if not marker.exists():
-        with tarfile.open(archive) as source:source.extractall(destination,filter='data')
-    print('Verified '+item['name']+' '+item['version'])
-for item in lock['sourceMaterials']:
-    archive=root/'Vendor/cache'/item['archive']
-    if not archive.exists():
-        subprocess.run(['curl','-fL','--retry','3','--connect-timeout','20','--max-time','180',item['url'],'-o',str(archive)],check=True)
-    if hashlib.sha256(archive.read_bytes()).hexdigest()!=item['sha256']:
-        raise SystemExit('Checksum mismatch: '+item['archive'])
-PY
-if ! cmp -s Vendor/sources/mediamtx/mediamtx Vendor/bin/mediamtx; then
-  cp Vendor/sources/mediamtx/mediamtx Vendor/bin/mediamtx.next
-  mv -f Vendor/bin/mediamtx.next Vendor/bin/mediamtx
+if [[ "${SETBEAM_REBUILD_OPUS:-0}" != 1 && "${SETBEAM_REBUILD_FFMPEG:-0}" != 1 ]]; then
+  if python3 scripts/build-support.py matches; then
+    echo 'Verified cached runtime against the archive, patch, build options, toolchain, and output hashes.'
+    exit 0
+  else
+    [[ $? == 1 ]] || exit 1
+  fi
 fi
-cp Vendor/sources/mediamtx/LICENSE Vendor/licenses/MediaMTX-MIT.txt
-if [[ ! -f Vendor/opus/lib/libopus.a || "${SETBEAM_REBUILD_OPUS:-0}" == 1 ]]; then
-  (
-    cd Vendor/sources/opus-1.6.1
-    export MACOSX_DEPLOYMENT_TARGET=14.0
-    [[ ! -f Makefile ]] || make clean
-    ./configure --prefix="$ROOT/Vendor/opus" \
-      --disable-shared --enable-static --with-pic --disable-doc --disable-extra-programs
-    make -j "$JOBS"
-    make install
-  ) > build/logs/opus-build.log 2>&1
-fi
-cp Vendor/sources/opus-1.6.1/COPYING Vendor/licenses/Opus-BSD.txt
-python3 scripts/patch-avfoundation.py Vendor/sources/ffmpeg-9.0.2
-if [[ ! -x Vendor/bin/ffmpeg || "${SETBEAM_REBUILD_FFMPEG:-0}" == 1 ]] || ! Vendor/bin/ffmpeg -hide_banner -h demuxer=avfoundation 2>&1 | grep -q video_device_unique_id || ! Vendor/bin/ffmpeg -hide_banner -demuxers 2>&1 | grep -q ' hevc ' || ! Vendor/bin/ffmpeg -hide_banner -filters 2>&1 | grep -q ' select '; then
-  (
-    cd Vendor/sources/ffmpeg-9.0.2
-    [[ ! -f Makefile ]] || make clean
-    export PKG_CONFIG_LIBDIR="$ROOT/Vendor/opus/lib/pkgconfig"
-    export PKG_CONFIG_PATH=""
-    export MACOSX_DEPLOYMENT_TARGET=14.0
-    ./configure --prefix="$ROOT/Vendor/ffmpeg" --arch=aarch64 --target-os=darwin \
+scratch="$(mktemp -d "$ROOT/Vendor/.runtime.XXXXXXXX")"
+trap 'rm -rf "$scratch"' EXIT
+mkdir "$scratch/bin" "$scratch/licenses" "$scratch/tmp"
+python3 scripts/build-support.py extract "$scratch"
+export TMPDIR="$scratch/tmp" MACOSX_DEPLOYMENT_TARGET=14.0
+export CC="$(xcrun --sdk macosx --find clang)"
+export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
+unset CFLAGS CPPFLAGS CXXFLAGS LDFLAGS CPATH LIBRARY_PATH PKG_CONFIG_SYSROOT_DIR
+(
+  cd "$scratch/sources/opus-1.6.1"
+  ./configure --prefix="$scratch/opus" \
+    --disable-shared --enable-static --with-pic --disable-doc --disable-extra-programs
+  make -j "$JOBS"
+  make install
+) > build/logs/opus-build.log 2>&1 || { tail -n 70 build/logs/opus-build.log; exit 1; }
+python3 scripts/patch-avfoundation.py "$scratch/sources/ffmpeg-9.0.2"
+(
+    cd "$scratch/sources/ffmpeg-9.0.2"
+    export PKG_CONFIG_LIBDIR="$scratch/opus/lib/pkgconfig" PKG_CONFIG_PATH=""
+    ./configure --prefix="$scratch/ffmpeg" --arch=aarch64 --target-os=darwin --cc="$CC" \
       --disable-autodetect --disable-everything --disable-gpl --disable-nonfree \
       --disable-shared --enable-static --disable-doc --disable-debug --disable-ffplay \
       --enable-ffmpeg --enable-ffprobe --enable-pthreads --enable-avfoundation \
@@ -68,28 +53,24 @@ if [[ ! -x Vendor/bin/ffmpeg || "${SETBEAM_REBUILD_FFMPEG:-0}" == 1 ]] || ! Vend
       --enable-filter=testsrc2,color,sine,anullsrc,anull,scale,format,aresample,aformat,fps,select,null,volume,split,asplit,setpts,asetpts,trim,atrim \
       --enable-bsf=h264_mp4toannexb,aac_adtstoasc,extract_extradata,filter_units,setts
     make -j "$JOBS"
-    for binary in ffmpeg ffprobe; do
-      cp "$binary" "$ROOT/Vendor/bin/$binary.next"
-      mv -f "$ROOT/Vendor/bin/$binary.next" "$ROOT/Vendor/bin/$binary"
-    done
-    cp ffbuild/config.mak "$ROOT/Vendor/licenses/FFmpeg-build-configuration.txt"
-  ) > build/logs/ffmpeg-build.log 2>&1
-fi
-cp Vendor/sources/ffmpeg-9.0.2/COPYING.LGPLv2.1 Vendor/licenses/FFmpeg-LGPL-2.1.txt
-cp runtime-lock.json Vendor/licenses/runtime-lock.json
-cp scripts/build-runtime.sh Vendor/licenses/build-runtime.sh
-cp scripts/patch-avfoundation.py Vendor/licenses/patch-avfoundation.py
-if [[ -f build/logs/ffmpeg-build.log ]] && grep -q 'was built for newer.*version' build/logs/ffmpeg-build.log; then
-  echo 'Mixed deployment targets in the media runtime; rebuild Opus and FFmpeg.' >&2
+    cp ffmpeg ffprobe "$scratch/bin/"
+    cp ffbuild/config.mak "$scratch/licenses/FFmpeg-build-configuration.txt"
+) > build/logs/ffmpeg-build.log 2>&1 || { tail -n 70 build/logs/ffmpeg-build.log; exit 1; }
+cp "$scratch/sources/mediamtx/mediamtx" "$scratch/bin/"
+cp "$scratch/sources/mediamtx/LICENSE" "$scratch/licenses/MediaMTX-MIT.txt"
+cp "$scratch/sources/opus-1.6.1/COPYING" "$scratch/licenses/Opus-BSD.txt"
+cp "$scratch/sources/ffmpeg-9.0.2/COPYING.LGPLv2.1" "$scratch/licenses/FFmpeg-LGPL-2.1.txt"
+cp scripts/build-runtime.sh scripts/build-support.py scripts/patch-avfoundation.py "$scratch/licenses/"
+if grep -q 'was built for newer.*version' build/logs/ffmpeg-build.log; then
+  echo 'Mixed deployment targets in the media runtime.' >&2
   exit 1
 fi
-for executable in Vendor/bin/mediamtx Vendor/bin/ffmpeg Vendor/bin/ffprobe; do
-  if otool -L "$executable" | tail -n +2 | awk '{print $1}' | grep -Ev '^(/System/Library/|/usr/lib/)' | grep -q .; then
-    echo "Non-system dynamic library dependency in $executable" >&2
-    otool -L "$executable" >&2
+for binary in "$scratch"/bin/*; do
+  links="$(otool -L "$binary")"
+  if awk 'NR > 1 && $1 !~ /^\/(System\/Library|usr\/lib)\// {print; bad=1} END {exit !bad}' <<< "$links"; then
+    echo "Non-system dynamic library dependency in $binary" >&2
     exit 1
   fi
 done
-Vendor/bin/ffmpeg -hide_banner -version | head -n 3
-Vendor/bin/mediamtx --version
+python3 scripts/build-support.py install-runtime "$scratch"
 echo 'Project-local runtime ready. Build logs are in build/logs.'

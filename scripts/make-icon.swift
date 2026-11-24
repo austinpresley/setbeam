@@ -10,7 +10,8 @@ guard let image = NSImage(contentsOf: artwork) else {
 // Fit its tile to the existing Mac icon inset, with transparent outer corners.
 let source = NSRect(x: image.size.width * 42 / 1254, y: image.size.height * 42 / 1254,
                     width: image.size.width * 1170 / 1254, height: image.size.height * 1170 / 1254)
-let folder = root.appendingPathComponent("build/Setbeam.iconset")
+let folder = CommandLine.arguments.dropFirst().first.map { URL(fileURLWithPath: $0) }
+    ?? root.appendingPathComponent("build/Setbeam.iconset")
 try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
 for size in [16, 32, 128, 256, 512] {
     for scale in [1, 2] {

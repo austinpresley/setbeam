@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
-"""Publish a candidate staged by release.py: GitHub prerelease first, then the update feed.
-
-The feed goes live only after an anonymous download of the uploaded disk image
-matches the notarized candidate byte for byte, so the app never sees an update
-it cannot fetch.
-"""
+"""Verify and publish a staged Setbeam candidate, then update the Pages feed."""
 import argparse
-import hashlib
 import importlib.util
 import json
+import os
+import plistlib
+import re
+import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -16,12 +15,14 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-spec = importlib.util.spec_from_file_location("release", ROOT / "scripts/release.py")
+spec = importlib.util.spec_from_file_location("setbeam_release", ROOT / "scripts/release.py")
 release = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = release
 spec.loader.exec_module(release)
-TOOLS = ROOT / ".build/artifacts/sparkle/Sparkle/bin"
-REPOSITORY = "austinpresley/setbeam"
-PAGES_BRANCH = "gh-pages"
+REPOSITORY = release.REPOSITORY
+GH_REPOSITORY = f"github.com/{REPOSITORY}"
+PAGES_BRANCH = release.PAGES_BRANCH
+PAGES_REF = release.PAGES_REF
 INDEX = """<!doctype html>
 <meta charset="utf-8">
 <title>Setbeam updates</title>
@@ -34,148 +35,307 @@ class PublishError(Exception):
     pass
 
 
-def run(args, check=True, cwd=None):
-    result = subprocess.run([str(a) for a in args], capture_output=True, text=True, cwd=cwd)
+def run(args, check=True, env=None, stdin=None):
+    result = subprocess.run([str(a) for a in args], capture_output=True, env=env, input=stdin)
+    result.stdout = result.stdout.decode(errors="replace")
+    result.stderr = result.stderr.decode(errors="replace")
     if check and result.returncode != 0:
         raise PublishError(f"{' '.join(map(str, args[:3]))} failed:\n{(result.stdout + result.stderr).strip()[-1500:]}")
     return result
 
 
-def sha256(path):
-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
-
-
 def verify_candidate(candidate, manifest):
-    dmg = candidate / manifest["dmg"]
-    if sha256(dmg) != manifest["sha256"]:
-        raise PublishError("The disk image no longer matches the staged manifest.")
+    tag = release.release_tag(manifest["version"], manifest["build"])
+    dmg_name = f"Setbeam-{tag[1:]}.dmg"
+    commit = manifest["commit"]
+    fingerprint = manifest["certificateSHA1"]
+    if (manifest["tag"] != tag or manifest["dmg"] != dmg_name or
+            not re.fullmatch(release.OID, commit) or not re.fullmatch(release.FINGERPRINT, fingerprint)):
+        raise PublishError("Invalid staged candidate identity.")
+    configured = plistlib.loads(release.UPDATE_CONFIG.read_bytes())
+    if manifest["feedURL"] != configured["SUFeedURL"]:
+        raise PublishError("Manifest has the wrong feed URL.")
+    dmg = candidate / dmg_name
+    sums = candidate / f"SHA256SUMS-build{manifest['build']}.txt"
+    notes = candidate / "release-notes.md"
+    if any(path.is_symlink() or not path.is_file() for path in (dmg, sums, notes, candidate / "appcast.xml")):
+        raise PublishError("Candidate files must be regular files inside the candidate directory.")
+    digest = release.sha256(dmg)
+    if (type(manifest["bytes"]) is not int or dmg.stat().st_size != manifest["bytes"] or
+            digest != manifest["sha256"] or sums.read_text() != f"{digest}  {dmg.name}\n"):
+        raise PublishError("Disk image length or digest differs from the staged manifest or checksum.")
+    notes_path = manifest["notesPath"]
+    if not re.fullmatch(r"docs/releases/[A-Za-z0-9._-]+\.md", notes_path):
+        raise PublishError("Invalid committed release notes path.")
+    release.check_origin()
+    release.verify_origin_commit(commit)
+    release.verify_tag(tag, commit)
+    if notes.read_bytes() != release.git_bytes("show", f"{commit}:{notes_path}"):
+        raise PublishError("Candidate release notes differ from the committed notes.")
+    feed = (candidate / "appcast.xml").read_bytes()
+    url = release.verify_update(feed, dmg, manifest, configured)
+    signer = release.signing_requirement(fingerprint)
+    run(["codesign", "--verify", "--strict", "-R=" + signer, dmg])
     run(["xcrun", "stapler", "validate", dmg])
     gatekeeper = run(["spctl", "--assess", "--type", "open", "--context", "context:primary-signature", "-vv", dmg])
     if "source=Notarized Developer ID" not in gatekeeper.stderr:
         raise PublishError("Gatekeeper does not accept the disk image as notarized.")
-    run([TOOLS / "sign_update", "--account", "Setbeam", "--verify", candidate / "appcast.xml"])
-    feed = (candidate / "appcast.xml").read_text()
-    url = f"https://github.com/{REPOSITORY}/releases/download/{manifest['tag']}/{manifest['dmg']}"
-    if url not in feed or manifest["edSignature"] not in feed:
-        raise PublishError("The staged feed does not point at this candidate.")
-    if run(["git", "-C", ROOT, "branch", "-r", "--contains", manifest["commit"]], check=False).stdout.strip() == "":
-        raise PublishError(f"Push commit {manifest['commit'][:9]} to origin before publishing.")
-    return dmg, url
+    with release.mounted_app(dmg) as app:
+        release.audit(app, configured, manifest["version"], manifest["build"], commit, fingerprint)
+        run(["xcrun", "stapler", "validate", app])
+    return dmg, sums, feed, url
 
 
-def feed_state(candidate, manifest):
-    """'published' if this candidate's feed is already on the branch, 'ready' if the branch is
-    unchanged since staging. A feed that moved on means an older or parallel candidate: restage."""
-    try:
-        current, digest = release.published_feed()
-    except release.ReleaseError as error:
-        raise PublishError(str(error))
-    if current is not None and current.encode() == (candidate / "appcast.xml").read_bytes():
-        return "published"
-    if digest != manifest["previousFeedSHA256"]:
-        raise PublishError("The published feed changed after this candidate was staged. "
-                           "Stage it again so the feed keeps every newer item.")
-    return "ready"
+def item_xml(items):
+    for item in items:
+        # Indentation and the footer are regenerated by the staging signer.
+        item.tail = None
+        release.ET.indent(item)
+    return [release.ET.tostring(item) for item in items]
 
 
-def existing_release(manifest):
-    """None if the release is new. An existing one is resumed only if it is this candidate's."""
-    view = run(["gh", "release", "view", manifest["tag"], "--repo", REPOSITORY, "--json", "assets,isPrerelease"], check=False)
+def feed_state(feed, manifest):
+    """Return the exact remote snapshot used to authorize a new feed commit."""
+    snapshot = release.published_feed()
+    if snapshot.feed == feed:
+        return "published", snapshot
+    if snapshot.tip != manifest["previousFeedCommit"] or snapshot.digest != manifest["previousFeedSHA256"]:
+        raise PublishError("The origin Pages ref or feed changed after staging. Stage this release again.")
+    content, _ = release.signed_feed(feed)
+    _, items, _ = release.feed_items(content)
+    prior_items = []
+    if snapshot.feed is not None:
+        previous, _ = release.signed_feed(snapshot.feed)
+        _, prior_items, _ = release.feed_items(previous)
+    if item_xml(items[1:]) != item_xml(prior_items):
+        raise PublishError("The candidate changed or dropped published appcast items.")
+    return "ready", snapshot
+
+
+def existing_release(manifest, notes):
+    view = run(["gh", "release", "view", manifest["tag"], "--repo", GH_REPOSITORY,
+                "--json", "assets,isPrerelease,isDraft,tagName,body"], check=False)
     if view.returncode != 0:
-        if "release not found" in (view.stdout + view.stderr).lower():
+        if (view.stdout + view.stderr).strip().lower() == "release not found":
             return None
         raise PublishError(f"Could not read release {manifest['tag']}: {(view.stdout + view.stderr).strip()}")
     details = json.loads(view.stdout)
-    commit = run(["gh", "api", f"repos/{REPOSITORY}/commits/{manifest['tag']}", "--jq", ".sha"]).stdout.strip()
-    names = {asset["name"] for asset in details["assets"]}
-    if commit != manifest["commit"] or not details["isPrerelease"] or manifest["dmg"] not in names:
-        raise PublishError(f"Release {manifest['tag']} exists but is not this candidate's prerelease. Inspect it by hand.")
+    release.verify_tag(manifest["tag"], manifest["commit"], required=True)
+    if (not details["isPrerelease"] or details["tagName"] != manifest["tag"] or
+            details["body"].rstrip() != notes.read_text().rstrip()):
+        raise PublishError(f"Release {manifest['tag']} has conflicting metadata.")
     return details
 
 
 def anonymous_download(url, expected, attempts=6):
-    with tempfile.TemporaryDirectory() as folder:
+    with tempfile.TemporaryDirectory(prefix="setbeam-download-") as folder:
         target = Path(folder) / "download"
+        deadline = time.monotonic() + 600
+        detail = "download timed out"
         for attempt in range(attempts):
-            result = run(["curl", "--fail", "--silent", "--location", "--max-time", "600", "-o", target, url], check=False)
-            if result.returncode == 0 and sha256(target) == expected:
-                return
-            time.sleep(10 * (attempt + 1))
-    raise PublishError(f"The anonymous download of {url} does not match {expected}.")
+            remaining = int(deadline - time.monotonic())
+            if remaining <= 0:
+                break
+            result = run(["curl", "-q", "--fail", "--silent", "--show-error", "--location",
+                          "--proto", "=https", "--proto-redir", "=https", "--max-time", str(min(remaining, 180)),
+                          "-o", target, url], check=False)
+            if result.returncode == 0:
+                if release.sha256(target) == expected:
+                    return
+                detail = "downloaded bytes have the wrong SHA-256"
+            else:
+                detail = result.stderr.strip()
+            if attempt + 1 < attempts:
+                time.sleep(min(10 * (attempt + 1), max(0, deadline - time.monotonic())))
+    raise PublishError(f"The anonymous download of {url} failed verification: {detail}")
 
 
-def publish_feed(candidate, manifest):
-    """Commit the feed to the Pages branch, enable Pages if needed, and wait for HTTPS to serve it."""
-    feed = (candidate / "appcast.xml").read_bytes()
-    if feed_state(candidate, manifest) == "published":
+def draft_download(tag, name, expected):
+    with tempfile.TemporaryDirectory(prefix="setbeam-draft-") as folder:
+        path = Path(folder) / name
+        run(["gh", "release", "download", tag, "--repo", GH_REPOSITORY,
+             "--pattern", name, "--output", path])
+        if release.sha256(path) != expected:
+            raise PublishError(f"Draft asset {name} has conflicting bytes.")
+
+
+def ensure_release(candidate, manifest, dmg, sums, url):
+    tag = manifest["tag"]
+    commit = manifest["commit"]
+    notes = candidate / "release-notes.md"
+    details = existing_release(manifest, notes)
+    if details is None:
+        if not release.verify_tag(tag, commit):
+            run(["gh", "api", "--hostname", "github.com", "-X", "POST", f"repos/{REPOSITORY}/git/refs",
+                 "-f", f"ref=refs/tags/{tag}", "-f", f"sha={commit}"])
+        release.verify_tag(tag, commit, required=True)
+        run(["gh", "release", "create", tag, "--repo", GH_REPOSITORY, "--verify-tag", "--draft", "--prerelease",
+             "--title", f"Setbeam {manifest['version']} build {manifest['build']}", "--notes-file", notes])
+        details = existing_release(manifest, notes)
+        if details is None or not details["isDraft"]:
+            raise PublishError(f"Release {tag} was not visible as a draft. Rerun to check its state.")
+
+    files = {dmg.name: (dmg, url, manifest["sha256"]),
+             sums.name: (sums, url.rsplit("/", 1)[0] + "/" + sums.name, release.sha256(sums))}
+    present = set()
+    for asset in details["assets"]:
+        name = asset["name"]
+        if name in present or name not in files:
+            raise PublishError(f"Unexpected or duplicate asset {name} on release {tag}.")
+        path, asset_url, digest = files[name]
+        if asset["state"] != "uploaded" or asset["size"] != path.stat().st_size:
+            raise PublishError(f"Incomplete or conflicting asset {name} on release {tag}. Inspect it before resuming.")
+        if details["isDraft"]:
+            draft_download(tag, name, digest)
+        else:
+            anonymous_download(asset_url, digest)
+        present.add(name)
+    for name, (path, asset_url, digest) in files.items():
+        if name not in present:
+            release.verify_tag(tag, commit, required=True)
+            run(["gh", "release", "upload", tag, "--repo", GH_REPOSITORY, path])
+            if details["isDraft"]:
+                draft_download(tag, name, digest)
+            else:
+                anonymous_download(asset_url, digest)
+    release.verify_tag(tag, commit, required=True)
+    if details["isDraft"]:
+        run(["gh", "release", "edit", tag, "--repo", GH_REPOSITORY, "--draft=false", "--prerelease"])
+        public = existing_release(manifest, notes)
+        if public is None or public["isDraft"]:
+            raise PublishError(f"Release {tag} is still a draft. Rerun to resume.")
+        for _, asset_url, digest in files.values():
+            anonymous_download(asset_url, digest)
+        release.verify_tag(tag, commit, required=True)
+
+
+def push_feed(feed, manifest, snapshot):
+    """Use a normal push with a pre-push check of the server-advertised old OID.
+
+    Git checks the advertised OID again at receive time. This combination also
+    rejects a rewind or branch deletion, which a normal fast-forward check alone
+    would accept if it happened before the push advertised its refs.
+    """
+    with tempfile.TemporaryDirectory(prefix="setbeam-pages-") as folder:
+        scratch = Path(folder)
+        env = dict(os.environ, GIT_INDEX_FILE=str(scratch / "index"))
+
+        def git(*args, stdin=None):
+            return run(["git", "-C", ROOT, *args], env=env, stdin=stdin).stdout.strip()
+
+        if snapshot.tip is not None:
+            git("read-tree", snapshot.tip)
+        entries = {"appcast.xml": feed, "index.html": INDEX.encode(), ".nojekyll": b""}
+        for name, data in entries.items():
+            oid = git("hash-object", "-w", "--stdin", stdin=data)
+            git("update-index", "--add", "--cacheinfo", f"100644,{oid},{name}")
+        parent = ["-p", snapshot.tip] if snapshot.tip is not None else []
+        commit = git("commit-tree", git("write-tree"), *parent, "-m", f"Publish update feed for {manifest['tag']}")
+        old = snapshot.tip or release.ZERO_OID
+        hook = scratch / "pre-push"
+        hook.write_text(f"""#!/bin/sh
+set -eu
+if read -r local_ref local_oid remote_ref remote_oid &&
+    [ "$local_oid" = {shlex.quote(commit)} ] &&
+    [ "$remote_ref" = {shlex.quote(PAGES_REF)} ] &&
+    [ "$remote_oid" = {shlex.quote(old)} ] &&
+    ! read -r extra
+then
+    exit 0
+fi
+echo 'Origin Pages ref changed during push. Recheck the candidate before resuming.' >&2
+exit 1
+""")
+        hook.chmod(0o700)
+        git("-c", f"core.hooksPath={scratch}", "push", "--no-follow-tags", "origin", f"{commit}:{PAGES_REF}")
+
+
+def publish_feed(feed, manifest):
+    state, snapshot = feed_state(feed, manifest)
+    if state == "published":
         print("The update feed is already on the Pages branch.")
     else:
-        push_feed(feed, manifest)
-    if run(["gh", "api", f"repos/{REPOSITORY}/pages"], check=False).returncode != 0:
-        # Pushing gh-pages can enable Pages by itself; "already enabled" (409) is success.
-        enable = run(["gh", "api", "-X", "POST", f"repos/{REPOSITORY}/pages",
+        release.verify_tag(manifest["tag"], manifest["commit"], required=True)
+        push_feed(feed, manifest, snapshot)
+    pages = run(["gh", "api", "--hostname", "github.com", f"repos/{REPOSITORY}/pages"], check=False)
+    if pages.returncode != 0:
+        if "HTTP 404" not in pages.stderr:
+            raise PublishError(f"Could not check GitHub Pages: {pages.stderr.strip()}")
+        enable = run(["gh", "api", "--hostname", "github.com", "-X", "POST", f"repos/{REPOSITORY}/pages",
                       "-f", f"source[branch]={PAGES_BRANCH}", "-f", "source[path]=/"], check=False)
         if enable.returncode != 0 and "already enabled" not in enable.stdout + enable.stderr:
             raise PublishError(f"Could not enable GitHub Pages: {(enable.stdout + enable.stderr).strip()}")
-    deadline = time.monotonic() + 900
-    while time.monotonic() < deadline:
-        live = run(["curl", "--fail", "--silent", "--location", "--max-time", "30",
-                    "-H", "Cache-Control: no-cache", manifest["feedURL"]], check=False)
-        if live.returncode == 0 and live.stdout.encode() == feed:
-            return
-        time.sleep(20)
-    raise PublishError(f"{manifest['feedURL']} did not serve the new feed within 15 minutes. "
-                       "The release is live; rerun this script to resume.")
+    with tempfile.TemporaryDirectory(prefix="setbeam-live-feed-") as folder:
+        target = Path(folder) / "appcast.xml"
+        deadline = time.monotonic() + 900
+        while time.monotonic() < deadline:
+            live = run(["curl", "-q", "--fail", "--silent", "--location", "--max-time", "30",
+                        "--proto", "=https", "--proto-redir", "=https", "-H", "Cache-Control: no-cache",
+                        "-o", target, manifest["feedURL"]], check=False)
+            if live.returncode == 0 and target.read_bytes() == feed:
+                return
+            time.sleep(20)
+    raise PublishError(f"{manifest['feedURL']} did not serve the new feed within 15 minutes. Rerun to resume.")
 
 
-def push_feed(feed, manifest):
-    run(["git", "-C", ROOT, "fetch", "origin", PAGES_BRANCH], check=False)
-    exists = run(["git", "-C", ROOT, "rev-parse", "--verify", f"origin/{PAGES_BRANCH}"], check=False).returncode == 0
-    with tempfile.TemporaryDirectory(prefix="setbeam-pages-") as folder:
-        tree = Path(folder) / "pages"
-        if exists:
-            run(["git", "-C", ROOT, "worktree", "add", "--detach", tree, f"origin/{PAGES_BRANCH}"])
-        else:
-            run(["git", "-C", ROOT, "worktree", "add", "--detach", tree])
-            run(["git", "checkout", "--orphan", "setbeam-pages-publish"], cwd=tree)
-            run(["git", "rm", "-rf", "--quiet", "."], cwd=tree)
-        try:
-            (tree / "appcast.xml").write_bytes(feed)
-            (tree / "index.html").write_text(INDEX)
-            (tree / ".nojekyll").write_text("")
-            run(["git", "add", "appcast.xml", "index.html", ".nojekyll"], cwd=tree)
-            run(["git", "commit", "--quiet", "-m", f"Publish update feed for {manifest['tag']}"], cwd=tree)
-            run(["git", "push", "origin", f"HEAD:refs/heads/{PAGES_BRANCH}"], cwd=tree)
-        finally:
-            run(["git", "-C", ROOT, "worktree", "remove", "--force", tree], check=False)
-            run(["git", "-C", ROOT, "branch", "-D", "setbeam-pages-publish"], check=False)
+def refresh_feed(candidate, output, manifest, dmg, url):
+    """Keep the authenticated DMG and regenerate only the feed in a new directory."""
+    if output.exists() or output.is_relative_to(candidate):
+        raise PublishError("Supply a new candidate directory outside the original candidate.")
+    snapshot = release.published_feed()
+    configured = plistlib.loads(release.UPDATE_CONFIG.read_bytes())
+    previous = None
+    if snapshot.feed is not None:
+        previous, signature = release.signed_feed(snapshot.feed)
+        release.verify_signatures(configured, previous, signature)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".setbeam-refreshed-", dir=output.parent) as folder:
+        refreshed = Path(folder) / "candidate"
+        shutil.copytree(candidate, refreshed, symlinks=True)
+        args = argparse.Namespace(version=manifest["version"], build=manifest["build"])
+        notes = release.notes_html((refreshed / "release-notes.md").read_text())
+        with tempfile.TemporaryDirectory(dir=folder) as staging:
+            # Sign a fresh file before replacing the copied appcast.
+            feed = Path(staging) / "appcast.xml"
+            release.write_feed(feed, previous, args, url, manifest["edSignature"], manifest["bytes"], notes)
+            copied_dmg = refreshed / dmg.name
+            if release.sha256(copied_dmg) != manifest["sha256"]:
+                raise PublishError("The candidate DMG changed during refresh.")
+            release.verify_update(feed.read_bytes(), copied_dmg, manifest, configured)
+            feed.replace(refreshed / "appcast.xml")
+        updated = dict(manifest, previousFeedCommit=snapshot.tip, previousFeedSHA256=snapshot.digest)
+        manifest_path = refreshed / "manifest.json"
+        manifest_path.unlink()
+        manifest_path.write_text(json.dumps(updated, indent=2) + "\n")
+        refreshed.chmod(0o700)
+        refreshed.rename(output)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("candidate", type=Path, help="Directory staged by release.py")
-    parser.add_argument("--verify-only", action="store_true", help="Check the candidate and stop")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--verify-only", action="store_true", help="Verify with read-only origin access and the public key")
+    mode.add_argument("--refresh-feed", metavar="OUTPUT", type=Path, help="Stage a fresh feed for the existing DMG")
     args = parser.parse_args()
     candidate = args.candidate.resolve()
     try:
+        os.umask(0o077)
         manifest = json.loads((candidate / "manifest.json").read_text())
-        dmg, url = verify_candidate(candidate, manifest)
-        state = feed_state(candidate, manifest)
+        dmg, sums, feed, url = verify_candidate(candidate, manifest)
+        if args.refresh_feed:
+            refresh_feed(candidate, args.refresh_feed.resolve(), manifest, dmg, url)
+            print(f"Refreshed candidate staged at {args.refresh_feed}")
+            return 0
+        state, _ = feed_state(feed, manifest)
         print(f"Candidate verified: {manifest['tag']} {manifest['sha256']}; feed {state}.")
         if args.verify_only:
             return 0
-        if existing_release(manifest) is None:
-            sums = candidate / f"SHA256SUMS-build{manifest['build']}.txt"
-            run(["gh", "release", "create", manifest["tag"], "--repo", REPOSITORY, "--target", manifest["commit"],
-                 "--prerelease", "--title", f"Setbeam {manifest['version']} build {manifest['build']}",
-                 "--notes-file", candidate / "release-notes.md", dmg, sums])
-        else:
-            print(f"Resuming: release {manifest['tag']} already exists for this commit.")
-        anonymous_download(url, manifest["sha256"])
-        print(f"Release published; anonymous download matches: {url}")
-        publish_feed(candidate, manifest)
+        ensure_release(candidate, manifest, dmg, sums, url)
+        print(f"Both release assets match their anonymous downloads at {url}")
+        publish_feed(feed, manifest)
         print(f"Update feed live and matching: {manifest['feedURL']}")
-    except (PublishError, release.ReleaseError, OSError, KeyError, json.JSONDecodeError) as error:
+    except (PublishError, release.ReleaseError, OSError, KeyError, TypeError, ValueError, release.ET.ParseError) as error:
         print(f"Publish stopped: {error}", file=sys.stderr)
         return 1
     return 0
