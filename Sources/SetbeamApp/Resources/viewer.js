@@ -472,7 +472,7 @@
   function resetHealth() {
     healthGeneration++;
     statsPrevious = undefined; statsPending = false; healthQuality = 'checking'; healthAt = 0; badSamples = 0; goodSamples = 0;
-    measurements = undefined;
+    measurements = undefined; measuredAt = undefined;
   }
   function viewerHealth() {
     if (document.hidden) return 'background';
@@ -482,13 +482,13 @@
     if (typeof reader?.getStats !== 'function') return 'playing';
     return Date.now() - healthAt < statsFreshFor ? healthQuality : 'checking';
   }
-  function inboundMeasurements(inbound) {
+  function inboundMeasurements(inbound, settledRate) {
     if (!inbound) return;
     const values = {};
     const {frameWidth: width, frameHeight: height, framesPerSecond: fps, framesDropped: droppedFrames} = inbound;
     const dimension = value => Number.isInteger(value) && value > 0 && value <= 16384;
     if (dimension(width) && dimension(height)) { values.width = width; values.height = height; }
-    if (Number.isFinite(fps) && fps >= 0 && fps <= 1000) values.fps = fps;
+    if (settledRate && Number.isFinite(fps) && fps >= 0 && fps <= 60) values.fps = fps;
     if (Number.isSafeInteger(droppedFrames) && droppedFrames >= 0) values.droppedFrames = droppedFrames;
     if (Object.keys(values).length) return values;
   }
@@ -501,7 +501,9 @@
       if (generation !== healthGeneration || sampledRevision !== revision || !playing() || playBlocked || document.hidden) return;
       const videoStats = [...report.values()].filter(s => s.type === 'inbound-rtp' && s.kind === 'video');
       const inbound = videoStats.find(s => Number.isFinite(s.packetsReceived) && Number.isFinite(s.packetsLost) && Number.isFinite(s.timestamp));
-      measurements = inboundMeasurements(inbound || videoStats[0]);
+      // A new peer can decode its buffered startup frames in a burst. Wait for a full
+      // sampling interval and omit rates beyond the normal bounds of Setbeam's output.
+      measurements = inboundMeasurements(inbound || videoStats[0], startedAt - measuredAt >= 1500);
       measuredAt = startedAt;
       const previous = statsPrevious;
       statsPrevious = inbound && {...inbound};
@@ -524,7 +526,8 @@
       else if (goodSamples >= 2) healthQuality = 'good';
     }).catch(() => {
       if (generation === healthGeneration) {
-        healthQuality = 'playing'; healthAt = Date.now(); statsPrevious = undefined; measurements = undefined;
+        healthQuality = 'playing'; healthAt = Date.now(); statsPrevious = undefined;
+        measurements = undefined; measuredAt = undefined;
       }
     }).finally(() => { if (generation === healthGeneration) statsPending = false; });
   }

@@ -128,11 +128,12 @@ Acceptance:
 - [self] A browser session is not labeled as a unique person or physical device. Round-trip time is not labeled as end-to-end video delay, and playback health is not Wi-Fi signal strength.
 - [self] The roster stays operator-only. Shared-pointer participants receive only the minimal name/color/pointer presence enabled for that session.
 
-Progress: Partial in Build 22. Rows add admission state, pointing state, and color
-to existing names, session numbers, and playback health. Joined time, last update,
-and optional technical measurements are not yet shown.
+Progress: Build 43 adds a Details control to admitted sessions in People. It
+shows join time, last update, and last playback report. Current browser
+measurements show received resolution, inbound frame rate, and dropped frames
+when available. Older clients still report playback without the optional fields.
 
-Status: doing
+Status: implemented in build 43. Physical multi-device qualification remains open.
 
 ## Later: easier joining
 

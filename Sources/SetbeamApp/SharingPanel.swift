@@ -98,6 +98,7 @@ struct SharingWindowView: View {
 
 struct SharingViewersView: View {
     @ObservedObject var model: SessionModel
+    @State private var expandedViewer: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -125,10 +126,14 @@ struct SharingViewersView: View {
                     }
                 }
                 VStack(spacing: 0) {
-                    ForEach(model.admittedViewers) { viewer in ViewerActivityRow(model: model, viewer: viewer) }
+                    ForEach(model.admittedViewers) { viewer in
+                        ViewerActivityRow(model: model, viewer: viewer, showingDetails: expandedViewer == viewer.id) {
+                            expandedViewer = expandedViewer == viewer.id ? nil : viewer.id
+                        }
+                    }
                 }.padding(.horizontal, -8)
             }
-        }
+        }.onChange(of: model.viewingLink) { _, _ in expandedViewer = nil }
     }
 
     private func count(_ count: Int, symbol: String, name: String, variableValue: Double? = nil, tint: Color) -> some View {

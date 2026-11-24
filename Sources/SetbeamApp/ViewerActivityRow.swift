@@ -60,13 +60,24 @@ struct ViewerRequestRow: View {
 struct ViewerActivityRow: View {
     @ObservedObject var model: SessionModel
     let viewer: ViewerActivity
+    let showingDetails: Bool
+    let toggleDetails: () -> Void
     @State private var hover = false
-    @State private var showingDetails = false
     @FocusState private var removeFocused: Bool
 
     var body: some View {
-        let reference = JoinRequest(viewer, link: model.viewingLink)
         let status = ViewerStatus(viewer: viewer, holding: model.audiencePresentation.confirmedHold)
+        VStack(alignment: .leading, spacing: 0) {
+            row(status: status)
+            if showingDetails {
+                ViewerDetails(viewer: viewer, status: status.title,
+                              measurements: model.state.audience == .live && !model.busy ? viewer.measurements : nil)
+            }
+        }
+    }
+
+    private func row(status: ViewerStatus) -> some View {
+        let reference = JoinRequest(viewer, link: model.viewingLink)
         return HStack(spacing: 8) {
             ViewerAvatar(viewer: viewer, holding: model.audiencePresentation.confirmedHold)
             Text(viewer.displayName).font(.callout.weight(.semibold)).lineLimit(2)
@@ -78,12 +89,9 @@ struct ViewerActivityRow: View {
             }
             ViewerDeviceIcon(viewer: viewer)
             ChromeIconButton("Details for \(viewer.displayName), session \(viewer.number)", symbol: "info.circle", size: 28,
-                             hint: "Viewer details") { showingDetails.toggle() }
+                             selected: showingDetails, hint: showingDetails ? "Hide viewer details" : "Show viewer details",
+                             action: toggleDetails)
                 .foregroundStyle(.secondary)
-                .popover(isPresented: $showingDetails) {
-                    ViewerDetails(viewer: viewer, status: status.title,
-                                  measurements: model.state.audience == .live && !model.busy ? viewer.measurements : nil)
-                }
             ZStack {
                 Image(systemName: status.symbol, variableValue: status.variableValue).font(.system(size: 14)).foregroundStyle(status.tint)
                     .help(status.title).accessibilityLabel(status.title)
@@ -117,11 +125,8 @@ private struct ViewerDetails: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(viewer.displayName).font(.headline)
-                Text("Session \(viewer.number) · Admitted").foregroundStyle(.secondary)
-            }
             Divider()
+            LabeledContent("Session", value: "\(viewer.number)")
             LabeledContent("Playback", value: status)
             if let joined = viewer.admittedAt {
                 LabeledContent("Joined") { timestamp(joined) }
@@ -134,7 +139,7 @@ private struct ViewerDetails: View {
             if let measurements {
                 Divider()
                 if let width = measurements.width, let height = measurements.height {
-                    LabeledContent("Received resolution") { Text("\(width) × \(height)") }
+                    LabeledContent("Received resolution", value: "\(width) × \(height)")
                 }
                 if let fps = measurements.framesPerSecond {
                     LabeledContent("Inbound frame rate") {
@@ -150,8 +155,8 @@ private struct ViewerDetails: View {
             }
         }
         .font(.callout)
-        .padding(16)
-        .frame(width: 304)
+        .padding(.horizontal, 12)
+        .padding(.bottom, 12)
     }
 
     private func timestamp(_ date: Date) -> some View {

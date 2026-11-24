@@ -487,8 +487,13 @@ test('late statistics from a replaced peer cannot change the new viewer health',
 test('heartbeats report sparse current inbound video measurements and clear them on pause', async () => {
   const b = browser({eventSource: true, stats: true}); await b.settle(); await b.push(); await b.track();
   const full = reception(100);
-  Object.assign(full.get('video'), {frameWidth: 1920, frameHeight: 1080, framesPerSecond: 29.97});
+  Object.assign(full.get('video'), {frameWidth: 1920, frameHeight: 1080, framesPerSecond: 182});
   await sample(b, full);
+  const settled = reception(200);
+  Object.assign(settled.get('video'), {frameWidth: 1920, frameHeight: 1080, framesPerSecond: 29.97});
+  await sample(b, settled);
+  assert.deepEqual(b.heartbeats.at(-1).measurements, {width: 1920, height: 1080, droppedFrames: 0, ageMs: 3000},
+    'do not report the startup decode burst as the picture cadence');
   const partial = new Map([['video', {type: 'inbound-rtp', kind: 'video', frameWidth: 0, frameHeight: 1080,
     framesPerSecond: 1, framesDropped: '0'}]]);
   await sample(b, partial);

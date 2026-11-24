@@ -271,6 +271,16 @@ ViewerGateway assigns an increasing session number to each browser ID, sorts by 
 
 The existing WebRTC reader exposes an observational getStats call on its current peer. The controller samples only while receiving visible playback, using packet-loss deltas, jitter, round-trip delay, and dropped-frame deltas. Two consecutive bad or clean samples change the health indicator; it does not assume a target FPS or interpret low bitrate as a fault. Missing measurements fall back to confirmed playback. Replaced peers invalidate pending measurements. The operator resolves reported health against fresh heartbeats, current publisher revision, and authoritative Hold state. Neutral background, paused, and blocked-playback states stay distinct from connection failure. Health never changes the stream or opens another receiver, and is not a Wi-Fi signal-strength measurement.
 
+Each admitted session's Details control in People expands its row to show
+admission time, last contact, and last playback report for the current
+publisher revision. A browser may include received dimensions, inbound frame
+rate, and the dropped-frame count for its current peer. The gateway accepts
+those fields only during live playback for an admitted viewer with media
+access on the current revision. The sample expires after seven seconds and is
+cleared on Hold, a state or revision change, or a resumed connection. Older
+browser clients and the TV receiver can report playback without measurements.
+Only the operator's roster receives these details.
+
 ## Viewer admission and shared pointers
 
 Each browser tab joins through `POST join` and receives a gateway-issued secret pass. The pass, not a browser-chosen ID or name, identifies the session; operator rows show Setbeam's session number. `ViewerAccessLedger` keeps every pass for the current viewing link and is reset when the link changes. Names are bounded plain-text labels and never verified identities. Under approval a session's name is fixed once it has one; a session admitted unnamed before approval can set one first label through the join card's editor.
