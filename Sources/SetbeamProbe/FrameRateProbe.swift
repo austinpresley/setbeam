@@ -16,18 +16,22 @@ extension SetbeamProbe {
             throw SetbeamError.runtime("Frame-rate check did not reach the expected state. \(await engine.diagnosticStatus())")
         }
         func verify(_ engine: MediaRuntime, path: String, expectedFPS: Double) async throws {
-            let packets = Int(ceil(expectedFPS * 3)) + 4
+            // At 1 fps, a brief RTP clock correction can dominate a short sample.
+            // Observe a longer sequence while keeping the same rate tolerance.
+            let observationSeconds = expectedFPS == 1 ? 8.0 : 3.0
+            let packets = Int(ceil(expectedFPS * observationSeconds)) + 4
             let data = try await run(tools: tools, args: ["-v", "error", "-analyzeduration", "2000000", "-fpsprobesize", "0", "-max_ts_probe", "0", "-probesize", "1000000",
                 "-threads:v", "2", "-thread_type:v", "slice", "-rtsp_transport", "tcp", "-select_streams", "v:0", "-read_intervals", "%+#\(packets)",
                 "-show_frames", "-show_entries", "frame=best_effort_timestamp_time,width,height", "-of", "json",
-                await engine.localRTSP(path)], directory: output, executable: "ffprobe", timeout: 16)
+                await engine.localRTSP(path)], directory: output, executable: "ffprobe", timeout: observationSeconds + 13)
             let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
             try data.write(to: output.appendingPathComponent("fps-\(path)-\(Int(expectedFPS))-timing.json"), options: .atomic)
             let frames = json?["frames"] as? [[String: Any]] ?? []
             // RTSP can deliver an untimed first picture and adjust its initial RTP clock
             // anchor. Measure the subsequent presentation intervals, including at 1 fps.
             let pts = Array(frames.compactMap { ($0["best_effort_timestamp_time"] as? String).flatMap(Double.init) }.dropFirst(2))
-            guard let first = pts.first, let last = pts.last, last - first >= 1.9, pts.count >= 3,
+            guard let first = pts.first, let last = pts.last,
+                  last - first >= (expectedFPS == 1 ? 6 : 1.9), pts.count >= 3,
                   frames.allSatisfy({ $0["width"] as? Int == 1280 && $0["height"] as? Int == 720 }) else {
                 throw SetbeamError.runtime("The \(path) frame-rate check did not decode a full-size picture over two seconds.")
             }
