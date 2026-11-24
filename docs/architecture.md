@@ -66,9 +66,9 @@ restarts only the audience encode under the same viewing credential. That
 allowance is also the encoder's one-second limit: an average alone let 4K
 keyframes reach 4.5 MiB, three times the allowance at 1 fps and too large for
 browsers' WebRTC stacks to assemble. The saved Viewer frame rate can match the
-source up to 30 fps or cap it at 1, 5, 10, 15, 24, 25, or 30 fps. Nothing Setbeam
-encodes exceeds 30 fps: two 4K60 encodes saturated the hardware encoder, and stills
-and screens gain little from more. FFmpeg's bundled select filter keeps at most
+source up to 30 fps or cap it at 1, 5, 10, 15, 24, 25, or 30 fps. Screen and
+window capture also cap at 30 fps. Raw camera and capture devices can keep their
+native cadence for the private relay. FFmpeg's bundled select filter keeps at most
 one frame per rounded timestamp bucket before encoding. It preserves presentation timestamps and never
 duplicates a slower input, including when RTSP frame-rate metadata is missing.
 Dimensions and the bitrate allowance stay
@@ -168,7 +168,7 @@ The viewer controller replaces an open peer after ten seconds without decoded vi
 
 An active sharing session waits for its selected viewing interface through a temporary outage. It retains sharing, Hold, the viewer credential, and the gateway port. The gateway can restart on that port with a bounded startup deadline and ignores obsolete listener callbacks. If DHCP changes the Mac's address, Setbeam updates its viewing code and moves an active local address to the new address; an already-open numeric-IP URL cannot follow that change. Explicit Stop or an operator-selected different viewing network still ends sharing. Wi-Fi network selection stays under the user's control by default.
 
-An opt-in transmitter rejoin covers the observed power-cycle case where macOS moves to another known network and does not return. For a saved Master 4K setup with a known transmitter Wi-Fi name, TransmitterRejoinPolicy waits until the transmitter has been missing from discovery for 15 seconds without a live picture. It then allows one CoreWLAN join, backing off from 20 seconds to two minutes, and resets when the transmitter or picture returns. It never runs while sharing depends on the Wi-Fi interface. The password is stored in Keychain. macOS reveals Wi-Fi names only to apps with Location access, so Setbeam asks for it when the option is enabled and never associates with a scan result it cannot identify by name. Attempts and results are written to the session log.
+An opt-in transmitter rejoin covers the observed power-cycle case where macOS moves to another known network and does not return. Consent applies to one Master 4K transmitter ID and Wi-Fi name. Earlier global consent needs to be enabled again in Source Details. TransmitterRejoinPolicy waits until the transmitter has been missing from discovery for 15 seconds without a live picture. It then allows one CoreWLAN join, backing off from 20 seconds to two minutes, and resets when the transmitter or picture returns. A protected network requires its scoped Keychain password. An open network requires an explicit choice. Source changes, Go Live, and Quit revoke permission to begin association. If CoreWLAN has already begun joining, Go Live waits for the operator to retry after it finishes. macOS reveals Wi-Fi names only to apps with Location access, so Setbeam asks for it when the option is enabled. Attempts and results go to the session log.
 
 AccsoonDiscovery recognizes the Master 4K's observed product IDs 21 and 24 from passive UDP beacons and bounded read-only status queries. The same physically identified firmware-3.30 unit has reported both IDs, and direct product-24 reception was verified separately. It retains identity, SSID, firmware, and valid stream arrays, and discards credential-bearing custom fields. Other product IDs remain unverified and appear with an explanation in the chooser. The app waits for a real HDMI/SDI input when the transmitter advertises no streams.
 

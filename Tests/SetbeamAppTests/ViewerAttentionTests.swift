@@ -13,6 +13,17 @@ final class ViewerAttentionTests: XCTestCase {
         XCTAssertFalse(model.viewerApproval, "A pending Start must retain the approval choice it is applying.")
     }
 
+    @MainActor func testSecondApprovalChangeWaitsForTheFirstToApply() {
+        let suite = "setbeam-approval-transition-\(UUID().uuidString)"
+        let preferences = UserDefaults(suiteName: suite)!
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let model = SessionModel(preferences: preferences)
+        model.setViewerApproval(true)
+        XCTAssertTrue(model.applyingViewerApproval)
+        model.setViewerApproval(false)
+        XCTAssertTrue(model.viewerApproval)
+    }
+
     @MainActor func testPlaybackWarningsKeepAdmittedRowsInSessionOrder() throws {
         var state = SessionState()
         state.beginMonitoring()

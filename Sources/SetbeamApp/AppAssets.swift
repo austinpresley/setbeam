@@ -69,8 +69,9 @@ enum SecureSettings {
             guard SecItemAdd(add as CFDictionary, nil) == errSecSuccess else { throw SetbeamError.runtime("Could not save the credential in Keychain.") }
         } else if update != errSecSuccess { throw SetbeamError.runtime("Could not update the credential in Keychain.") }
     }
-    static func remove(_ account: String) {
-        SecItemDelete([kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
-                       kSecAttrAccount as String: account] as CFDictionary)
+    @discardableResult static func remove(_ account: String) -> Bool {
+        let status = SecItemDelete([kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
+                                   kSecAttrAccount as String: account] as CFDictionary)
+        return status == errSecSuccess || status == errSecItemNotFound
     }
 }

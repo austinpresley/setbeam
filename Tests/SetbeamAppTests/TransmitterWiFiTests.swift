@@ -10,4 +10,17 @@ final class TransmitterWiFiTests: XCTestCase {
         XCTAssertEqual(result, .cancelled)
         XCTAssertNil(result.message)
     }
+
+    func testSharingCanProceedAfterRevokingAScanButWaitsForActiveAssociation() {
+        let scanning = RejoinPermit()
+        XCTAssertFalse(scanning.revoke())
+        XCTAssertFalse(scanning.beginAssociation())
+
+        let associating = RejoinPermit()
+        XCTAssertTrue(associating.beginAssociation())
+        XCTAssertTrue(associating.revoke())
+        associating.finishAssociation()
+        XCTAssertFalse(associating.revoke())
+        XCTAssertFalse(associating.beginAssociation())
+    }
 }

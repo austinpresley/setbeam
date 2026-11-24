@@ -21,7 +21,7 @@ struct SharingOptionsView: View {
         VStack(alignment: .leading, spacing: 12) {
             switchRow("Ask first", symbol: "hand.raised", tint: SetbeamChrome.amber, hint: approvalDetail,
                       value: Binding(get: { model.viewerApproval }, set: { model.setViewerApproval($0) }))
-                .disabled(model.busy)
+                .disabled(model.busy || model.applyingViewerApproval)
             switchRow("Pointers", symbol: "cursorarrow", tint: SetbeamChrome.blue, hint: "Let admitted viewers point at the picture.",
                       value: Binding(get: { model.sharedPointers }, set: { model.setSharedPointers($0) }))
             switchRow("On this Mac", symbol: "eye", hint: "Show viewer pointers on the local monitor and floating preview.",
@@ -197,6 +197,7 @@ struct SharingOptionsView: View {
         return model.networks.first(where: { $0.interface == model.networkChoice })?.name ?? "Unavailable"
     }
     private var approvalDetail: String {
+        if model.applyingViewerApproval { return "Applying the approval setting…" }
         if let host = model.shortAddressHost {
             return "Viewers enter a name and wait for you to admit them, including anyone who types \(host)."
         }

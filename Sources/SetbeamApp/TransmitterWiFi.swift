@@ -1,6 +1,26 @@
 import CoreLocation
 import CoreWLAN
 import Foundation
+import SetbeamCore
+
+struct TransmitterWiFiIdentity: Equatable {
+    let ssid: String
+    private let uid: UInt32
+
+    init?(_ setup: SourceSetup?) {
+        guard let setup, setup.kind == .accsoon, let uid = setup.wirelessUID,
+              uid != 0, !setup.sourceWiFi.isEmpty else { return nil }
+        self.uid = uid
+        ssid = setup.sourceWiFi
+    }
+
+    var preferenceKey: String { "transmitterWiFiRejoin-\(uid)-\(ssid)" }
+    var credentialAccount: String { "source-wifi-\(uid)-\(ssid)" }
+}
+
+enum TransmitterRejoinNetwork: String {
+    case open, secured
+}
 
 enum TransmitterWiFiResult: Equatable {
     case joined, notFound, needsLocation, wifiOff, noInterface, cancelled, failed(String)
@@ -32,8 +52,26 @@ enum TransmitterWiFiResult: Equatable {
 final class RejoinPermit: @unchecked Sendable {
     private let lock = NSLock()
     private var allowed = true
+    private var associating = false
     var isAllowed: Bool { lock.withLock { allowed } }
-    func revoke() { lock.withLock { allowed = false } }
+
+    /// Reports whether CoreWLAN association has already begun and cannot be cancelled.
+    @discardableResult func revoke() -> Bool {
+        lock.withLock {
+            allowed = false
+            return associating
+        }
+    }
+
+    func beginAssociation() -> Bool {
+        lock.withLock {
+            guard allowed, !associating else { return false }
+            associating = true
+            return true
+        }
+    }
+
+    func finishAssociation() { lock.withLock { associating = false } }
 }
 
 /// Joins one named network for the opt-in transmitter rejoin. Setbeam associates only with a
@@ -62,7 +100,8 @@ final class RejoinPermit: @unchecked Sendable {
             guard !found.isEmpty else { return .notFound }
             guard let network = found.first(where: { $0.ssid == ssid }) else { return .needsLocation }
             // Scanning takes seconds; the operator or session may have withdrawn consent meanwhile.
-            guard permit.isAllowed else { return .cancelled }
+            guard permit.beginAssociation() else { return .cancelled }
+            defer { permit.finishAssociation() }
             try interface.associate(to: network, password: password?.isEmpty == false ? password : nil)
             return .joined
         } catch { return .failed(error.localizedDescription) }

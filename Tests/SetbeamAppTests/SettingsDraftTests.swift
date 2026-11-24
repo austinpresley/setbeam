@@ -60,18 +60,45 @@ final class SettingsDraftTests: XCTestCase {
         draft.openNetwork = true
         XCTAssertEqual(draft.plan(for: source, current: initial)?.rejoin, .init(enabled: true, password: "", openNetwork: true))
     }
-    @MainActor func testRejectedBlankRejoinPasswordPreservesTheExistingSettingAndMemoryValue() {
+    @MainActor func testRejectedBlankRejoinPasswordPreservesTheExistingSettingAndMemoryValue() throws {
         let suite = "app.setbeam.tests.rejoin-password.\(UUID().uuidString)"
         let preferences = UserDefaults(suiteName: suite)!
-        preferences.set(true, forKey: "transmitterWiFiRejoin")
         defer { preferences.removePersistentDomain(forName: suite) }
+        var setup = SourceSetup(kind: .accsoon, name: "Fixture", sourceWiFi: "Fixture transmitter")
+        setup.wirelessUID = 42
+        let identity = try XCTUnwrap(TransmitterWiFiIdentity(setup))
+        preferences.set(TransmitterRejoinNetwork.secured.rawValue, forKey: identity.preferenceKey)
         let model = SessionModel(preferences: preferences)
-        model.setup = SourceSetup(kind: .accsoon, name: "Fixture", sourceWiFi: "Fixture transmitter")
+        model.setup = setup
         model.transmitterWiFiPassword = "existing test password"
         XCTAssertFalse(model.setTransmitterRejoin(true, password: ""))
         XCTAssertTrue(model.transmitterRejoin)
         XCTAssertEqual(model.transmitterWiFiPassword, "existing test password")
         XCTAssertNotNil(model.rejoinProblem)
+    }
+    @MainActor func testRejoinConsentRequiresTheExactTransmitterAndWiFiName() throws {
+        let suite = "app.setbeam.tests.rejoin-identity.\(UUID().uuidString)"
+        let preferences = UserDefaults(suiteName: suite)!
+        defer { preferences.removePersistentDomain(forName: suite) }
+        var saved = SourceSetup(kind: .accsoon, name: "Fixture", sourceWiFi: "Fixture transmitter")
+        saved.wirelessUID = 42
+        let identity = try XCTUnwrap(TransmitterWiFiIdentity(saved))
+        preferences.set(TransmitterRejoinNetwork.open.rawValue, forKey: identity.preferenceKey)
+        preferences.set(true, forKey: "transmitterWiFiRejoin")
+        let model = SessionModel(preferences: preferences)
+        model.setup = saved
+        XCTAssertTrue(model.transmitterRejoin)
+        XCTAssertTrue(model.transmitterOpenNetwork)
+
+        model.setup?.wirelessUID = 43
+        XCTAssertFalse(model.transmitterRejoin)
+        XCTAssertFalse(model.transmitterOpenNetwork)
+        XCTAssertNotEqual(TransmitterWiFiIdentity(model.setup)?.credentialAccount, identity.credentialAccount)
+
+        model.setup = saved
+        model.setup?.sourceWiFi = "Another network"
+        XCTAssertFalse(model.transmitterRejoin)
+        XCTAssertFalse(model.transmitterOpenNetwork)
     }
     @MainActor func testTurningRememberOffForTheSavedSourcePreventsRestoration() throws {
         let suite = "app.setbeam.tests.forget-current.\(UUID().uuidString)"

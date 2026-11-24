@@ -12,7 +12,18 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
     @Published var title: String { didSet { if !integration { defaults.set(title, forKey: "sessionTitle") }; publishGatewayState() } }
     @Published private(set) var state: SessionState
     @Published var source: VideoSource = .sample
-    @Published var setup: SourceSetup?
+    @Published var setup: SourceSetup? {
+        didSet {
+            let identity = TransmitterWiFiIdentity(setup)
+            if identity != TransmitterWiFiIdentity(oldValue) {
+                rejoinAttempt?.revoke()
+                rejoinPolicy = TransmitterRejoinPolicy()
+                rejoinProblem = nil
+                transmitterWiFiPassword = ""
+                loadTransmitterRejoinMode(for: identity)
+            }
+        }
+    }
     @Published var provenSetup: SourceSetup?
     @Published var preview: PlaybackDescriptor?
     /// The IP address link. Join codes always use it, and it remains the fallback for every invitation.
@@ -131,6 +142,7 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
     @Published private(set) var transmitterRejoin: Bool
     /// Viewers ask to join and play only after the operator admits them.
     @Published private(set) var viewerApproval: Bool
+    @Published private(set) var applyingViewerApproval = false
     /// Admitted viewers may opt in to point at the picture with a name and color.
     @Published private(set) var sharedPointers: Bool
     /// Whether this Mac's main and floating monitors draw viewers' pointers. A separate operator view
@@ -151,6 +163,7 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
     private var nativePreviewProblem: String?
     private let defaults: UserDefaults
     private let integration: Bool
+    private let integrationSessionFile = IntegrationSessionFile(arguments: CommandLine.arguments)
     private let store: ProvenSetupStore
     private let runtime = MediaRuntime(paths: AppAssets.runtimePaths)
     private let gateway = ViewerGateway(assets: AppAssets.viewerAssets)
@@ -173,8 +186,7 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
     private var loggedViewers = (opened: 0, playing: 0)
     private let transmitterWiFi = TransmitterWiFi()
     private var rejoinPolicy = TransmitterRejoinPolicy()
-    private var rejoinInFlight = false
-    private var rejoinAttempt: (permit: RejoinPermit, ssid: String)?
+    private var rejoinAttempt: RejoinPermit?
     private var observers: [NSObjectProtocol] = []
     private lazy var floating = FloatingPreviewWindow(model: self)
     private let joinCodeWindow = JoinCodeWindow()
@@ -211,7 +223,7 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
         audienceQuality = defaults.string(forKey: "audienceQuality").flatMap(AudienceQuality.init(rawValue:)) ?? .best
         audienceFrameRate = VideoFrameRate(rawValue: defaults.integer(forKey: "audienceFrameRate")) ?? .source
         screenFrameRate = VideoFrameRate(rawValue: defaults.integer(forKey: "screenFrameRate")) ?? .source
-        transmitterRejoin = integration ? false : defaults.bool(forKey: "transmitterWiFiRejoin")
+        transmitterRejoin = false
         viewerApproval = integration ? false : defaults.bool(forKey: "viewerApproval")
         sharedPointers = integration ? false : defaults.bool(forKey: "sharedPointers")
         localAddressEnabled = defaults.object(forKey: "localAddressEnabled") as? Bool ?? true
@@ -338,7 +350,8 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
     }
 
     func setViewerApproval(_ enabled: Bool) {
-        guard !busy, enabled != viewerApproval else { return }
+        guard !busy, !applyingViewerApproval, enabled != viewerApproval else { return }
+        applyingViewerApproval = true
         viewerApproval = enabled
         if !integration { defaults.set(enabled, forKey: "viewerApproval") }
         SessionLog.shared.record("viewers.approval", ["enabled": enabled])
@@ -403,6 +416,7 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
                 do {
                     try await self.runtime.setViewerAccess(approval: approval, readers: readers)
                     self.appliedReaders = readers; self.appliedApproval = approval
+                    if approval == self.viewerApproval { self.applyingViewerApproval = false }
                     self.gateway.confirm(readers: readers)
                     if self.state.monitoring { self.apply(await self.runtime.snapshot()); self.publishGatewayState() }
                 } catch {
@@ -416,6 +430,7 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
                 }
                 guard self.accessSyncAgain else { break }
             }
+            self?.applyingViewerApproval = false
             self?.accessSync = nil
         }
     }
@@ -577,6 +592,7 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
         }
     }
     func apply(_ snapshot: RuntimeSnapshot) {
+        if !snapshot.session.sharing || snapshot.source != .sample { integrationSessionFile?.clear() }
         if currentRuntime?.audienceRevision != snapshot.audienceRevision || snapshot.session.audience != .live { clearChatAttachment() }
         currentRuntime = snapshot; preview = snapshot.session.monitoring ? snapshot.preview : nil
         sourceHasAudio = snapshot.sourceHasAudio; audienceHasAudio = snapshot.audienceHasAudio
@@ -655,9 +671,9 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
     func openSourceDetails() {
         present(.sourceDetails) {
             refreshCaptureDevices()
-            if !integration, setup?.kind == .accsoon, let ssid = setup?.sourceWiFi, !ssid.isEmpty {
-                transmitterWiFiPassword = SecureSettings.read("source-wifi-\(ssid)") ?? ""
-                transmitterOpenNetwork = defaults.bool(forKey: "sourceWiFiOpen-\(ssid)")
+            if !integration, let identity = TransmitterWiFiIdentity(setup) {
+                loadTransmitterRejoinMode(for: identity)
+                transmitterWiFiPassword = transmitterOpenNetwork ? "" : SecureSettings.read(identity.credentialAccount) ?? ""
             }
         }
     }
@@ -713,7 +729,7 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
         catch { self.error = error.localizedDescription; return }
         busy = true; error = nil; permissionDenied = false; screenPermissionDenied = false; pendingScreenPermission = nil; sheet = nil
         let discovery = sourceBrowser.stop()
-        rejoinAttempt?.permit.revoke()
+        rejoinAttempt?.revoke()
         Task {
             await discovery?.value
             guard !shuttingDown else { busy = false; return }
@@ -827,8 +843,18 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
         guard !setupConfirmed, !rememberFailed, readiness.observe(sourceFresh: state.sourceAvailable, previewFresh: nativePreviewPlaying), let setup else { return }
         guard rememberSetup, !integration else { setupConfirmed = true; return }
         do {
-            if setup.kind == .network || setup.kind == .incoming, let activeNetworkURL { try SecureSettings.store(activeNetworkURL, account: setup.credentialAccount) }
-            try store.confirm(setup); provenSetup = store.setup; setupConfirmed = true
+            if setup.kind == .network || setup.kind == .incoming {
+                guard let activeNetworkURL else { throw SetbeamError.unavailable("The source address is unavailable.") }
+                try SecureSettings.store(activeNetworkURL, account: setup.credentialAccount)
+            }
+            let previous = provenSetup
+            try store.confirm(setup)
+            provenSetup = store.setup; setupConfirmed = true
+            if let previous, previous.id != setup.id, previous.kind == .network || previous.kind == .incoming {
+                if !SecureSettings.remove(previous.credentialAccount) {
+                    SessionLog.shared.record("source.credential.retirement.failed")
+                }
+            }
         } catch { rememberFailed = true; self.error = "Your picture is working, but Setbeam could not remember this connection. Retry saving in Source Details." }
     }
     func retry() {
@@ -878,7 +904,10 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
     private func startSharingNow() async {
         guard !shuttingDown, state.monitoring, !state.sharing, (localReady || integration) else { return }
         // Viewers may come to depend on this Mac's Wi-Fi; a pending rejoin must not switch it.
-        rejoinAttempt?.permit.revoke()
+        if rejoinAttempt?.revoke() == true {
+            error = "The transmitter is joining Wi-Fi. Try Go Live again when it finishes."
+            return
+        }
         busy = true; error = nil
         outgoingTransition.begin(.startSharing)
         do {
@@ -940,6 +969,7 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
         Task { await endSharing(); stoppingSharing = false; busy = false }
     }
     private func endSharing() async {
+        integrationSessionFile?.clear()
         sharingPower.hold(false)
         // The name and short address end with the viewing link. Stop rotates the link, so old links stay expired.
         retireLocalAddress()
@@ -1092,46 +1122,59 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
     }
     /// Opt-in. Joining another Wi-Fi network is never automatic unless the operator enables it here.
     @discardableResult func setTransmitterRejoin(_ enabled: Bool, password: String, openNetwork: Bool = false) -> Bool {
-        guard let ssid = setup?.sourceWiFi, !ssid.isEmpty else { return false }
+        guard let identity = TransmitterWiFiIdentity(setup) else { return false }
         guard !enabled || !password.isEmpty || openNetwork else {
             rejoinProblem = "Enter the transmitter's Wi-Fi password or choose an open network before enabling automatic rejoin."
             return false
         }
-        if !password.isEmpty || openNetwork {
-            do { if openNetwork { SecureSettings.remove("source-wifi-\(ssid)") } else { try SecureSettings.store(password, account: "source-wifi-\(ssid)") } }
+        if !integration, !password.isEmpty || openNetwork {
+            do { if openNetwork { SecureSettings.remove(identity.credentialAccount) } else { try SecureSettings.store(password, account: identity.credentialAccount) } }
             catch { rejoinProblem = "The transmitter Wi-Fi password could not be saved."; return false }
             transmitterWiFiPassword = openNetwork ? "" : password
         }
         transmitterRejoin = enabled; transmitterOpenNetwork = openNetwork
-        rejoinPolicy = TransmitterRejoinPolicy(); rejoinProblem = nil; rejoinAttempt?.permit.revoke()
-        if !integration { defaults.set(enabled, forKey: "transmitterWiFiRejoin"); defaults.set(openNetwork, forKey: "sourceWiFiOpen-\(ssid)") }
+        rejoinPolicy = TransmitterRejoinPolicy(); rejoinProblem = nil; rejoinAttempt?.revoke()
+        if !integration {
+            let network: TransmitterRejoinNetwork = openNetwork ? .open : .secured
+            defaults.set(enabled ? network.rawValue : nil, forKey: identity.preferenceKey)
+        }
         if enabled { transmitterWiFi.requestLocation() }
         if enabled && transmitterWiFi.locationDenied { rejoinProblem = TransmitterWiFiResult.needsLocation.message }
         SessionLog.shared.record("wifi.rejoin.setting", ["enabled": enabled])
         return true
     }
+    private func loadTransmitterRejoinMode(for identity: TransmitterWiFiIdentity?) {
+        let mode = integration ? nil : identity.flatMap { defaults.string(forKey: $0.preferenceKey) }
+            .flatMap(TransmitterRejoinNetwork.init(rawValue:))
+        transmitterRejoin = mode != nil
+        transmitterOpenNetwork = mode == .open
+    }
     private func rejoinTransmitterIfNeeded() {
         // Sharing over Wi-Fi depends on the current network; switching it would end viewing.
         let sharingOverWiFi = state.sharing && viewerInterface == transmitterWiFi.interfaceName
-        if let attempt = rejoinAttempt, !transmitterRejoin || shuttingDown || sharingOverWiFi || localReady
-            || setup?.kind != .accsoon || setup?.sourceWiFi != attempt.ssid { attempt.permit.revoke() }
-        guard let setup, setup.kind == .accsoon, !setup.sourceWiFi.isEmpty, !shuttingDown else { return }
+        if !transmitterRejoin || shuttingDown || sharingOverWiFi || localReady { rejoinAttempt?.revoke() }
+        guard let setup, let identity = TransmitterWiFiIdentity(setup), !shuttingDown else { return }
         let visible = wirelessDevices.contains { $0.id == setup.wirelessUID }
         guard rejoinPolicy.observe(enabled: transmitterRejoin, transmitterVisible: visible, pictureLive: localReady,
-                                   blocked: busy || rejoinInFlight || sharingOverWiFi, now: Date()) else { return }
-        let ssid = setup.sourceWiFi
+                                   blocked: busy || rejoinAttempt != nil || sharingOverWiFi, now: Date()) else { return }
+        let ssid = identity.ssid
         guard transmitterWiFi.locationAllowed else {
             rejoinProblem = TransmitterWiFiResult.needsLocation.message
             SessionLog.shared.record("wifi.rejoin.result", ["network": ssid, "result": TransmitterWiFiResult.needsLocation.logValue])
             return
         }
-        rejoinInFlight = true
-        let permit = RejoinPermit(); rejoinAttempt = (permit, ssid)
+        let password = transmitterOpenNetwork ? nil : SecureSettings.read(identity.credentialAccount)
+        guard transmitterOpenNetwork || password?.isEmpty == false else {
+            rejoinProblem = "The saved Wi-Fi password is unavailable. Re-enter it in Source Details."
+            return
+        }
+        let permit = RejoinPermit(); rejoinAttempt = permit
         SessionLog.shared.record("wifi.rejoin.attempt", ["network": ssid])
-        let password = SecureSettings.read("source-wifi-\(ssid)")
         Task {
             let result = await TransmitterWiFi.join(ssid: ssid, password: password, permit: permit)
-            rejoinInFlight = false; rejoinAttempt = nil; rejoinProblem = result.message
+            rejoinAttempt = nil
+            guard !shuttingDown, transmitterRejoin, identity == TransmitterWiFiIdentity(setup) else { return }
+            rejoinProblem = result.message
             SessionLog.shared.record("wifi.rejoin.result", ["network": ssid, "result": result.logValue])
         }
     }
@@ -1366,6 +1409,8 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
         SessionLog.shared.record("viewers", ["opened": current.opened, "playing": current.playing, "otherDevices": otherDeviceViewers])
     }
     func shutdown() async {
+        integrationSessionFile?.clear()
+        rejoinAttempt?.revoke()
         shuttingDown = true; pollTask?.cancel(); runtimeUpdates?.cancel(); sourceBrowser.stop(); observers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
         if let displayObserver { NotificationCenter.default.removeObserver(displayObserver) }
         floating.close(); sourceDisplayPointers.close(); joinCodeWindow.close(); joinRequests.close(); localPlayer.stop(); audiencePlayer.stop(); gateway.stop(); retireLocalAddress(); sharingPower.hold(false); displayPower.hold(false)
@@ -1373,9 +1418,14 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
         await runtime.shutdown(); apply(await runtime.snapshot())
     }
     private func writeIntegrationSession() {
-        guard let viewerURL else { return }
-        writeFile(option: "--session-file", value: ["viewerURL": viewerURL.absoluteString, "localURL": localViewerURL?.absoluteString ?? "",
-            "pid": ProcessInfo.processInfo.processIdentifier])
+        guard let integrationSessionFile, state.sharing, currentRuntime?.source == .sample, let viewerURL else { return }
+        do {
+            let data = try JSONSerialization.data(withJSONObject: ["viewerURL": viewerURL.absoluteString,
+                "localURL": localViewerURL?.absoluteString ?? "", "pid": ProcessInfo.processInfo.processIdentifier])
+            try integrationSessionFile.write(data)
+        } catch {
+            SessionLog.shared.record("integration.session.export.failed")
+        }
     }
     private func writeExperienceState() {
         guard CommandLine.arguments.contains("--experience-file") else { return }

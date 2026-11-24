@@ -1,5 +1,25 @@
 # Setbeam status
 
+## Audit remediation, 2026-11-24
+
+The local `improve/audit-findings` branch starts at `250e738`, the source
+review baseline for the build 43 candidate. Thirteen implementation
+workstreams are addressing the findings in isolated worktrees.
+
+Transmitter Wi-Fi rejoin now requires consent for the exact transmitter ID
+and Wi-Fi name. Starting a share revokes an in-flight scan's permission to
+associate. If association has already started, the operator retries Go Live
+after the join finishes. The previous global setting needs to be re-enabled
+for the intended transmitter. A newly confirmed saved setup retires the
+previous RTSP or RTMP credential. The approval control waits for an in-flight
+change before accepting another one.
+
+The integration session file requires an explicit Sample QA launch. It is
+private from creation and is removed at session retirement if the path still
+contains the file Setbeam wrote. The first focused local check passed 18
+XCTest cases for these settings, permission gates, and export behavior. The
+candidate still needs integrated media, UI, receiver, and packaging checks.
+
 ## Unified release candidate, 2026-11-23
 
 The local `release/unified-candidate` branch combines build 41’s signed updates
