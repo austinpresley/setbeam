@@ -17,6 +17,11 @@ sys.path.pop(0)
 
 
 class DriverTests(unittest.TestCase):
+    def test_recognizes_a_diagnostic_phase_without_adjacent_admission_ocr(self):
+        self.assertEqual(e2e.diagnostic_phase("SAMPLE MEDIA\nPhase waiting   admis.1.238/"), "waiting")
+        self.assertEqual(e2e.diagnostic_phase("Phase asking again   admission none"), "asking again")
+        self.assertIsNone(e2e.diagnostic_phase("Session Phase live\nPhase unknown"))
+
     def run_fixture(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

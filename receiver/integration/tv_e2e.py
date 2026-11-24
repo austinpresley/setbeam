@@ -60,6 +60,18 @@ sys.path.insert(0, str(PROVISION.parent))
 from setbeam_receiver_provision import parse_overlay_mode
 sys.path.pop(0)
 SECRET = re.compile(r"(?<![0-9a-f])(?<!sha256 )[0-9a-f]{40,}(?![0-9a-f])")
+PHASE_LABEL = re.compile(
+    r"^Phase[ \t]+(asking again|needs ask|name rejected|storage problem|audience reconnecting|"
+    r"unconfigured|paused|searching|asking|waiting|busy|connecting|live|stalled|holding|ended|declined|removed)\b",
+    re.MULTILINE | re.IGNORECASE,
+)
+
+
+def diagnostic_phase(text):
+    match = PHASE_LABEL.search(text)
+    return match.group(1).lower() if match else None
+
+
 CARD_TITLES = {
     "Looking for the Mac": "searching", "Waiting for the Mac": "searching", "Asking to join": "asking", "Asking again": "asking again",
     "Waiting for approval": "waiting", "The Mac is busy": "busy", "Ask to join": "needs ask",
@@ -320,13 +332,13 @@ class Device:
                 return cast(m.group(1).strip()) if m else None
             except ValueError:
                 return None
-        state["phase"] = grab(r"Phase ([a-z ]+?)\s+admission")
+        state["phase"] = diagnostic_phase(text)
         state["admission"] = grab(r"admission (\w+)")
         state["route"] = grab(r"Mac (?:configured address|discovered|via)?\s*([0-9.]+:\d+)")
         state["video"] = grab(r"Video (\d+\s*[x×]\s*\d+)")
         if state["video"]:
             state["video"] = re.sub(r"\s*[x×]\s*", "x", state["video"])
-        state["shown_fps"] = grab(r"shown ([\d.]+) fps", float)
+        state["shown_fps"] = grab(r"(?:rendered|shown) ([\d.]+) fps", float)
         state["decoded"] = grab(r"Decoded (\d+)", int)
         state["dropped"] = grab(r"dropped (\d+)", int)
         state["received"] = grab(r"received (\d+)", int)
