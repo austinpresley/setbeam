@@ -3,14 +3,15 @@
 ## Audit remediation, 2026-11-24
 
 The local `improve/audit-findings` branch starts at `250e738`, the source
-review baseline for the build 43 candidate. Thirteen implementation
-workstreams are addressing the findings in isolated worktrees.
+review baseline for the build 43 candidate. It integrates 14 GPT-6.2 Sol
+High workstreams. The branch and its developer builds are local.
 
 Transmitter Wi-Fi rejoin now requires consent for the exact transmitter ID
 and Wi-Fi name. Starting a share revokes an in-flight scan's permission to
 associate. If association has already started, the operator retries Go Live
 after the join finishes. The previous global setting needs to be re-enabled
-for the intended transmitter. A newly confirmed saved setup retires the
+for the intended transmitter. Older Pyro H setups need a fresh discovery
+to record the verified route. A newly confirmed saved setup retires the
 previous RTSP or RTMP credential. The approval control waits for an in-flight
 change before accepting another one.
 
@@ -18,7 +19,74 @@ The integration session file requires an explicit Sample QA launch. It is
 private from creation and is removed at session retirement if the path still
 contains the file Setbeam wrote. The first focused local check passed 18
 XCTest cases for these settings, permission gates, and export behavior. The
-candidate still needs integrated media, UI, receiver, and packaging checks.
+integrated local suite passed 385 XCTest cases with two opt-in skips, and
+87 Node viewer and pointer checks passed. The release verification tools
+passed 34 offline Python tests after the MediaMTX notices landed. The Android
+build assembled both variants. The JVM suite passed 101 tests and lint
+reported zero errors and eight warnings. The fake-device provisioning and
+emulator harness suite passed 120 tests, and the two added startup
+regressions passed their focused runs.
+
+The package audit caught two Swift binary search paths into Xcode. Packaging
+now strips those toolchain paths before signing while retaining system and
+in-bundle linkage. A disposable supervisor fixture preserved the helper's
+exit status and reaped an uncooperative descendant. It also refused startup
+without its originating parent and cleaned the entire owned process group
+after its fixture app was killed.
+
+The isolated Mac app displayed Invite, People, Chat, Options, Floating
+Preview, Test My Setup, Permissions, and the Wireless chooser in both
+appearances. Stop retired the private QA link in both runs and native
+monitoring continued. The first UI harness sent a chat request without its
+required `action` and got HTTP 400. The corrected fixture posted a message.
+Window capture initially excluded the floating window and assumed a wrong
+Settings title. Capturing the correct owned windows verified both views.
+
+All ten media probes passed with helpers and fixtures from the local app.
+Sample and simulated Pyro H each decoded the known Hold picture with zero
+outgoing PCM while moving private playback kept its audio. The bitrate and
+cadence probe preserved the viewing identity. The keyframe probe decoded 498
+frames in seven seconds with zero decoder errors. The helper bytes are
+identical in the final developer package. See
+`build/logs/audit-remediation-full-check.log` for exact inputs and results.
+
+The final developer package passed local Chrome and macOS WebKit playback and
+collaboration checks. Chrome also opened a copy of an active viewing tab
+with a separate pass, then reloaded the original with its own pass intact.
+Force Quit left no live processes in the five tracked app and helper groups.
+The packaged preview bridge preserved 4:3 display aspect and tagged BT.709
+video-range metadata during resize. See the browser, Force Quit, and preview
+logs under `build/audit-remediation/browser/25d4958b` and `build/logs`.
+
+The 1280 × 720 TV emulator passed pairing, admission, remote controls,
+Hold and Resume, removal, decline, admission to a new share, and Stop with
+a fresh private source. The Options strip clipped wrapped labels in an
+earlier run. Its buttons now share a content-sized row, and the emulator
+showed both lines. Chat and pointers appeared on screen. Connection Info
+clipped their diagnostics, so the panel now scrolls and puts collaboration
+status near the top. The newer APK passed remote controls, including
+scrolling to the receiver version, and passed chat and pointers. Gateway
+recovery restored Live and decoded 18 frames in 12 seconds against the
+probe's 24-frame minimum in the full run. The isolated run recovered at
+22.6 decoded fps and cleared that floor. The same run passed source, media
+server, and emulator network recovery and restored its settings. See
+`build/logs/audit-remediation-tv-e2e-wrapped.log` and
+`build/logs/audit-remediation-tv-recovery-isolated.log`.
+
+The startup check uses Android's actual per-profile install rows and seeds a
+same-share admission before reboot. The graceful reboot kept the launcher
+role and background-start permission. The receiver came to the front in 3.8
+seconds after boot observation began and resumed moving playback without
+remote input. The operator still saw the same admitted session. The run
+restored HOME and the overlay setting. See
+`build/logs/audit-remediation-tv-startup-retry.log`.
+
+Finished release installation and update on macOS 14, HDMI and transmitter
+qualification, audible timing, and spoken accessibility still need the
+recorded field checks. The HTTPS design still needs the trust choice and
+device checks in `docs/research/viewer-transport-protection-2026-11-14.md`.
+Accsoon sound first detected after the private publisher starts still needs
+a reconnect. Live track changes need exact-device audio evidence.
 
 ## Release and packaging audit fixes, 2026-11-24
 
