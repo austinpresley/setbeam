@@ -84,6 +84,10 @@ Resume, and Stop. A follow-up received no rotation or lock event during its
 observation window. The onn receiver and Accsoon were unavailable for this
 checkpoint. [Physical evidence](hardware-tests.md)
 
+The notarized Mac disk image and emulator-tested Setbeam Receiver 0.2.1
+developer APK were delivered and verified under Austin Deliveries / Setbeam /
+Build 43. Delivery ID `20261124T042851Z--907151556fc1`.
+
 ## Branch verification, 2026-11-21
 
 Local `scripts/check.sh` passed 310 Swift cases with one opt-in soak skipped,
