@@ -20,6 +20,7 @@ struct SourceRecoveryView: View {
         return model.recoveryTitle
     }
     private var detail: String {
+        if !model.permissionDenied, let error = model.error { return error }
         return model.recoveryDetail
     }
     private var retryDetail: String {
@@ -49,7 +50,7 @@ struct SourceRecoveryView: View {
                     }
                     actions
                     if model.busy {
-                        HStack(spacing: 8) { ProgressView().controlSize(.small); Text(model.connectionStageTitle ?? "Opening the selected picture") }
+                        ProgressView().controlSize(.small).accessibilityLabel("Opening selected source")
                             .font(.caption).foregroundStyle(.secondary)
                     } else if model.state.monitoring && !model.permissionDenied && !windowClosed {
                         Label(retryDetail,
@@ -60,7 +61,6 @@ struct SourceRecoveryView: View {
                     Text(model.audiencePresentation.sourceRecoveryDetail).font(.caption).foregroundStyle(.secondary)
                     DisclosureGroup("Connection details", isExpanded: $showingDetails) {
                         VStack(alignment: .leading, spacing: 8) {
-                            if let error = model.error, !model.permissionDenied { Text(error).foregroundStyle(.primary) }
                             if let stage = model.connectionStageTitle { Text(stage) }
                             if model.lastFrameAt != nil { Text(model.frameAgeLabel) }
                             if !model.busy && !retryIsPrimary && !model.permissionDenied && !windowClosed { Button("Retry Now") { model.retry() } }

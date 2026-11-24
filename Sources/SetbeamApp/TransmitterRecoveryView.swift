@@ -23,36 +23,54 @@ struct TransmitterRecoveryView: View {
     }
     private var connectionLabel: String {
         if model.error != nil { return "Retry connection" }
+        if needsSourcePicture { return "Waiting for source video" }
         if transmitterFound { return model.connectionStageTitle ?? "Waiting for picture" }
         return "Auto-connect"
     }
 
+    private var needsSourcePicture: Bool {
+        model.wirelessDevices.contains { $0.id == model.setup?.wirelessUID && !$0.videoAvailable }
+    }
+
     var body: some View {
-        VStack(spacing: 28) {
-            ZStack {
-                Circle().strokeBorder(.white.opacity(0.10), lineWidth: 1.5).frame(width: 120, height: 120)
-                Circle().strokeBorder(.white.opacity(0.15), lineWidth: 1.5).frame(width: 80, height: 80)
-                Image(systemName: "antenna.radiowaves.left.and.right").font(.system(size: 46, weight: .light))
-            }.foregroundStyle(.white.opacity(0.89)).accessibilityHidden(true)
+        VStack(spacing: 8) {
+            GeometryReader { geometry in
+                ScrollView {
+                    recovery.frame(maxWidth: .infinity, minHeight: geometry.size.height)
+                }
+            }
+            footer
+        }.padding(16).frame(maxWidth: .infinity, maxHeight: .infinity)
+            .accessibilityElement(children: .contain).accessibilityLabel("Transmitter recovery")
+    }
+
+    private var recovery: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "antenna.radiowaves.left.and.right")
+                .font(.system(size: 40, weight: .light)).foregroundStyle(.white.opacity(0.89))
+                .accessibilityHidden(true)
             checklist
             if let problem = model.pyroHRouteProblem {
                 Text(problem).font(.callout).multilineTextAlignment(.center).frame(maxWidth: 440)
+            } else if let error = model.error {
+                Text(error).font(.caption).foregroundStyle(.secondary)
+            } else if needsSourcePicture {
+                Text("Wake the computer or camera feeding the transmitter, or check its input cable.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             HStack(spacing: 8) {
                 if wifiStatus != .done {
-                    Button { model.openWiFiSettings() } label: { Label("Join Wi-Fi", systemImage: "wifi") }
-                        .buttonStyle(.borderedProminent).controlSize(.large).help("Open Wi-Fi Settings and join \(wifiName)")
+                    Button { model.openWiFiSettings() } label: { Label("Open Wi-Fi Settings", systemImage: "wifi") }
+                        .buttonStyle(.borderedProminent).help("Join \(wifiName) in Wi-Fi Settings")
                 } else {
                     Button { model.retry() } label: { Label("Retry Now", systemImage: "arrow.clockwise") }
-                        .buttonStyle(.borderedProminent).controlSize(.large).disabled(model.busy)
+                        .buttonStyle(.borderedProminent).disabled(model.busy)
                 }
                 ChromeIconButton("Choose another source", symbol: "arrow.left.arrow.right") { model.openSources() }
-                    .background(.white.opacity(0.16), in: RoundedRectangle(cornerRadius: 7))
+                    .background(.white.opacity(0.16), in: RoundedRectangle(cornerRadius: 8))
                     .disabled(model.busy)
             }
-        }.padding(16).frame(maxWidth: .infinity, maxHeight: .infinity)
-            .overlay(alignment: .bottom) { footer.padding(16) }
-            .accessibilityElement(children: .contain).accessibilityLabel("Transmitter recovery")
+        }.padding(.vertical, 8).multilineTextAlignment(.center)
     }
 
     private var checklist: some View {
@@ -115,13 +133,16 @@ struct TransmitterRecoveryView: View {
     private var recoveryDetails: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(model.recoveryTitle).font(.headline)
-            Text(model.error ?? model.recoveryDetail).foregroundStyle(.secondary)
+            Text(model.recoveryDetail).foregroundStyle(.secondary)
             if let problem = model.rejoinProblem { Text(problem).foregroundStyle(.secondary) }
             if let stage = model.connectionStageTitle { Text(stage).foregroundStyle(.secondary) }
             if model.lastFrameAt != nil { Text(model.frameAgeLabel).foregroundStyle(.secondary) }
             Divider()
             Text(model.audiencePresentation.sourceRecoveryDetail).foregroundStyle(.secondary)
-            Button("Retry Now") { model.retry() }.disabled(model.busy)
+            if wifiStatus != .done { Button("Retry Now") { model.retry() }.disabled(model.busy) }
+            if model.setup?.kind == .network, model.setup?.networkProfile != .pyroH {
+                Button("Edit Stream Address…") { model.openNetworkSource() }
+            }
             if let previous = model.previousSourceName {
                 Button("Return to \(previous)") { model.returnToPreviousSource() }.disabled(model.busy)
             }

@@ -15,6 +15,9 @@ struct ConnectionView: View {
     @State private var guide: TransmitterModel?
     @State private var contentHeight: CGFloat = 0
     @FocusState private var searchFocused: Bool
+    @FocusState private var categoryKeyboardFocus: SourceCategory?
+    @AccessibilityFocusState private var categoryAccessibilityFocus: SourceCategory?
+    @AccessibilityFocusState private var transmitterAccessibilityFocus: TransmitterModel?
 
     init(model: SessionModel, width: CGFloat, availableHeight: CGFloat) {
         self.model = model; self.width = width; self.availableHeight = availableHeight
@@ -32,7 +35,7 @@ struct ConnectionView: View {
                 ForEach(SourceCategory.allCases) { item in categoryButton(item) }
                 Spacer(minLength: 4)
                 if model.state.sharing {
-                    Label("Viewers hold", systemImage: "pause.fill")
+                    Label("Hold on source change", systemImage: "pause.fill")
                         .font(.caption.weight(.semibold)).foregroundStyle(SetbeamChrome.amberText)
                         .padding(.horizontal, 8).padding(.vertical, 4)
                         .background(SetbeamChrome.amber.opacity(0.16), in: Capsule())
@@ -40,6 +43,7 @@ struct ConnectionView: View {
                         .accessibilityLabel("Changing source puts viewers on Hold")
                 }
                 ChromeIconButton("Close source chooser", symbol: "xmark") { model.sheet = nil }
+                    .keyboardShortcut(.cancelAction)
             }.padding(16)
             Divider()
             categoryContent.frame(height: bodyHeight)
@@ -47,7 +51,11 @@ struct ConnectionView: View {
         .frame(width: width)
         .background(SetbeamChrome.raised)
         .accessibilityElement(children: .contain).accessibilityLabel("Choose a source")
-        .task { model.refreshCaptureDevices() }
+        .task {
+            categoryKeyboardFocus = category
+            categoryAccessibilityFocus = category
+            model.refreshCaptureDevices()
+        }
         .task(id: category) {
             guard category == .wireless else { return }
             browser.start { model.canDiscoverPyroH }
@@ -93,6 +101,8 @@ struct ConnectionView: View {
             .background(category == item ? SetbeamChrome.blue : .clear, in: RoundedRectangle(cornerRadius: 10))
             .contentShape(Rectangle())
         }.buttonStyle(SourceChoiceStyle()).help(item.name)
+            .focused($categoryKeyboardFocus, equals: item)
+            .accessibilityFocused($categoryAccessibilityFocus, equals: item)
             .accessibilityAddTraits(category == item ? .isSelected : [])
     }
 
@@ -216,13 +226,17 @@ struct ConnectionView: View {
 
     @ViewBuilder private var wirelessSection: some View {
         if let guide {
-            TransmitterGuideView(model: model, browser: browser, transmitter: guide) { self.guide = nil }
+            TransmitterGuideView(model: model, browser: browser, transmitter: guide) {
+                self.guide = nil
+                transmitterAccessibilityFocus = guide
+            }
         } else {
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 3), spacing: 12) {
                 ForEach(TransmitterModel.allCases) { transmitter in
                     let status = transmitterStatus(transmitter)
                     let selected = transmitter == .cineViewMaster4K ? model.setup?.kind == .accsoon : model.setup?.networkProfile == .pyroH
                     TransmitterCard(transmitter: transmitter, status: status.text, found: status.found, selected: selected) { guide = transmitter }
+                        .accessibilityFocused($transmitterAccessibilityFocus, equals: transmitter)
                 }
                 Button { model.openNetworkSource() } label: {
                     VStack(spacing: 8) {
@@ -250,12 +264,18 @@ struct ConnectionView: View {
     private func transmitterStatus(_ transmitter: TransmitterModel) -> (text: String, found: Bool) {
         switch transmitter {
         case .cineViewMaster4K:
-            if model.setup?.kind == .accsoon && model.state.monitoring { return (model.localReady ? "Monitoring" : "Waiting", model.localReady) }
+            if model.setup?.kind == .accsoon && model.state.monitoring { return (model.localReady ? "Monitoring" : "Waiting for picture", model.localReady) }
             let count = model.wirelessDevices.filter(\.recognized).count
-            return count == 0 ? ("Join Wi-Fi", false) : ("Found", true)
+            return count == 0 ? ("Looking on Wi-Fi", false) : ("Transmitter found", true)
         case .pyroH:
-            if model.setup?.networkProfile == .pyroH && model.state.monitoring { return (model.localReady ? "Monitoring" : "Waiting", model.localReady) }
-            return browser.pyroHSources.isEmpty ? ("Join Wi-Fi", false) : ("Found", true)
+            if model.setup?.networkProfile == .pyroH && model.state.monitoring { return (model.localReady ? "Monitoring" : "Waiting for picture", model.localReady) }
+            if !browser.pyroHSources.isEmpty { return ("Stream found", true) }
+            switch browser.pyroHSearchState {
+            case .noWiFi: return ("Join transmitter Wi-Fi", false)
+            case .monitoring: return ("Search paused", false)
+            case .unavailable: return ("Stream unavailable", false)
+            default: return ("Looking on Wi-Fi", false)
+            }
         }
     }
 

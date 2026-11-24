@@ -11,9 +11,11 @@ enum TransmitterModel: String, CaseIterable, Identifiable {
     var artwork: String { self == .cineViewMaster4K ? "accsoon.master" : "hollyland.pyro" }
     /// The recorded physical evidence, in one line.
     var evidence: String {
-        self == .cineViewMaster4K ? "Physically tested · Direct Wi-Fi · Firmware 3.30" : "Not yet tested with a physical Pyro H"
+        physicallyTested ? "Physically tested with a 1080p60 computer display on firmware 3.30." : "Physical Pyro H test pending."
     }
     var physicallyTested: Bool { self == .cineViewMaster4K }
+    var route: String { physicallyTested ? "Direct Wi-Fi" : "Direct Wi-Fi RTSP" }
+    var evidenceLabel: String { physicallyTested ? "Firmware 3.30 tested" : "Hardware test pending" }
 }
 
 /// One model card in Choose a source. Choosing it opens that model's guided connection.
@@ -23,7 +25,7 @@ struct TransmitterCard: View {
     let found: Bool
     let selected: Bool
     let open: () -> Void
-    static let height: CGFloat = 200
+    static let height: CGFloat = 220
 
     var body: some View {
         Button(action: open) {
@@ -32,29 +34,24 @@ struct TransmitterCard: View {
                     .frame(maxWidth: .infinity, minHeight: 116)
                     .background(SetbeamChrome.artwork)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(transmitter.name).font(.callout.weight(.semibold)).lineLimit(1)
+                    Text(transmitter.name).font(.callout.weight(.semibold)).lineLimit(2)
                     Text(transmitter.brand).font(.caption).foregroundStyle(.secondary)
-                    ViewThatFits(in: .horizontal) {
-                        HStack(spacing: 4) { availability; evidence }.fixedSize()
-                        HStack(spacing: 4) { availability; evidence }
-                    }.padding(.top, 4)
+                    Text(transmitter.route).font(.caption).foregroundStyle(.secondary)
+                    Label(transmitter.evidenceLabel, systemImage: transmitter.physicallyTested ? "checkmark.shield" : "flask")
+                        .font(.caption)
+                        .foregroundStyle(transmitter.physicallyTested ? SetbeamChrome.blueText : SetbeamChrome.amberText)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Label(status, systemImage: "wifi")
+                        .font(.caption).foregroundStyle(found ? SetbeamChrome.greenText : .secondary)
                 }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
             }.frame(minHeight: Self.height, alignment: .top)
                 .background(SetbeamChrome.raised).clipShape(RoundedRectangle(cornerRadius: 12))
                 .contentShape(RoundedRectangle(cornerRadius: 12))
         }.buttonStyle(TransmitterCardStyle(selected: selected))
-            .help("Set up \(transmitter.brand) \(transmitter.name). \(status). \(transmitter.evidence).")
-            .accessibilityLabel("Set up \(transmitter.brand) \(transmitter.name). \(status). \(transmitter.evidence).")
+            .help("Set up \(transmitter.brand) \(transmitter.name). \(transmitter.route). \(transmitter.evidence) \(status).")
+            .accessibilityLabel("Set up \(transmitter.brand) \(transmitter.name)")
+            .accessibilityValue("\(transmitter.route). \(transmitter.evidence) \(status).")
             .accessibilityAddTraits(selected ? .isSelected : [])
-    }
-
-    private var availability: some View {
-        SetbeamChip(status, symbol: "wifi", tint: found ? SetbeamChrome.greenText : .secondary)
-    }
-    private var evidence: some View {
-        SetbeamChip(transmitter.physicallyTested ? "Tested · 3.30" : "Untested",
-                    symbol: transmitter.physicallyTested ? "checkmark.shield" : "flask",
-                    tint: transmitter.physicallyTested ? SetbeamChrome.blueText : SetbeamChrome.amberText)
     }
 }
 
@@ -88,6 +85,7 @@ struct TransmitterGuideView: View {
     @ObservedObject var browser: SourceBrowser
     let transmitter: TransmitterModel
     let back: () -> Void
+    @AccessibilityFocusState private var guideHeadingFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -97,7 +95,8 @@ struct TransmitterGuideView: View {
                 HardwareArtwork(symbol: transmitter.artwork, size: 56)
                 VStack(alignment: .leading, spacing: 4) {
                     Text("\(transmitter.brand) \(transmitter.name)").font(.title3.weight(.semibold))
-                    Text(transmitter.evidence).font(.caption).foregroundStyle(.secondary)
+                        .accessibilityAddTraits(.isHeader).accessibilityFocused($guideHeadingFocused)
+                    Text("\(transmitter.route). \(transmitter.evidence)").font(.caption).foregroundStyle(.secondary)
                 }
             }
             VStack(alignment: .leading, spacing: 12) {
@@ -126,7 +125,7 @@ struct TransmitterGuideView: View {
                 Text("Setbeam reads the stream the Pyro H transmitter offers on its own Wi-Fi. Use Enter Stream Address in Choose a source for another address.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
-        }
+        }.task { guideHeadingFocused = true }
     }
 
     @ViewBuilder private var cineViewDevices: some View {
@@ -163,7 +162,7 @@ struct TransmitterGuideView: View {
         } else {
             ForEach(browser.pyroHSources) { device in
                 GuideRow(title: device.network.interface == "lo0" ? "Pyro H test stream" : "Hollyland Pyro H",
-                         detail: "Compatible stream found · Confirm the transmitter model", symbol: transmitter.artwork) { model.connectPyroH(device) }
+                         detail: "RTSP stream found. Confirm the transmitter model.", symbol: transmitter.artwork) { model.connectPyroH(device) }
             }
             switch browser.pyroHSearchState {
             case .looking: Label("Looking for Pyro H…", systemImage: "antenna.radiowaves.left.and.right").font(.caption).foregroundStyle(.secondary)
