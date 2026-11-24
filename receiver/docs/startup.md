@@ -219,10 +219,14 @@ receiver/scripts/setbeam-receiver restore   --serial SERIAL [--uninstall-receive
 - `provision` and `restore` are dry runs unless `--apply` is given. A dry
   run reads the device and prints every command it would run.
 - `--serial` is required on every device command. `ANDROID_SERIAL` is
-  removed from adb's environment, and every device command passes
-  `-s SERIAL`. A missing, `unauthorized` or `offline` serial is refused.
+  removed from adb's environment. A missing, `unauthorized` or `offline`
+  serial is refused.
   So is a device without the leanback TV feature, unless
-  `--allow-non-tv` is given for an emulator.
+  `--allow-non-tv` is given for a device that reports it is an emulator.
+  The tool requires one ready transport ID for the selected adb serial and
+  addresses device commands by that ID. Before each write it rechecks the
+  transport, hardware identity and current profile.
+  If any of them changes, reconnect and run `status` before retrying.
 - `--host` must be the short address itself: `http://` + a name or IPv4
   address + optional `:80` + `/`. Viewing links, `/s/…` paths, user info,
   queries, fragments, `https`, other ports and loopback addresses are
@@ -258,8 +262,16 @@ receiver/scripts/setbeam-receiver restore   --serial SERIAL [--uninstall-receive
 
   The adb shell holds `WRITE_SECURE_SETTINGS`, but ordinary apps can't, so
   other apps on the TV can't repoint the receiver.
-  Downgrades are refused. When Java and `apksigner` are available, the signer
-  digest is recorded, and `--expect-signer` can require it.
+  Downgrades are refused. The tool inspects a private APK copy and installs
+  that same copy. With Java and `apksigner`, it records the certificate
+  SHA-256 for a single signer. If you pass `--expect-signer`, the digest
+  must match before `verify-apk` prints a result or `provision` contacts
+  adb. The option requires `--apk`.
+- `--allow-background-start` requires the overlay permission request and an
+  enabled, exported `BOOT_COMPLETED` receiver. The installed package must
+  also have `RECEIVE_BOOT_COMPLETED` granted. For a new APK the tool checks
+  its manifest before install and checks the installed package before
+  configuration or grant.
 - Without `--apk`, the installed receiver is checked on the device instead.
   `cmd package query-activities` and `query-receivers` for CONFIGURE, without
   `--brief`, dump each handler's `ActivityInfo` `name=`, `packageName=`,
@@ -271,12 +283,13 @@ receiver/scripts/setbeam-receiver restore   --serial SERIAL [--uninstall-receive
   `am start -W -n com.setbeam.receiver/…ProvisionActivity -a com.setbeam.receiver.CONFIGURE --es setbeam_host … --es setbeam_name …`.
   Each remote argument is quoted separately for the device shell. The tool
   reads the receiver's own log (`logcat -d -v epoch -s SetbeamProvision`,
-  only entries after the device clock reading taken just before the start).
-  It records the result as:
+  taking a baseline before the intent) and requires a fresh, unambiguous
+  acknowledgement. It records the result as:
   - **accepted**: the app logged `Pairing accepted for <same host>`.
   - **refused**: the app logged `Pairing refused`. The run stops.
-  - **delivered**: the intent arrived but no acceptance was observed. Check the
-    TV screen (qualification step S5).
+  - **delivered**: Android reported that it started the activity, but the
+    receiver acknowledgement was missing or ambiguous. The run exits 4
+    before it changes HOME or overlay. Check the TV screen (step S5).
 
 Exit codes:
 
@@ -313,8 +326,9 @@ any change, because it can't tell two boxes apart. The receipt holds:
     (`fresh`), and `other_users_before`, the profiles that already had the
     receiver. Later `--apk` runs are added to the first install's `updates`
     list instead of creating another install change.
-  - **configure**: `accepted`, `delivered` or `refused`. This change can't be
-    reversed.
+  - **configure**: `pending` before launch, then `accepted`, `delivered` or
+    `refused`. Restore records an interrupted configuration as `unverified`.
+    Host and label live in the app and require manual verification in that case.
   - **HOME and overlay**: `pending`, `done`, `rolled-back`, then `restored`.
     Either can be `superseded`. A HOME rollback that can't be verified is
     marked `rollback-failed`. Only restore resolves it; provisioning never
@@ -349,9 +363,9 @@ The overlay app-op follows the same rule. Its mode is read immediately before
 
 **A receipt that needs restore blocks provisioning.** A receipt is marked
 `needs-restore` when a rollback inside `provision`, or a `restore`, couldn't
-be verified. Any `rollback-failed`, `rolling-back`, `restoring` or `flush-pending` change has
-the same effect. Every later `provision` is then refused with exit 2 and the
-restore command:
+be verified. A `pending` write or update also blocks provisioning, as do
+`rollback-failed`, `rolling-back`, `restoring` and `flush-pending`. Each later
+`provision` exits 2 and prints the restore command.
 - `--apply` makes no change at all: no install, configuration, HOME or
   overlay change, and no receipt write.
 - A dry run reports the same condition and also exits 2.
@@ -363,9 +377,9 @@ accept it.
 Both `provision` and
 `restore` refuse a receipt recorded for another Android user. Switch the TV
 to that profile first, because HOME roles and app-ops are per user. They
-also refuse a receipt whose manufacturer, model or device differs from the
-attached box. `restore --force` overrides the identity check, but never the
-user check. A changed fingerprint (OS update) only warns.
+also refuse a receipt whose hardware serial hash, manufacturer, model or
+device differs from the attached box. These checks apply with `--force`. A
+changed fingerprint between runs (OS update) warns.
 
 If Setbeam already held the HOME role before provisioning, HOME is left
 unchanged and is not recorded. Restore then has nothing to undo there.
@@ -389,18 +403,15 @@ each step:
      mode:** someone changed it later, and restore refuses without `--force`.
 2. **HOME.** It goes back to the recorded holder with `set-home-activity`. If
    no explicit holder was recorded, Setbeam is removed with `role
-   remove-role-holder`. Success means:
-   - **A holder was recorded:** exactly the recorded holders, and the recorded
-     resolution.
-   - **No holder was recorded:** Setbeam holds nothing, and HOME resolves as
-     before. Android may assign its own default holder at that point.
-
-   If Android's default changes the resolution, for example from the chooser
-   to a launcher, the step is reported as not restored (exit 5).
-   `restore --apply --force` accepts that result with a warning. If HOME now
-   belongs to a third app, restore refuses without `--force`.
+   remove-role-holder`. Both the exact role holder and resolved activity must
+   match. If Android
+   assigns a default where no holder was recorded, the tool reports a
+   mismatch even when the same activity resolves. `restore --apply --force`
+   can accept a verified fallback with a warning. If HOME now belongs to a
+   third app, restore refuses without `--force`.
 3. **Receiver app.** It is uninstalled only when all of these hold:
-   - `--uninstall-receiver` is given.
+   - `--uninstall-receiver` is given or an earlier restore already journaled
+     the uninstall.
    - This tool installed it for the recorded user.
    - HOME was restored first.
 
@@ -436,13 +447,39 @@ current user, and the receipt is tied to it:
 - **No version rollback:** restore never rolls back an APK version. A warning
   says so whenever `--apk` updates an existing install.
 - **Unreadable per-profile state:** if the receiver is on the device but the
-  per-user lines can't be read consistently, `--apk` is refused before any
-  change.
+  per-user lines can't be read consistently, provisioning and restore
+  refuse to write. `status --json` returns `null` for unknown presence and
+  `false` for confirmed absence.
 - **Profile mismatch:** a receipt from another profile is refused, and
   `--force` doesn't override that.
 
 Not checked on hardware: adb passing `--user` through to the package manager
 on onn firmware, and the real Google TV profile layout.
+
+## Local emulator checks
+
+`receiver/integration/tv_emulator.py` supervises the dedicated AVD in its own
+process group. Its receipt identifies the supervisor for that launch. During
+startup, a boot timeout or a lost adb server stops that group. An old receipt cannot authorize
+a signal to a reused PID.
+
+`tv_e2e.py` validates case names and requires every requested case to pass.
+It completes emulator and fixture preflight before installing, pressing
+keys, or writing screenshots. Both tools use a private loopback adb server
+with Platform-Tools support for `acceptfd` and `--one-device`.
+Reboot cases require an emulator started by `tv_emulator.py`. The driver
+checks the original supervisor, emulator identity and Android user before
+sending input or restoring settings after a reboot. Cleanup verifies HOME,
+the overlay app-op, display overrides, airplane mode, and the screen settings
+captured by the run. Preflight refuses a requested uninstall that would
+discard the existing receiver's HOME or overlay state. Restore failures
+appear in the run summary. Startup receipts stay in the run directory for
+diagnosis.
+
+The audit regressions run with `python3 -m unittest discover -s receiver/tests`.
+The device and lifecycle regressions use fake ADB and in-memory process
+fixtures. Emulator startup, actual reboot persistence, and onn hardware
+qualification need separate runs.
 
 ## OS update sensitivity
 
@@ -468,8 +505,8 @@ These are for whoever owns `receiver/android`:
 - Keep logging `Pairing accepted for <baseUrl>` and `Pairing refused: …` under
   the tag `SetbeamProvision`, without secrets. The tool uses these lines to
   tell "accepted" from "delivered".
-- For path 2, the app needs a `BOOT_COMPLETED` receiver and the
-  `SYSTEM_ALERT_WINDOW` request. It has both.
+- For path 2, the app declares an enabled, exported `BOOT_COMPLETED` receiver
+  and requests `RECEIVE_BOOT_COMPLETED` and `SYSTEM_ALERT_WINDOW`.
 - Screen and sleep: the app requests screen-on (`FLAG_KEEP_SCREEN_ON`) in every
   phase while it is in front, not only during playback. That includes waiting
   for the Mac, waiting for Admit, Hold, Sharing ended, declined, and removed. A

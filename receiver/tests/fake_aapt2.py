@@ -29,6 +29,9 @@ def main():
     except (OSError, ValueError):
         sys.stderr.write("W/ziparchive: Unable to open: Invalid file\n")
         return 1
+    if args[:2] == ["dump", "badging"] and apk.get("replace_original"):
+        with open(apk["replace_original"], "w") as original:
+            json.dump({"package": "replacement"}, original)
     package = apk.get("package", "com.setbeam.receiver")
     main_activity = apk.get("main", "com.setbeam.receiver.MainActivity")
     if args[:2] == ["dump", "badging"]:
@@ -80,8 +83,8 @@ def main():
             # Inserted directly under <application>.
             index = lines.index('      E: application (line=9)')
             lines.insert(index + 1, attr(8, "permission", apk["app_permission"]))
-        if apk.get("boot", False):
-            lines += ["          E: receiver (line=40)", attr(12, "name", ".BootReceiver"), attr(12, "exported", "false", quoted=False)]
+        if apk.get("boot", False) or "android.permission.RECEIVE_BOOT_COMPLETED" in apk.get("permissions", []):
+            lines += ["          E: receiver (line=40)", attr(12, "name", ".BootReceiver"), attr(12, "exported", "true", quoted=False)]
             lines += intent_filter(14, "android.intent.action.BOOT_COMPLETED", [])
         print("\n".join(lines))
         return 0

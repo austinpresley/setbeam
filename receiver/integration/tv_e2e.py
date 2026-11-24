@@ -21,19 +21,23 @@ report ro.kernel.qemu=1, and it runs its own adb server on a private port with a
 Exit status is 0 only when every selected case passes and the device settings are restored.
 """
 import argparse
+from collections import Counter
 import base64
 import hashlib
 import http.client
+import ipaddress
 import json
 import math
 import os
 import re
 import shutil
+import shlex
 import signal
 import subprocess
 import socket
 import struct
 import sys
+import uuid
 import threading
 import time
 import traceback
@@ -41,10 +45,10 @@ import urllib.parse
 from pathlib import Path
 from xml.etree import ElementTree
 
+from tv_emulator import AdbServer, Failure, load as load_emulator, owned as owns_emulator, transport_id, valid_port
+
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent
-SDK = Path(os.environ.get("ANDROID_HOME", Path.home() / "Library/Android/sdk"))
-ADB = SDK / "platform-tools" / "adb"
 PACKAGE = "com.setbeam.receiver"
 MAIN = f"{PACKAGE}/.MainActivity"
 PROVISION_COMPONENT = f"{PACKAGE}/.ProvisionActivity"
@@ -52,6 +56,9 @@ DEFAULT_APK = REPO / "receiver/android/app/build/outputs/apk/debug/app-debug.apk
 FIXTURE_BIN = HERE / ".build/swift/debug/SetbeamReceiverFixture"
 OCR_BIN = HERE / ".build/swift/debug/ScreenText"
 PROVISION = REPO / "receiver/scripts/setbeam_receiver_provision.py"
+sys.path.insert(0, str(PROVISION.parent))
+from setbeam_receiver_provision import parse_overlay_mode
+sys.path.pop(0)
 SECRET = re.compile(r"(?<![0-9a-f])(?<!sha256 )[0-9a-f]{40,}(?![0-9a-f])")
 CARD_TITLES = {
     "Looking for the Mac": "searching", "Waiting for the Mac": "searching", "Asking to join": "asking", "Asking again": "asking again",
@@ -59,10 +66,6 @@ CARD_TITLES = {
     "Connecting": "connecting", "On hold": "holding", "Sharing ended": "ended", "Request declined": "declined",
     "Removed by the operator": "removed", "Set up this receiver": "unconfigured", "Paused": "paused",
 }
-
-
-class Failure(Exception):
-    pass
 
 
 def redact(text):
@@ -81,113 +84,133 @@ class Log:
 
 # ---------------------------------------------------------------- adb
 
-class AdbServer:
-    """An adb server owned by this run, on a private port, with adb's mDNS discovery off."""
-
-    def __init__(self, port, artifacts):
-        self.port, self.artifacts, self.proc = port, artifacts, None
-        self.env = dict(os.environ, ADB_MDNS="0", ANDROID_ADB_SERVER_PORT=str(port))
-        self.restarts = 0
-
-    def alive(self):
-        return self.proc is not None and self.proc.poll() is None
-
-    def start(self):
-        if self.alive():
-            return
-        if self.proc is not None:
-            self.restarts += 1
-        log = open(self.artifacts / "adb-server.log", "ab")
-        self.proc = subprocess.Popen([str(ADB), "-P", str(self.port), "nodaemon", "server"], env=self.env, stdout=log,
-                                     stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)
-        time.sleep(1.5)
-
-    def stop(self):
-        if not self.proc:
-            return
-        try:
-            os.killpg(self.proc.pid, signal.SIGTERM)
-            self.proc.wait(timeout=10)
-        except (ProcessLookupError, subprocess.TimeoutExpired):
-            try:
-                os.killpg(self.proc.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-
-
 class Device:
     def __init__(self, serial, log, artifacts, server):
         self.serial, self.log, self.artifacts, self.server = serial, log, artifacts, server
+        self.transport = None
+        self.reboot_owner = None
         self.shots = 0
         self.ocr_dir = artifacts / "ocr"
         self.ocr_dir.mkdir(exist_ok=True)
 
-    def run(self, args, timeout):
-        return subprocess.run([str(ADB), *args], capture_output=True, timeout=timeout, env=self.server.env)
+    def probe(self, transport, command, timeout=30):
+        result = self.server.run(["-t", transport, "shell", command], timeout=timeout, check=True)
+        if result.stderr.strip():
+            raise Failure("ADB reported an error while reading emulator identity")
+        return result.stdout.decode().strip()
 
     def adb(self, *args, timeout=60, check=True, binary=False):
-        proc = None
-        for _ in range(6):
-            proc = self.run(["-s", self.serial, *args], timeout)
-            err = proc.stderr.decode(errors="replace")
-            lost = proc.returncode != 0 and (not self.server.alive() or re.search(
-                r"device .* not found|daemon|offline|no devices|closed|protocol fault|write failed|read failed|"
-                r"failed to (read|write)|reset by peer|Broken pipe|cannot connect|authorizing", err))
-            if lost:
-                self.reattach()
-                continue
-            break
-        if check and proc.returncode != 0:
-            out = proc.stdout.decode(errors="replace") if not binary else ""
-            raise Failure(f"adb {' '.join(args[:3])} failed ({proc.returncode}): {redact((err + out).strip())[:400]}")
+        self.check_identity()
+        proc = self.server.run(["-t", self.transport, *args], timeout=timeout)
+        if check and proc.returncode:
+            detail = proc.stderr.decode(errors="replace")
+            if not binary:
+                detail += proc.stdout.decode(errors="replace")
+            raise Failure(f"adb {' '.join(args[:3])} failed ({proc.returncode}): {redact(detail.strip())[:400]}")
         return proc.stdout if binary else proc.stdout.decode(errors="replace")
-
-    def attached(self):
-        listed = self.run(["devices"], 30).stdout.decode(errors="replace")
-        return any(line.split("\t") == [self.serial, "device"] for line in listed.splitlines())
-
-    def reattach(self, seconds=120):
-        deadline = time.time() + seconds
-        while time.time() < deadline:
-            self.server.start()
-            if self.attached():
-                return
-            time.sleep(2)
-        raise Failure(f"{self.serial} did not attach to the private adb server within {seconds}s")
 
     def sh(self, command, **kw):
         return self.adb("shell", command, **kw)
 
-    def require_emulator(self):
-        qemu = self.sh("getprop ro.kernel.qemu").strip() or self.sh("getprop ro.boot.qemu").strip()
-        if qemu != "1":
-            raise Failure(f"{self.serial} is not an emulator (ro.kernel.qemu={qemu!r}); refusing to touch it")
-        if self.sh("getprop sys.boot_completed").strip() != "1":
-            raise Failure(f"{self.serial} has not finished booting")
+    def read_identity(self, transport):
+        raw = self.probe(transport, "getprop")
+        pairs = re.findall(r"^\[([^\]]+)\]: \[(.*)\]$", raw, re.M)
+        props = dict(pairs)
+        if (len(pairs) != len(props)
+                or (props.get("ro.kernel.qemu") or props.get("ro.boot.qemu")) != "1"
+                or props.get("sys.boot_completed") != "1"):
+            raise Failure(f"{self.serial} is not a verified, booted emulator")
+        keys = ("ro.serialno", "ro.build.fingerprint", "ro.build.version.sdk", "ro.product.model", "ro.product.cpu.abi")
+        if any(not props.get(key, "").strip() for key in keys):
+            raise Failure("Emulator identity properties are incomplete")
+        # Read both values in a single checked shell request.
+        values = self.probe(transport, "am get-current-user && cat /proc/sys/kernel/random/boot_id").splitlines()
+        if len(values) != 2 or not re.fullmatch(r"[0-9]+", values[0]):
+            raise Failure("Cannot identify the emulator's Android user")
+        try:
+            boot = str(uuid.UUID(values[1]))
+        except ValueError:
+            raise Failure("Cannot identify the emulator's boot") from None
+        return {key: props[key] for key in keys}, int(values[0]), boot
 
-    def props(self):
-        keys = ["ro.build.fingerprint", "ro.build.version.sdk", "ro.product.model", "ro.product.cpu.abi"]
-        return {k: self.sh(f"getprop {k}").strip() for k in keys}
+    def check_identity(self):
+        if self.reboot_owner is not None and not owns_emulator(self.reboot_owner):
+            raise Failure("The reboot test's owned emulator supervisor exited")
+        if self.transport is None or transport_id(self.server, self.serial) != self.transport:
+            raise Failure("Emulator adb transport changed or was never verified")
+        if self.read_identity(self.transport) != (self.identity, self.user, self.boot_id):
+            raise Failure("Emulator identity, Android user or boot changed")
+
+    def attach(self, seconds=120, reboot=False):
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            if reboot and not owns_emulator(self.reboot_owner):
+                raise Failure("Cannot reattach after reboot without the original emulator supervisor")
+            tid = transport_id(self.server, self.serial)
+            if tid:
+                try:
+                    if self.probe(tid, "getprop sys.boot_completed") == "1":
+                        identity, user, boot = self.read_identity(tid)
+                        if not reboot:
+                            self.transport, self.identity, self.user, self.boot_id = tid, identity, user, boot
+                            return
+                        if (identity, user) != (self.identity, self.user):
+                            raise Failure("A different emulator or Android user attached after reboot")
+                        if boot != self.boot_id:
+                            self.transport, self.boot_id = tid, boot
+                            return
+                except subprocess.CalledProcessError:
+                    # adbd can temporarily drop the transport while Android is starting.
+                    pass
+            time.sleep(2)
+        raise Failure(f"{self.serial} did not {'reboot' if reboot else 'finish booting'} within {seconds}s")
 
     def home_state(self):
-        role = self.sh("cmd role get-role-holders android.app.role.HOME", check=False).strip()
-        resolved = self.sh("cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.HOME",
-                           check=False).strip().splitlines()
-        return {"role": role, "resolves": resolved[-1] if resolved else ""}
+        role = self.sh(f"cmd role get-role-holders --user {self.user} android.app.role.HOME").strip()
+        if role and not all(re.fullmatch(r"[A-Za-z][\w]*(?:\.[\w]+)+", holder) for holder in role.split(";")):
+            raise Failure("Cannot read exact emulator HOME role")
+        resolved = self.sh(f"cmd package resolve-activity --brief --user {self.user} "
+                           "-a android.intent.action.MAIN -c android.intent.category.HOME").strip().splitlines()
+        if not resolved or not re.fullmatch(r"[\w.]+/[\w.$]+", resolved[-1]):
+            raise Failure("Cannot read emulator HOME resolution")
+        return {"role": role, "resolves": resolved[-1]}
+
+    def receiver_installed(self):
+        rows = self.sh(f"cmd package list packages --user {self.user} {PACKAGE}").splitlines()
+        if any(not re.fullmatch(r"package:[A-Za-z][\w.]+", row) for row in rows):
+            raise Failure("Cannot establish whether the receiver is installed")
+        return f"package:{PACKAGE}" in rows
 
     def settings_snapshot(self):
-        return {"system/screen_off_timeout": self.sh("settings get system screen_off_timeout").strip(),
-                "secure/sleep_timeout": self.sh("settings get secure sleep_timeout").strip(),
-                "secure/screensaver_enabled": self.sh("settings get secure screensaver_enabled").strip(),
-                "secure/screensaver_activate_on_sleep": self.sh("settings get secure screensaver_activate_on_sleep").strip(),
-                "wm/size": self.sh("wm size").strip(), "wm/density": self.sh("wm density").strip()}
+        snapshot = {key: self.read_setting(key) for key in SCREEN_SETTINGS}
+        for key in ("size", "density"):
+            value = self.sh(f"wm {key}").strip()
+            unit = r"[0-9]+x[0-9]+" if key == "size" else r"[0-9]+"
+            if not re.fullmatch(rf"Physical {key}: {unit}(?:\nOverride {key}: {unit})?", value):
+                raise Failure(f"Cannot read exact display {key}")
+            snapshot[f"wm/{key}"] = value.splitlines()[-1].split(": ")[1] if "\n" in value else None
+        airplane = self.sh("cmd connectivity airplane-mode").strip()
+        if airplane not in ("enabled", "disabled"):
+            raise Failure("Cannot read emulator airplane mode")
+        snapshot["airplane"] = airplane
+        return snapshot
+
+    def read_setting(self, key):
+        namespace, name = key.split("/")
+        # Listing lets us distinguish a missing entry from a literal "null" value.
+        lines = self.sh(f"settings --user {self.user} list {namespace}").splitlines()
+        matches = [line.partition("=")[2] for line in lines if line.startswith(name + "=")]
+        if len(matches) > 1 or any("=" not in line for line in lines):
+            raise Failure(f"Cannot read exact setting {key}")
+        return matches[0] if matches else None
 
     def put_setting(self, key, value):
         namespace, name = key.split("/")
-        if value in ("null", ""):
-            self.sh(f"settings delete {namespace} {name}", check=False)
+        prefix = f"settings --user {self.user}"
+        if value is None:
+            self.sh(f"{prefix} delete {namespace} {name}")
         else:
-            self.sh(f"settings put {namespace} {name} {value}")
+            self.sh(f"{prefix} put {namespace} {name} {shlex.quote(value)}")
 
     def power(self):
         out = self.sh("dumpsys power", check=False)
@@ -215,31 +238,54 @@ class Device:
         self.sh("input keyevent " + " ".join(str(code) for code in codes))
 
     def start_main(self):
-        self.sh(f"am start -W -n {MAIN}", timeout=60)
+        self.sh(f"am start -W --user {self.user} -n {MAIN}", timeout=60)
 
     def force_stop(self):
-        self.sh(f"am force-stop {PACKAGE}")
+        self.sh(f"am force-stop --user {self.user} {PACKAGE}")
 
-    def configure(self, host, name):
-        return self.sh(f"am start -W -n {PROVISION_COMPONENT} -a {PACKAGE}.CONFIGURE --es setbeam_host {host} "
-                       f"--es setbeam_name '{name}'", check=False)
+    def configure(self, host, name, *, refused=False):
+        command = "logcat -d -v epoch -s SetbeamProvision:*"
+        prior = Counter(self.sh(command).splitlines())
+        result = self.sh(f"am start -W --user {self.user} -n {PROVISION_COMPONENT} -a {PACKAGE}.CONFIGURE "
+                         f"--es setbeam_host {shlex.quote(host)} --es setbeam_name {shlex.quote(name)}")
+        if "Status: ok" not in result.splitlines():
+            raise Failure("Android did not acknowledge the configuration activity")
+        expected = "Pairing refused" if refused else f"Pairing accepted for {host}"
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            current = Counter(self.sh(command).splitlines())
+            messages = [line.split("SetbeamProvision:", 1)[1].strip()
+                        for line in (current - prior).elements() if "SetbeamProvision:" in line]
+            replies = [message for message in messages if message.startswith(("Pairing refused", "Pairing accepted for "))]
+            if len(replies) == 1 and (replies[0] == expected or (refused and replies[0].startswith(expected))):
+                return
+            if replies:
+                raise Failure("Receiver returned an unexpected or ambiguous configuration acknowledgement")
+            time.sleep(0.5)
+        raise Failure("No fresh receiver acknowledgement for the configuration intent")
 
     # ---- observation
 
     def pull_capture(self, remote, flag):
         # `adb exec-out screencap` streams tens of MB, which brought down the adb server here; writing on the
         # device and pulling the file is stable.
+        remote = f"{remote}-{uuid.uuid4().hex}"
         local = self.artifacts / ".capture"
-        self.sh(f"screencap {flag} {remote}".replace("  ", " "), timeout=60)
-        self.adb("pull", remote, str(local), timeout=120)
-        data = local.read_bytes()
-        local.unlink()
-        return data
+        try:
+            self.sh(f"screencap {flag} {remote}".replace("  ", " "), timeout=60)
+            self.adb("pull", remote, str(local), timeout=120)
+            return local.read_bytes()
+        finally:
+            local.unlink(missing_ok=True)
+            self.sh(f"rm -f {remote}")
 
     def setup_text(self):
         """Read the Android accessibility tree while the static setup activity is in front."""
-        remote = "/data/local/tmp/setbeam-setup.xml"
-        xml = self.sh(f"uiautomator dump {remote} >/dev/null && cat {remote} && rm {remote}", timeout=15, check=False)
+        remote = f"/data/local/tmp/setbeam-setup-{uuid.uuid4().hex}.xml"
+        try:
+            xml = self.sh(f"uiautomator dump {remote} >/dev/null && cat {remote}", timeout=15, check=False)
+        finally:
+            self.sh(f"rm -f {remote}")
         try:
             return "\n".join(node.attrib.get("text", "") for node in ElementTree.fromstring(xml).iter("node"))
         except ElementTree.ParseError:
@@ -567,6 +613,9 @@ class PointerBot:
 
 # ---------------------------------------------------------------- test run
 
+SCREEN_SETTINGS = ("system/screen_off_timeout", "secure/sleep_timeout", "secure/screensaver_enabled",
+                   "secure/screensaver_activate_on_sleep")
+
 CASES = ["configure", "ask-pending", "admit-live", "remote-controls", "chat-pointers", "hold-resume", "recovery", "remove-terminal", "newshare-decline",
          "newshare-admit", "stop-keeps-source", "unattended-ended", "unattended-searching", "reconfigure-live", "startup-home"]
 
@@ -578,7 +627,7 @@ class Run:
         self.artifacts = HERE / "artifacts" / stamp
         self.artifacts.mkdir(parents=True)
         self.log = Log(self.artifacts / "run.log")
-        self.server = AdbServer(args.adb_port, self.artifacts)
+        self.server = AdbServer(args.adb_port, self.artifacts, int(args.serial.split("-")[1]))
         self.device = Device(args.serial, self.log, self.artifacts, self.server)
         self.fixture = Fixture("A", args.viewer_address, args.web_port, args.fixture_lifetime, self.log,
                                HERE / "runtime" / stamp / "A", self.artifacts)
@@ -588,12 +637,18 @@ class Run:
         self.fixtures_dir = None
         self.last_live = None
         self.settings_before = None
+        self.setup_started = False
+        self.install_started = False
+        self.startup_restore = None
+        self.startup_appop_before = None
+        self.changed_settings = set()
+        self.reboot_pending = False
         self.expected_size = "3840x2160" if args.source == "4k" else "1280x720"
         # The bundled Demo clip is nearly still in the sampled band; generated patterns move everywhere.
         self.motion_required = args.source != "demo"
 
     def selected(self, name):
-        return self.args.cases == "all" or name in self.args.cases.split(",")
+        return name in self.args.cases
 
     # ---- helpers
 
@@ -725,7 +780,8 @@ class Run:
             return True
         except Exception as error:  # noqa: BLE001 - every failure is recorded
             try:
-                self.log(f"failure screenshot {self.device.png(f'FAIL-{name}').name}")
+                if self.setup_started and name != "setup":
+                    self.log(f"failure screenshot {self.device.png(f'FAIL-{name}').name}")
             except Exception:  # noqa: BLE001
                 pass
             message = str(error) if isinstance(error, Failure) else traceback.format_exc()
@@ -736,31 +792,31 @@ class Run:
     # ---- cases
 
     def preflight(self):
-        self.device.reattach()
-        self.device.require_emulator()
-        self.facts["device"] = self.device.props()
+        if self.args.reboot:
+            owner = load_emulator()
+            if not owns_emulator(owner) or owner["serial"] != self.args.serial or owner.get("ready") is not True:
+                raise Failure("Reboot cases require an emulator started by tv_emulator.py")
+            self.device.reboot_owner = owner
+        self.device.attach()
+        self.device.check_identity()
+        self.facts["device"] = self.device.identity
         self.facts["homeBefore"] = self.device.home_state()
         self.settings_before = self.device.settings_snapshot()
         self.facts["settingsBefore"] = self.settings_before
+        installed = self.device.receiver_installed()
+        self.facts["receiverInstalledBefore"] = installed
+        self.facts["appopBefore"] = self.appop() if installed else None
+        if installed and (self.args.fresh or self.args.uninstall):
+            home = self.facts["homeBefore"]
+            if (PACKAGE in home["role"].split(";") or home["resolves"].startswith(PACKAGE + "/")
+                    or self.facts["appopBefore"] != "default"):
+                raise Failure("Removing the existing receiver would discard its captured HOME or overlay state. Use a clean AVD.")
         apk = self.artifacts / "receiver.apk"
         shutil.copyfile(self.args.apk, apk)
         digest = hashlib.sha256(apk.read_bytes()).hexdigest()
         self.facts["apk"] = {"source": str(self.args.apk), "sha256": digest, "bytes": apk.stat().st_size}
         self.log(f"device {self.facts['device']}; HOME {self.facts['homeBefore']}; settings {self.settings_before}")
         self.log(f"APK sha256 {digest}")
-        if self.args.fresh:
-            self.device.adb("uninstall", PACKAGE, check=False)
-        self.device.adb("push", str(apk), "/data/local/tmp/setbeam-receiver.apk", timeout=300)
-        result = self.device.sh("pm install -r -t /data/local/tmp/setbeam-receiver.apk", timeout=300, check=False)
-        self.device.sh("rm -f /data/local/tmp/setbeam-receiver.apk", check=False)
-        if "Success" not in result:
-            raise Failure(f"pm install failed: {result.strip()[-300:]}")
-        if self.args.ui_size:
-            # A 1080-class UI on a 4K panel, like a TV box whose launcher renders at 1920x1080.
-            self.device.sh(f"wm size {self.args.ui_size}")
-            self.device.sh(f"wm density {self.args.ui_density}")
-            time.sleep(3)
-        self.device.sh("logcat -c", check=False)
         if self.args.source != "demo":
             self.fixtures_dir = self.make_pattern("3840x2160" if self.args.source == "4k" else "1280x720")
         self.fixture.start(self.fixtures_dir)
@@ -768,6 +824,26 @@ class Run:
         if not (st["sharing"] and st["listener"] == "active" and st["sample"] and st["audience"] == "live"):
             raise Failure(f"fixture not sharing with an open short address: {st}")
         return {"apkSha256": digest}
+
+    def setup(self):
+        self.device.check_identity()
+        self.setup_started = True
+        self.install_started = True
+        if self.args.fresh and self.facts["receiverInstalledBefore"]:
+            self.device.adb("uninstall", "--user", str(self.device.user), PACKAGE)
+            if self.device.receiver_installed():
+                raise Failure("The previous receiver could not be removed for --fresh")
+        result = self.device.adb("install", "--user", str(self.device.user), "-r", "-t",
+                                 str(self.artifacts / "receiver.apk"), timeout=300)
+        if "Success" not in result.splitlines() or not self.device.receiver_installed():
+            raise Failure(f"adb install did not confirm success: {result.strip()[-300:]}")
+        if self.args.ui_size:
+            self.changed_settings.add("wm/size")
+            self.device.sh(f"wm size {self.args.ui_size}")
+            self.changed_settings.add("wm/density")
+            self.device.sh(f"wm density {self.args.ui_density}")
+            time.sleep(3)
+        self.device.sh("logcat -c")
 
     def make_pattern(self, size):
         target = HERE / ".build" / f"fixtures-{size}-rotating"
@@ -832,13 +908,8 @@ class Run:
 
     def c_configure(self):
         setup = self.check_remote_setup() if self.args.check_remote_setup else {}
-        self.device.configure(f"http://{self.args.viewer_address}/s/abc/", self.name)
-        time.sleep(1.5)
-        log = self.device.sh("logcat -d -s SetbeamProvision:*", check=False)
-        if "Pairing refused" not in log:
-            raise Failure(f"a host with a code path was not refused: {log[-300:]}")
+        self.device.configure(f"http://{self.args.viewer_address}/s/abc/", self.name, refused=True)
         self.device.configure(self.fixture.host, self.name)
-        self.wait("pairing accepted", lambda: "Pairing accepted" in self.device.sh("logcat -d -s SetbeamProvision:*", check=False), 20)
         self.wait("receiver in front", lambda: self.device.front().startswith(PACKAGE + "/"), 20)
         self.device.ensure_diagnostics()
         return setup
@@ -880,7 +951,7 @@ class Run:
             raise Failure("could not read the receiver's memory map to confirm native WebRTC")
         # useLegacyPackaging=false: the APK's only native library (libjingle_peerconnection_so) runs mapped from
         # base.apk. Every app maps the system WebView loader stubs; a WebView would map its implementation.
-        apk_libs = self.device.sh(f"pm path {PACKAGE}", check=False)
+        apk_libs = self.device.sh(f"pm path --user {self.device.user} {PACKAGE}", check=False)
         native = any(" r-xp " in line and "/base.apk" in line for line in maps.splitlines())
         webview = bool(re.search(r"/(libwebviewchromium|libmonochrome[^/ ]*|libchrome[^/ ]*)\.so", maps))
         webview = webview or "sandboxed_process" in self.device.sh("ps -A -o NAME", check=False)
@@ -1090,10 +1161,15 @@ class Run:
                            "decodedPerSecond": live["decodedPerSecond"]}
         self.fixture.command("gateway-outage", seconds=12, timeout=60)
         out["gateway-outage"] = {"decodedPerSecond": self.assert_live("gateway-outage")["decodedPerSecond"]}
-        self.device.sh("cmd connectivity airplane-mode enable", check=False)
-        time.sleep(15)
-        during = self.device.screen(keep="airplane")
-        self.device.sh("cmd connectivity airplane-mode disable", check=False)
+        if self.settings_before["airplane"] != "disabled":
+            raise Failure("Airplane mode must be disabled to test the network outage")
+        self.changed_settings.add("airplane")
+        try:
+            self.device.sh("cmd connectivity airplane-mode enable")
+            time.sleep(15)
+            during = self.device.screen(keep="airplane")
+        finally:
+            self.device.sh("cmd connectivity airplane-mode disable")
         live = self.assert_live("device-network")
         out["device-network"] = {"phaseDuringOutage": during["phase"] or during["card_phase"], "decodedPerSecond": live["decodedPerSecond"]}
         return out
@@ -1151,14 +1227,15 @@ class Run:
 
     def short_sleep_settings(self):
         # Only on the test emulator, restored at the end: a 20 s timeout with the screen saver starting on sleep.
-        self.device.put_setting("system/screen_off_timeout", "20000")
-        self.device.put_setting("secure/screensaver_enabled", "1")
-        self.device.put_setting("secure/screensaver_activate_on_sleep", "1")
+        for key, value in (("system/screen_off_timeout", "20000"), ("secure/screensaver_enabled", "1"),
+                           ("secure/screensaver_activate_on_sleep", "1")):
+            self.changed_settings.add(key)
+            self.device.put_setting(key, value)
 
     def unattended(self, label, idle, resume):
         """Leaves the receiver alone in a non-playing phase, then lets the Mac share again. No remote input."""
-        self.short_sleep_settings()
         try:
+            self.short_sleep_settings()
             keep_on = self.device.keep_screen_on()
             time.sleep(idle)
             power, front = self.device.power(), self.device.front()
@@ -1172,7 +1249,9 @@ class Run:
             observed = {"keepScreenOn": keep_on, "power": power, "front": front, "askedForNewShareWithoutInput": requested}
         finally:
             for key in ("system/screen_off_timeout", "secure/screensaver_enabled", "secure/screensaver_activate_on_sleep"):
-                self.device.put_setting(key, self.settings_before[key])
+                if key in self.changed_settings:
+                    self.device.put_setting(key, self.settings_before[key])
+                    self.changed_settings.remove(key)
         if not requested or power["wakefulness"] != "Awake" or not front.startswith(PACKAGE):
             self.device.key(224)  # KEYCODE_WAKEUP, so the rest of the run can continue; recorded as remote input
             time.sleep(2)
@@ -1246,10 +1325,7 @@ class Run:
         if "302" not in probe:
             raise Failure(f"Mac B's short address is not reachable from the emulator ({probe!r}); not a receiver result")
         pid_before = self.device.pid()
-        out = self.device.configure(self.second.host, self.name)
-        if "Error" in out:
-            raise Failure(f"CONFIGURE to B was not started: {out.strip()[-300:]}")
-        self.wait("pairing B accepted", lambda: self.device.sh("logcat -d -s SetbeamProvision:*", check=False).count("Pairing accepted") >= 2, 20)
+        self.device.configure(self.second.host, self.name)
         try:
             row = self.pending_request(45, self.second)
         except Failure:
@@ -1275,92 +1351,106 @@ class Run:
     def c_startup(self):
         """Measures HOME and the receiver's own boot start on this image with the provisioning tool, optionally
         across an emulator reboot, and restores both. Emulator only; not a cold-power or HDMI-CEC test."""
-        receipts = HERE / ".build" / "receipts"
+        receipts = self.artifacts / "provision-receipts"
         tool = self.artifacts / "setbeam_receiver_provision.py"
         shutil.copyfile(self.args.provision_tool, tool)
         self.facts["provisionTool"] = {"sha256": hashlib.sha256(tool.read_bytes()).hexdigest()}
-        self.log(f"provisioning tool sha256 {self.facts['provisionTool']['sha256']}")
         base = [sys.executable, "-I", str(tool)]
         common = ["--serial", self.args.serial, "--receipt-dir", str(receipts)]
-        env = self.server.env
-        status = subprocess.run(base + ["status", *common, "--json"], capture_output=True, text=True, timeout=120, env=env)
-        (self.artifacts / "provision-status-before.txt").write_text(redact(status.stdout + status.stderr))
-        before = self.device.home_state()
-        appop_before = self.appop()
-        args = ["provision", *common, "--host", self.fixture.host, "--name", self.name, "--allow-non-tv", "--home-key-probe"]
-        prov = subprocess.run(base + args + ["--allow-background-start", "--apply"], capture_output=True, text=True, timeout=300, env=env)
-        (self.artifacts / "provision-apply.txt").write_text(redact(prov.stdout + prov.stderr))
-        self.log(f"provision --allow-background-start exit {prov.returncode}: {redact((prov.stdout + prov.stderr).strip().splitlines()[-1])[:300]}")
-        overlay_refused = None
-        if prov.returncode != 0 and "app-op cannot be read" in prov.stdout + prov.stderr:
-            overlay_refused = (prov.stdout + prov.stderr).strip().splitlines()[-1]
-            if self.device.home_state() != before:
-                raise Failure("the tool refused the overlay step but HOME changed")
-            # Measure HOME alone with the same tool.
-            prov = subprocess.run(base + args + ["--apply"], capture_output=True, text=True, timeout=300, env=env)
-            (self.artifacts / "provision-apply-home-only.txt").write_text(redact(prov.stdout + prov.stderr))
-            self.log(f"provision (HOME only) exit {prov.returncode}: {redact((prov.stdout + prov.stderr).strip().splitlines()[-1])[:300]}")
-        during = self.device.home_state()
-        appop_during = self.appop()
-        (self.artifacts / "appops-after-grant.txt").write_text(self.device.sh(f"dumpsys appops --package {PACKAGE}", check=False))
-        flush = None
-        if self.args.flush_appops:
-            # Writes the current app-op state to disk now; changes no modes (AOSP AppOpsService delays the write).
-            flush = self.device.sh("cmd appops write-settings", check=False).strip()
-            self.log(f"cmd appops write-settings after grant: {flush!r}")
-        boots = []
-        if self.args.reboot:
-            modes = ["graceful", "hard"] if self.args.reboot_mode == "both" else [self.args.reboot_mode]
-            for mode in modes:
-                boots.append(self.boot_check(mode, flush))
-        restore = subprocess.run(base + ["restore", *common, "--apply"], capture_output=True, text=True, timeout=300, env=env)
-        (self.artifacts / "provision-restore.txt").write_text(redact(restore.stdout + restore.stderr))
-        if self.args.flush_appops:
-            self.log(f"cmd appops write-settings after restore: {self.device.sh('cmd appops write-settings', check=False).strip()!r}")
-        after = self.device.home_state()
-        appop_after = self.appop()
-        self.log(f"SYSTEM_ALERT_WINDOW before {appop_before!r} during {appop_during!r} after {appop_after!r}")
-        if appop_after != appop_before:
-            raise Failure(f"app-op not restored: before {appop_before!r}, after {appop_after!r}")
-        self.log(f"provision exit {prov.returncode}; HOME before {before}, during {during}, after {after} (restore exit {restore.returncode})")
-        if after != self.facts["homeBefore"]:
-            raise Failure(f"HOME not restored: before {self.facts['homeBefore']}, after {after}")
-        if prov.returncode not in (0, 3):
-            raise Failure(f"provisioning tool failed with exit {prov.returncode}: {redact(prov.stdout + prov.stderr)[-600:]}")
-        if prov.returncode == 0 and not during["resolves"].startswith(PACKAGE):
-            raise Failure(f"tool reported HOME verified but HOME resolves {during['resolves']}")
-        if prov.returncode == 3 and during["resolves"] != before["resolves"]:
-            raise Failure("tool reported HOME unavailable but left HOME changed")
-        if restore.returncode != 0 and not ("No open receipt" in restore.stdout + restore.stderr and during == before):
-            raise Failure(f"restore exited {restore.returncode}: {redact(restore.stdout + restore.stderr)[-600:]}")
-        result = {"provisionExit": prov.returncode, "overlayStepRefused": overlay_refused, "homeDuring": during,
-                  "homeAfterRestore": after, "restoreExit": restore.returncode, "appopDuring": appop_during, "boots": boots}
+        status = self.run_provision(base, ["status", *common, "--json"], "provision-status-before")
+        if status.returncode:
+            raise Failure(f"Provisioning status exited {status.returncode}")
+        before, appop_before = self.device.home_state(), self.appop()
+        if before != self.facts["homeBefore"] or appop_before != (self.facts["appopBefore"] or "default"):
+            raise Failure("HOME or overlay app-op changed before startup testing")
+        self.startup_restore = (base, ["restore", *common, "--apply"], receipts)
+        self.startup_appop_before = appop_before
+        cmd = ["provision", *common, "--host", self.fixture.host, "--name", self.name, "--allow-non-tv",
+               "--home-key-probe", "--allow-background-start", "--apply"]
+        try:
+            prov = self.run_provision(base, cmd, "provision-apply")
+            if prov.returncode not in (0, 3):
+                raise Failure(f"Provisioning exited {prov.returncode}. See provision-apply.txt.")
+            during, appop_during = self.device.home_state(), self.appop()
+            if appop_during != "allow":
+                raise Failure("Provisioning did not grant SYSTEM_ALERT_WINDOW")
+            if prov.returncode == 0 and not during["resolves"].startswith(PACKAGE + "/"):
+                raise Failure(f"Tool reported HOME verified but HOME resolves to {during['resolves']}")
+            if prov.returncode == 3 and during != before:
+                raise Failure("Tool reported HOME unavailable and left HOME changed")
+            flush = None
+            if self.args.flush_appops:
+                flush = self.device.sh("cmd appops write-settings").strip()
+                if flush != "Current settings written.":
+                    raise Failure("Android did not acknowledge the app-op save")
+            boots = []
+            if self.args.reboot:
+                modes = ["graceful", "hard"] if self.args.reboot_mode == "both" else [self.args.reboot_mode]
+                for mode in modes:
+                    boots.append(self.boot_check(mode, flush))
+        finally:
+            self.restore_startup()
+        result = {"provisionExit": prov.returncode, "homeDuring": during, "homeAfterRestore": self.device.home_state(),
+                  "appopDuring": appop_during, "boots": boots}
         bad = [b for b in boots if not (b["frontAfterBoot"].startswith(PACKAGE) and b.get("liveAfterBoot"))]
         if bad:
             raise Failure(f"receiver did not open and play by itself after reboot: {json.dumps(bad)[:1500]}")
         return result
 
+    def run_provision(self, base, args, log_name):
+        self.device.check_identity()
+        env = {
+            **self.server.env,
+            "SETBEAM_EXPECT_TRANSPORT_ID": self.device.transport,
+            "SETBEAM_EXPECT_ANDROID_USER": str(self.device.user),
+            "SETBEAM_EXPECT_HARDWARE_SERIAL_SHA256": hashlib.sha256(self.device.identity["ro.serialno"].encode()).hexdigest(),
+            "SETBEAM_EXPECT_BUILD_FINGERPRINT": self.device.identity["ro.build.fingerprint"],
+        }
+        result = subprocess.run(base + args, capture_output=True, text=True, timeout=300, env=env)
+        (self.artifacts / f"{log_name}.txt").write_text(redact(result.stdout + result.stderr))
+        return result
+
+    def restore_startup(self):
+        if self.startup_restore is None:
+            return
+        if self.reboot_pending:
+            try:
+                self.device.check_identity()
+            except (Failure, subprocess.SubprocessError):
+                self.device.attach(seconds=30, reboot=True)
+            self.reboot_pending = False
+        base, args, receipts = self.startup_restore
+        if any(path for path in receipts.glob("receiver-*.json") if ".restored-" not in path.name):
+            result = self.run_provision(base, args, "provision-restore")
+            if result.returncode:
+                raise Failure(f"Provisioning restore exited {result.returncode}. See provision-restore.txt.")
+        if self.device.home_state() != self.facts["homeBefore"] or self.appop() != self.startup_appop_before:
+            raise Failure("HOME or overlay app-op differs from the captured state after restore")
+        self.startup_restore = None
+
     def boot_check(self, mode, flush):
         """Reboots the emulator, then observes, without any input first, whether the receiver opens and plays."""
-        identity = {"user": self.device.sh("am get-current-user", check=False).strip(),
-                    "bootIdBefore": self.device.sh("cat /proc/sys/kernel/random/boot_id", check=False).strip(),
-                    "appopBeforeReboot": self.appop()}
-        self.device.sh("logcat -c", check=False)
+        identity = {"user": self.device.user, "bootIdBefore": self.device.boot_id, "appopBeforeReboot": self.appop()}
+        if identity["appopBeforeReboot"] != "allow":
+            raise Failure("Background-start permission is missing before reboot")
+        self.device.sh("logcat -c")
+        self.reboot_pending = True
         if mode == "graceful":
-            self.device.sh("svc power reboot", check=False, timeout=60)  # framework shutdown, as a menu restart
+            self.device.sh("svc power reboot", check=False, timeout=60)
         else:
-            self.device.adb("reboot", check=False, timeout=60)  # init reboot without framework shutdown
-        time.sleep(15)
-        self.wait("emulator reboot", lambda: self.device.attached() and
-                  self.device.sh("getprop sys.boot_completed", check=False).strip() == "1", 400, 5)
+            self.device.adb("reboot", check=False, timeout=60)
+        self.device.attach(seconds=400, reboot=True)
+        self.reboot_pending = False
+        if self.appop() != "allow":
+            raise Failure("Background-start permission did not survive reboot")
         booted = time.time()
         try:
             front = self.wait("receiver in front after boot", lambda: (lambda f: f if f.startswith(PACKAGE) else None)(self.device.front()), 120, 3)
         except Failure:
             front = self.device.front()
         boot = {"rebootMode": mode, "flush": flush, **identity,
-                "bootIdAfter": self.device.sh("cat /proc/sys/kernel/random/boot_id", check=False).strip(),
-                "userAfter": self.device.sh("am get-current-user", check=False).strip(),
+                "bootIdAfter": self.device.boot_id,
+                "userAfter": self.device.user,
                 "uid": (re.search(r"appId=(\d+)", self.device.sh(f"dumpsys package {PACKAGE}", check=False)) or [None, ""])[1],
                 "frontAfterBoot": front, "secondsToFront": round(time.time() - booted, 1), "appopAfterBoot": self.appop(),
                 "homeAfterBoot": self.device.home_state()}
@@ -1390,51 +1480,108 @@ class Run:
         return boot
 
     def appop(self):
-        out = self.device.sh(f"appops get {PACKAGE} SYSTEM_ALERT_WINDOW", check=False)
-        m = re.search(r"SYSTEM_ALERT_WINDOW: (\w+)", out) or re.search(r"Default mode: (\w+)", out)
-        return m.group(1) if m else out.strip()
+        out = self.device.sh(f"appops get --user {self.device.user} {PACKAGE} SYSTEM_ALERT_WINDOW")
+        # The provisioning tool handles both API 36 unused-op forms.
+        mode = parse_overlay_mode(out)
+        if mode is None:
+            raise Failure("Cannot read exact receiver overlay app-op")
+        return mode
 
     # ---- driver
 
     def restore_device(self):
         notes = []
-        if not self.settings_before:
+        if not self.setup_started:
             return notes
-        try:
-            if self.args.ui_size:
-                self.device.sh("wm size reset"); self.device.sh("wm density reset")
-            for key in ("system/screen_off_timeout", "secure/sleep_timeout", "secure/screensaver_enabled",
-                        "secure/screensaver_activate_on_sleep"):
-                self.device.put_setting(key, self.settings_before[key])
-            self.device.sh("cmd connectivity airplane-mode disable", check=False)
+
+        def restore(label, action):
+            try:
+                action()
+            except Exception as error:  # noqa: BLE001
+                notes.append(f"{label}: {error}")
+
+        restore("startup restore", self.restore_startup)
+        for key, value in self.settings_before.items():
+            def restore_setting(key=key, value=value):
+                if key.startswith("wm/"):
+                    mode = key.split("/")[1]
+                    self.device.sh(f"wm {mode} {value or 'reset'}")
+                elif key == "airplane":
+                    self.device.sh(f"cmd connectivity airplane-mode {value.removesuffix('d')}")
+                else:
+                    self.device.put_setting(key, value)
+            if key in self.changed_settings:
+                restore(key, restore_setting)
+
+        def verify():
             after = self.device.settings_snapshot()
+            self.facts["settingsAfter"] = after
             if after != self.settings_before:
                 notes.append(f"settings differ after restore: {after}")
-            self.facts["settingsAfter"] = after
             self.facts["homeAfter"] = self.device.home_state()
             if self.facts["homeAfter"] != self.facts["homeBefore"]:
                 notes.append(f"HOME differs from baseline: {self.facts['homeAfter']}")
-            if self.args.uninstall:
-                self.device.adb("uninstall", PACKAGE, check=False)
-        except Exception as error:  # noqa: BLE001
-            notes.append(f"device restore failed: {error}")
+            if self.device.receiver_installed():
+                mode = self.appop()
+                self.facts["appopAfter"] = mode
+                expected = self.facts.get("appopBefore") or "default"
+                if mode != expected:
+                    notes.append(f"overlay app-op differs from baseline: {mode} (expected {expected})")
+                if self.args.uninstall and self.startup_restore is None:
+                    notes.append("receiver is still installed after requested removal")
+        def uninstall():
+            if self.device.receiver_installed():
+                self.device.adb("uninstall", "--user", str(self.device.user), PACKAGE)
+
+        if self.args.uninstall and self.install_started and self.startup_restore is None:
+            restore("receiver uninstall", uninstall)
+        restore("restore verification", verify)
         return notes
 
     def execute(self):
+        ok = False
+        interrupted = False
+        notes = []
         try:
-            return self.execute_cases()
+            ok = self.execute_cases()
         except KeyboardInterrupt:
-            self.log("INTERRUPTED: cleaning up owned fixtures, device settings and adb server")
-            for fixture in (self.fixture, self.second):
-                self.log(f"fixture {fixture.tag} cleanup: {fixture.stop()}")
-            for note in self.restore_device():
-                self.log(f"RESTORE PROBLEM {note}")
-            self.server.stop()
-            return 130
+            interrupted = True
+            self.log("INTERRUPTED: cleaning up owned fixtures and emulator settings")
+        except Exception as error:  # noqa: BLE001
+            self.log(f"FAIL: {error}")
+        finally:
+            try:
+                for fixture in (self.fixture, self.second):
+                    try:
+                        cleanup = fixture.stop()
+                        self.log(f"fixture {fixture.tag} cleanup: {cleanup}")
+                        self.facts[f"fixture{fixture.tag}Cleanup"] = cleanup
+                        if "NO cleanup confirmation" in cleanup:
+                            notes.append(f"fixture {fixture.tag} did not confirm cleanup")
+                    except Exception as error:  # noqa: BLE001
+                        notes.append(f"fixture {fixture.tag} cleanup failed: {error}")
+                notes.extend(self.restore_device())
+            finally:
+                try:
+                    self.server.stop()
+                except Exception as error:  # noqa: BLE001
+                    notes.append(f"private adb cleanup failed: {error}")
+        for note in notes:
+            self.log(f"RESTORE PROBLEM {note}")
+        passed = {entry["case"] for entry in self.results if entry["result"] == "PASS"}
+        missing = [name for name in self.args.cases if name not in passed]
+        summary = {"ok": ok and not notes and not missing, "results": self.results, "facts": self.facts,
+                   "missingOrFailedCases": missing, "restoreProblems": notes,
+                   "evidence": "Android TV emulator software evidence only."}
+        (self.artifacts / "summary.json").write_text(json.dumps(summary, indent=2))
+        self.log(f"summary: {self.artifacts / 'summary.json'}")
+        return 130 if interrupted else (0 if summary["ok"] else 1)
 
     def execute_cases(self):
         self.server.start()
-        ok = self.case("preflight", self.preflight)
+        if not self.case("preflight", self.preflight) or not self.case("setup", self.setup):
+            return False
+        ok = True
         dependent = True
         table = [("configure", self.c_configure), ("ask-pending", self.c_ask_pending), ("admit-live", self.c_admit),
                  ("remote-controls", self.c_remote_controls), ("chat-pointers", self.c_chat_pointers),
@@ -1454,26 +1601,9 @@ class Run:
                     break
                 if not passed:
                     self.recover_baseline()
-        if dependent and self.selected("startup-home") and not self.args.skip_startup:
-            self.recover_baseline()
+        if dependent and self.selected("startup-home"):
             ok = self.case("startup-home", self.c_startup) and ok
-        for fixture in (self.fixture, self.second):
-            cleanup = fixture.stop()
-            self.log(f"fixture {fixture.tag} cleanup: {cleanup}")
-            self.facts[f"fixture{fixture.tag}Cleanup"] = cleanup
-        notes = self.restore_device()
-        for note in notes:
-            self.log(f"RESTORE PROBLEM {note}")
-        self.server.stop()
-        self.facts["adbServerRestarts"] = self.server.restarts
-        summary = {"ok": ok and not notes and all(r["result"] == "PASS" for r in self.results), "results": self.results,
-                   "facts": self.facts, "restoreProblems": notes,
-                   "evidence": "Android TV emulator software evidence only; not a physical onn device or HDMI output."}
-        (self.artifacts / "summary.json").write_text(json.dumps(summary, indent=2))
-        self.log(f"summary: {self.artifacts / 'summary.json'}")
-        for r in self.results:
-            self.log(f"  {r['result']} {r['case']} ({r['seconds']} s){'  ' + r['error'][:240] if r.get('error') else ''}")
-        return 0 if summary["ok"] else 1
+        return ok
 
     def recover_baseline(self):
         """After a failed case, return to a known state (fixture A sharing, receiver in front) so later cases still run."""
@@ -1496,6 +1626,20 @@ def default_address(interfaces=("en0", "en1")):
         if out:
             return out
     return ""
+
+
+def parse_cases(raw, skip_startup):
+    if raw == "all":
+        return [name for name in CASES if not (skip_startup and name == "startup-home")]
+    cases = raw.split(",")
+    unknown = [name for name in cases if name not in CASES]
+    if unknown:
+        raise ValueError(f"Unrecognized case names {', '.join(map(repr, unknown))}")
+    if len(cases) != len(set(cases)):
+        raise ValueError("Each test case may be requested only once")
+    if skip_startup and "startup-home" in cases:
+        raise ValueError("--skip-startup conflicts with the requested startup-home case")
+    return cases
 
 
 def main():
@@ -1527,15 +1671,34 @@ def main():
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
     if args.check_remote_setup and not args.fresh:
         p.error("--check-remote-setup requires --fresh")
-    if not args.serial.startswith("emulator-"):
-        p.error("only an emulator serial is accepted")
+    match = re.fullmatch(r"emulator-([0-9]{4})", args.serial)
+    if not match or not valid_port(int(match.group(1))):
+        p.error("An explicit emulator console serial is required")
+    if not 1024 <= args.adb_port <= 65535 or args.adb_port in (5037, int(match.group(1)), int(match.group(1)) + 1):
+        p.error("Choose a private adb port outside the emulator console/transport and shared adb ports")
+    try:
+        args.cases = parse_cases(args.cases, args.skip_startup)
+    except ValueError as error:
+        p.error(str(error))
+    if (args.reboot or args.flush_appops) and "startup-home" not in args.cases:
+        p.error("--reboot and --flush-appops require startup-home")
+    if args.check_remote_setup and "configure" not in args.cases:
+        p.error("--check-remote-setup requires configure")
+    if args.ui_size and (not re.fullmatch(r"[1-9][0-9]*x[1-9][0-9]*", args.ui_size)
+                         or not re.fullmatch(r"[1-9][0-9]*", args.ui_density)):
+        p.error("Invalid display size or density override")
     if not args.viewer_address:
         p.error("--viewer-address is required (no en0/en1 IPv4)")
     if not args.second_address:
         other = default_address(("en1", "en0"))
         args.second_address = other if other and other != args.viewer_address else args.viewer_address
-    if args.second_address == args.viewer_address:
+    if "reconfigure-live" in args.cases and args.second_address == args.viewer_address:
         p.error("Mac B needs a second IPv4 address of this Mac (en1); the short address only answers on port 80")
+    try:
+        args.viewer_address = str(ipaddress.IPv4Address(args.viewer_address))
+        args.second_address = str(ipaddress.IPv4Address(args.second_address))
+    except ValueError:
+        p.error("Use IPv4 addresses for both Mac fixtures")
     if not args.skip_build:
         subprocess.run(["swift", "build", "--package-path", str(HERE), "--scratch-path", str(HERE / ".build/swift")], check=True)
     return Run(args).execute()

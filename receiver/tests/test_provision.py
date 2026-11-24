@@ -190,7 +190,7 @@ class ProvisionTestCase(unittest.TestCase):
             self.assertIsNone(entry["android_serial"], "ANDROID_SERIAL must be stripped from the adb environment")
             if argv in (["devices", "-l"], ["version"]):
                 continue
-            self.assertEqual(argv[0], "-s", f"device command without -s: {argv}")
+            self.assertEqual(argv[0], "-t", f"device command without -t: {argv}")
             if argv[2] == "shell":
                 remote = entry["remote"]
                 self.assertTrue(
@@ -345,8 +345,8 @@ class DeviceSelectionTests(ProvisionTestCase):
         result = self.provision("--apply")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         for entry in self.log():
-            if entry["argv"][0] == "-s":
-                self.assertEqual(entry["argv"][1], SERIAL)
+            if entry["argv"][0] == "-t":
+                self.assertEqual(entry["argv"][1], "1")
         self.assertNotIn("configured", self.dev(OTHER))
         self.assertEqual(self.dev(OTHER)["role_holders"], ["com.example.tvlauncher"])
 
@@ -466,8 +466,8 @@ class ProvisionApplyTests(ProvisionTestCase):
         device["config_log"] = "silent"
         self.write_state({SERIAL: device})
         result = self.provision("--apply", "--no-set-home")
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("delivered; the receiver's acceptance was not observed", result.stdout)
+        self.assertEqual(result.returncode, provision.EXIT_DEVICE, result.stdout + result.stderr)
+        self.assertIn("delivered; the receiver's acceptance was not observed", result.stderr)
         self.assertNotIn("accepted by the receiver", result.stdout)
         receipt = json.loads(self.receipt_files()[0].read_text())
         self.assertEqual(receipt["changes"][0]["state"], "delivered")
@@ -566,7 +566,7 @@ class ProvisionApplyTests(ProvisionTestCase):
         self.assertEqual(self.receipt_files(), [])
 
     def test_overlay_app_op_is_recorded_and_restored(self):
-        self.write_state({SERIAL: make_device(installed=True, perms=["android.permission.INTERNET", "android.permission.SYSTEM_ALERT_WINDOW"])})
+        self.write_state({SERIAL: make_device(installed=True, perms=["android.permission.INTERNET", "android.permission.SYSTEM_ALERT_WINDOW", "android.permission.RECEIVE_BOOT_COMPLETED"])})
         result = self.provision("--apply", "--allow-background-start")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.dev()["appops"], {"SYSTEM_ALERT_WINDOW": "allow"})
@@ -797,7 +797,7 @@ class ReviewRegressionTests(ProvisionTestCase):
         self.assertIn("different device", result.stderr)
         self.assertEqual(self.mutating_commands(), [])
         forced = self.run_tool("restore", "--serial", SERIAL, "--apply", "--force")
-        self.assertEqual(forced.returncode, 0, forced.stdout + forced.stderr)
+        self.assertEqual(forced.returncode, provision.EXIT_REFUSED, forced.stdout + forced.stderr)
 
     def test_placeholder_hardware_serials_are_refused(self):
         for serial_no in ("0123456789ABCDEF", "unknown", "", "000000"):
@@ -810,7 +810,7 @@ class ReviewRegressionTests(ProvisionTestCase):
 
     # P2-4
     def test_unknown_overlay_mode_is_refused_before_any_change(self):
-        perms = ["android.permission.SYSTEM_ALERT_WINDOW"]
+        perms = ["android.permission.SYSTEM_ALERT_WINDOW", "android.permission.RECEIVE_BOOT_COMPLETED"]
         for raw in ("garbage output\n", "Uid mode: SYSTEM_ALERT_WINDOW: allow\nSYSTEM_ALERT_WINDOW: default; time=+1h\n"):
             with self.subTest(raw=raw):
                 device = make_device(installed=True, perms=perms)
@@ -829,7 +829,7 @@ class ReviewRegressionTests(ProvisionTestCase):
         self.assertIsNone(provision.parse_overlay_mode("Error: bad\n"))
 
     # P2-6
-    def test_restore_closes_when_android_assigns_a_fallback_holder(self):
+    def test_restore_requires_exact_holders_even_if_resolution_matches(self):
         device = make_device(google_tv=True, installed=True)
         device["role_holders"] = []
         device["fallback_holder"] = "com.google.android.apps.tv.launcherx"
@@ -837,7 +837,9 @@ class ReviewRegressionTests(ProvisionTestCase):
         self.assertEqual(self.provision("--apply", "--keep-unhonored-home").returncode, provision.EXIT_HOME_UNAVAILABLE)
         self.assertEqual(self.dev()["role_holders"], [PKG])
         result = self.run_tool("restore", "--serial", SERIAL, "--apply")
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.returncode, provision.EXIT_RESTORE_MISMATCH, result.stdout + result.stderr)
+        self.assertEqual(len(self.receipt_files()), 1)
+        self.assertEqual(self.run_tool("restore", "--serial", SERIAL, "--apply", "--force").returncode, 0)
         self.assertEqual(self.dev()["role_holders"], ["com.google.android.apps.tv.launcherx"])
         self.assertEqual(self.receipt_files(), [])
 
@@ -1004,7 +1006,7 @@ class ReviewRound2Tests(ProvisionTestCase):
 
     # P2.2: nothing more is changed after a rollback failure.
     def test_no_further_changes_after_a_failed_rollback(self):
-        device = make_device(google_tv=True, installed=True, perms=["android.permission.SYSTEM_ALERT_WINDOW"])
+        device = make_device(google_tv=True, installed=True, perms=["android.permission.SYSTEM_ALERT_WINDOW", "android.permission.RECEIVE_BOOT_COMPLETED"])
         device["fail"] = {"cmd package set-home-activity --user 0 com.google.android.apps.tv.launcherx": {"rc": 1, "stdout": "Error\n"}}
         self.write_state({SERIAL: device})
         result = self.provision("--apply", "--allow-background-start")
@@ -1098,7 +1100,7 @@ class ReviewRound3Tests(ProvisionTestCase):
     """Regressions for the third independent review (P2-1 overlay ownership, P2-2 needs-restore)."""
 
     OTHER_LAUNCHER = "com.other.launcher/com.other.launcher.Home"
-    OVERLAY_PERMS = ["android.permission.INTERNET", "android.permission.SYSTEM_ALERT_WINDOW"]
+    OVERLAY_PERMS = ["android.permission.INTERNET", "android.permission.SYSTEM_ALERT_WINDOW", "android.permission.RECEIVE_BOOT_COMPLETED"]
 
     def receipt(self):
         return json.loads(self.receipt_files()[0].read_text())
@@ -1249,7 +1251,7 @@ class ReviewRound3Tests(ProvisionTestCase):
 class FinalRoundTests(ProvisionTestCase):
     """API 36 unused app-op output (QA) and interrupted rollback/restore (review round 4)."""
 
-    OVERLAY_PERMS = ["android.permission.INTERNET", "android.permission.SYSTEM_ALERT_WINDOW"]
+    OVERLAY_PERMS = ["android.permission.INTERNET", "android.permission.SYSTEM_ALERT_WINDOW", "android.permission.RECEIVE_BOOT_COMPLETED"]
     QA_OUTPUT = "No operations.\nDefault mode: default"
 
     def receipt(self):
@@ -1435,7 +1437,7 @@ class OverlayPersistenceTests(ProvisionTestCase):
     """appops write-settings after overlay changes (AOSP delays package-mode writes;
     a hard reboot can lose an unsaved grant). The fake keeps live and saved modes apart."""
 
-    PERMS = ["android.permission.INTERNET", "android.permission.SYSTEM_ALERT_WINDOW"]
+    PERMS = ["android.permission.INTERNET", "android.permission.SYSTEM_ALERT_WINDOW", "android.permission.RECEIVE_BOOT_COMPLETED"]
     FLUSH_FAILURES = {
         "refused": {"rc": 255, "stdout": "", "stderr": "Security exception: requires MANAGE_APP_OPS_MODES\n"},
         "unsupported": {"rc": 255, "stdout": "", "stderr": "Unknown command: write-settings\n"},
@@ -1608,6 +1610,96 @@ class OverlayPersistenceTests(ProvisionTestCase):
         again = self.run_tool("restore", "--serial", SERIAL, "--apply")
         self.assertEqual(again.returncode, provision.EXIT_REFUSED)
         self.assertEqual(self.mutating_commands(), [])
+
+
+class AuditRegressionTests(ProvisionTestCase):
+    def test_verify_expected_signer_before_any_success_output(self):
+        apk = self.apk()
+        fake_tools = self.tmp / "tools"
+        fake_tools.mkdir()
+        aapt2 = fake_tools / "aapt2"
+        aapt2.symlink_to(FAKE_AAPT2)
+        signer = fake_tools / "apksigner"
+        signer.write_text("#!/bin/sh\nprintf 'Signer #1 certificate SHA-256 digest: %s\\n' " + "a" * 64 + "\n")
+        signer.chmod(0o700)
+        env = {"SETBEAM_AAPT2": str(aapt2), "SETBEAM_SKIP_APKSIGNER": "0"}
+        for output in ((), ("--json",)):
+            wrong = self.run_tool("verify-apk", "--apk", apk, "--expect-signer", "b" * 64, *output, env_extra=env)
+            self.assertEqual(wrong.returncode, provision.EXIT_REFUSED, wrong.stderr)
+            self.assertEqual(wrong.stdout, "")
+            right = self.run_tool("verify-apk", "--apk", apk, "--expect-signer", "A" * 64, *output, env_extra=env)
+            self.assertEqual(right.returncode, 0, right.stderr)
+        self.assertEqual(self.log(), [])
+
+    def test_install_uses_the_inspected_bytes_after_source_replacement(self):
+        apk = Path(self.apk())
+        original = json.dumps({"replace_original": str(apk)})
+        apk.write_text(original)
+        result = self.provision("--apk", str(apk), "--no-set-home", "--apply")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.state()["installed_bytes"], original)
+        self.assertNotEqual(apk.read_text(), original)
+
+    def test_unreadable_package_state_stays_unknown_and_prevents_restore_writes(self):
+        self.assertEqual(self.provision("--apk", self.apk(), "--apply").returncode, 0)
+        original_receipt = self.receipt_files()[0].read_text()
+        device = self.dev()
+        device["fail"] = {"pm path": {"rc": 1, "stderr": "bridge disconnected"},
+                          "dumpsys package": {"rc": 1}}
+        self.write_state({SERIAL: device})
+        self.log_path.unlink()
+        status = self.run_tool("status", "--serial", SERIAL, "--json")
+        self.assertIsNone(json.loads(status.stdout)["package"]["installed"])
+        self.assertEqual(self.run_tool("restore", "--serial", SERIAL, "--apply", "--uninstall-receiver").returncode,
+                         provision.EXIT_REFUSED)
+        self.assertEqual(self.mutating_commands(), [])
+        self.assertEqual(self.receipt_files()[0].read_text(), original_receipt)
+
+    def test_boot_receiver_and_permission_are_required_before_apply(self):
+        for missing in ("boot", "boot_granted"):
+            with self.subTest(missing=missing):
+                device = make_device(installed=True, perms=[provision.OVERLAY_PERMISSION, provision.BOOT_PERMISSION])
+                device["packages"][PKG][missing] = False
+                self.write_state({SERIAL: device})
+                result = self.provision("--apply", "--no-set-home", "--allow-background-start")
+                self.assertEqual(result.returncode, provision.EXIT_REFUSED)
+                self.assertIn("BOOT_COMPLETED", result.stderr)
+                self.assertEqual(self.mutating_commands(), [])
+
+    def test_missing_or_changed_transport_prevents_writes(self):
+        device = make_device(installed=True)
+        device["omit_transport"] = True
+        self.write_state({SERIAL: device})
+        result = self.provision("--apply")
+        self.assertEqual(result.returncode, provision.EXIT_DEVICE)
+        del device["omit_transport"]
+        device["change_after"] = {"command": "logcat -d", "update": {"transport_id": 9}}
+        self.write_state({SERIAL: device})
+        result = self.provision("--apply")
+        self.assertEqual(result.returncode, provision.EXIT_DEVICE)
+        self.assertIn("transport changed", result.stderr)
+        self.assertEqual(self.mutating_commands(), [])
+
+    def test_same_second_stale_ack_cannot_grant_home_or_overlay(self):
+        device = make_device(installed=True)
+        device.update(config_log="silent", clock=40,
+                      logcat=[[41, "I", "Pairing accepted for http://setbeam.local/"]])
+        self.write_state({SERIAL: device})
+        result = self.provision("--apply")
+        self.assertEqual(result.returncode, provision.EXIT_DEVICE)
+        self.assertIn("acceptance was not observed", result.stderr)
+        self.assertEqual([cmd[:2] for cmd in self.mutating_commands()], [["am", "start"]])
+        self.assertEqual(self.dev()["role_holders"], ["com.example.tvlauncher"])
+
+    def test_install_that_succeeds_with_wrong_version_remains_recoverable(self):
+        self.write_state({SERIAL: make_device()}, install_package={"version_code": 6})
+        result = self.provision("--apply", "--apk", self.apk())
+        self.assertEqual(result.returncode, provision.EXIT_DEVICE)
+        self.assertEqual(json.loads(self.receipt_files()[0].read_text())["changes"][0]["state"], "pending")
+        self.assertEqual(self.provision("--apply").returncode, provision.EXIT_REFUSED)
+        restore = self.run_tool("restore", "--serial", SERIAL, "--apply", "--uninstall-receiver")
+        self.assertEqual(restore.returncode, 0, restore.stdout + restore.stderr)
+        self.assertNotIn(PKG, self.dev()["packages"])
 
 
 @unittest.skipUnless(shutil.which("true"), "posix")

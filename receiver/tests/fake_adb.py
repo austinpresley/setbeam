@@ -191,7 +191,9 @@ def device_shell(state, dev, argv):
             f"    versionCode={pkg['version_code']} minSdk=26 targetSdk=35\n"
             f"    versionName={pkg.get('version_name', '1.0')}\n"
             "    requested permissions:\n" + perms +
-            "    install permissions:\n      android.permission.INTERNET: granted=true\n" + user_lines
+            "    install permissions:\n      android.permission.INTERNET: granted=true\n" +
+            ("      android.permission.RECEIVE_BOOT_COMPLETED: granted=true\n"
+             if "android.permission.RECEIVE_BOOT_COMPLETED" in pkg.get("permissions", []) and pkg.get("boot_granted", True) else "") + user_lines
         ), ""
     if argv[:3] == ["cmd", "package", "query-activities"]:
         intent = parse_intent(argv[3:])
@@ -228,6 +230,10 @@ def device_shell(state, dev, argv):
         if intent["action"] == "com.setbeam.receiver.CONFIGURE" and intent["package"] == PKG:
             handlers = [h for h in configure_handlers(pkg_for_user(dev, PKG)) if h[0] == "receiver"]
             return 0, info_dump(handlers, "receivers"), ""
+        if intent["action"] == "android.intent.action.BOOT_COMPLETED" and intent["package"] == PKG:
+            pkg = pkg_for_user(dev, PKG)
+            if pkg and pkg.get("boot", True):
+                return 0, info_dump([("receiver", PKG + ".BootReceiver", True, None)], "receivers"), ""
         return 0, "No receivers found\n", ""
     if argv[:3] == ["cmd", "package", "set-home-activity"]:
         target = argv[-1]
@@ -328,18 +334,20 @@ def main():
     if argv == ["devices", "-l"]:
         log(argv, None)
         print("List of devices attached")
-        for serial, dev in state["devices"].items():
-            print(f"{serial}\t{dev.get('state', 'device')} product:x model:{dev['props'].get('ro.product.model', '?').replace(' ', '_')} device:y transport_id:1")
+        for index, (serial, dev) in enumerate(state["devices"].items(), 1):
+            suffix = f" transport_id:{dev.get('transport_id', index)}" if not dev.get("omit_transport") else ""
+            print(f"{serial}\t{dev.get('state', 'device')} product:x model:{dev['props'].get('ro.product.model', '?').replace(' ', '_')} device:y{suffix}")
         return 0
-    if len(argv) < 3 or argv[0] != "-s":
+    if len(argv) < 3 or argv[0] != "-t":
         log(argv, None)
-        sys.stderr.write("fake adb: device commands must name a device with -s\n")
+        sys.stderr.write("fake adb: device commands must name a device with -t\n")
         return 64
-    serial, rest = argv[1], argv[2:]
-    dev = state["devices"].get(serial)
+    transport, rest = argv[1], argv[2:]
+    candidates = [dev for i, dev in enumerate(state["devices"].values(), 1) if str(dev.get("transport_id", i)) == transport]
+    dev = candidates[0] if len(candidates) == 1 else None
     if dev is None:
         log(argv, None)
-        sys.stderr.write(f"adb: device '{serial}' not found\n")
+        sys.stderr.write(f"adb: transport '{transport}' not found\n")
         return 1
     if dev.get("state", "device") != "device":
         log(argv, None)
@@ -352,6 +360,11 @@ def main():
         rc, out, err = device_shell(state, dev, remote)
         sys.stdout.write(out)
         sys.stderr.write(err)
+        change = dev.get("change_after")
+        if change and " ".join(remote).startswith(change["command"]):
+            dev.update(change["update"])
+            del dev["change_after"]
+            save(state)
         kill_after = dev.get("kill_parent_after")
         if kill_after and " ".join(remote).startswith(kill_after):
             # Simulate the tool being killed after the device acted but before it could check.
@@ -370,6 +383,8 @@ def main():
         template = dict(state["install_package"])
         template["users"] = sorted(set((users_of(existing) if existing else []) + target_users))
         dev["packages"][PKG] = template  # Code is shared: an update changes every profile's version.
+        with open(rest[-1]) as apk:
+            state["installed_bytes"] = apk.read()
         save(state)
         print("Performing Streamed Install\nSuccess")
         return 0

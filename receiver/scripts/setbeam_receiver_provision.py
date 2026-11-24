@@ -27,6 +27,7 @@ Bounds (see receiver/docs/startup.md):
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import contextlib
 import datetime as _dt
 import fcntl
@@ -39,6 +40,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import unicodedata
 from pathlib import Path
@@ -57,6 +59,8 @@ ROLE_HOME = "android.app.role.HOME"
 RESOLVER_PACKAGE = "android"
 OVERLAY_OP = "SYSTEM_ALERT_WINDOW"
 OVERLAY_PERMISSION = "android.permission.SYSTEM_ALERT_WINDOW"
+BOOT_PERMISSION = "android.permission.RECEIVE_BOOT_COMPLETED"
+BOOT_ACTION = "android.intent.action.BOOT_COMPLETED"
 APPOP_MODES = ("allow", "ignore", "deny", "default", "foreground", "errored")
 # `cmd role get-role-holders` exists from Android 14 (packages/modules/Permission,
 # android-14.0.0_r1; absent at android-12.0.0_r1 and -13.0.0_r1). Without it the
@@ -272,7 +276,7 @@ def find_aapt2(explicit: Optional[str]) -> str:
 
 def child_env() -> dict[str, str]:
     env = dict(os.environ)
-    env.pop("ANDROID_SERIAL", None)  # Every device command names the device with -s.
+    env.pop("ANDROID_SERIAL", None)  # Device requests use the pinned transport ID.
     return env
 
 
@@ -337,6 +341,8 @@ def analyze_manifest(tree: dict[str, Any]) -> dict[str, Any]:
         target_sdk = uses_sdk["attrs"].get("targetSdkVersion", target_sdk)
     components: list[dict[str, Any]] = []
     for app in _children(manifest, "application"):
+        if app["attrs"].get("enabled") == "false":
+            continue
         for comp in app["children"]:
             if comp["tag"] not in ("activity", "activity-alias", "receiver"):
                 continue
@@ -394,7 +400,7 @@ def analyze_manifest(tree: dict[str, Any]) -> dict[str, Any]:
         c for c in has("activity", None, ACTION_CONFIGURE)
         if c["exported"] and not c["alias"] and c["permission"] == CONFIGURE_PERMISSION
     ]
-    boot = has("receiver", None, "android.intent.action.BOOT_COMPLETED")
+    boot = has("receiver", None, BOOT_ACTION)
     return {
         "package": package,
         "target_sdk": target_sdk,
@@ -405,6 +411,7 @@ def analyze_manifest(tree: dict[str, Any]) -> dict[str, Any]:
         "configure_declared": bool(configure_any),
         "configure_unprotected": configure_unprotected,
         "boot_receiver": bool(boot),
+        "boot_available": any(c["exported"] and not c["permission"] for c in boot),
     }
 
 
@@ -424,6 +431,8 @@ def verify_apk(apk_path: str, aapt2: str, out: Out) -> dict[str, Any]:
     if not package_match:
         raise ToolError("The APK has no package line.", EXIT_REFUSED)
     package, version_code, version_name = package_match.groups()
+    if not version_code:
+        raise ToolError("The APK version code could not be read.", EXIT_REFUSED)
     if package != PACKAGE:
         raise ToolError(f"The APK package is {package!r}, not {PACKAGE}; refusing to install it.", EXIT_REFUSED)
     leanback = re.findall(r"^leanback-launchable-activity: name='([^']*)'", badging.stdout, re.M)
@@ -462,7 +471,7 @@ def verify_apk(apk_path: str, aapt2: str, out: Out) -> dict[str, Any]:
         "path": str(path.resolve()),
         "sha256": sha256_file(path),
         "package": package,
-        "version_code": int(version_code) if version_code else None,
+        "version_code": int(version_code),
         "version_name": version_name,
         "debuggable": bool(re.search(r"^application-debuggable", badging.stdout, re.M)),
         "launcher": MAIN_ACTIVITY in launchable,
@@ -471,6 +480,8 @@ def verify_apk(apk_path: str, aapt2: str, out: Out) -> dict[str, Any]:
         "configure_handler": manifest["configure"],
         "requests_overlay": OVERLAY_PERMISSION in manifest["permissions"],
         "boot_receiver": manifest["boot_receiver"],
+        "requests_boot": BOOT_PERMISSION in manifest["permissions"],
+        "boot_available": manifest["boot_available"],
         "signer_sha256": apk_signer_digest(path, aapt2),
     }
     return info
@@ -490,8 +501,8 @@ def apk_signer_digest(path: Path, aapt2: str) -> Optional[str]:
         return None
     if result.returncode != 0:
         return None
-    match = re.search(r"certificate SHA-256 digest: ([0-9a-f]{64})", result.stdout)
-    return match.group(1) if match else None
+    digests = re.findall(r"^Signer #\d+ certificate SHA-256 digest: ([0-9a-fA-F]{64})$", result.stdout, re.M)
+    return digests[0].lower() if len(digests) == 1 else None
 
 
 def sha256_file(path: Path) -> str:
@@ -511,6 +522,8 @@ class Adb:
         self.exe = exe
         self.serial = serial
         self.timeout = timeout
+        self.transport = None
+        self.write_guard: Optional[Callable[[], None]] = None
 
     def _run(self, args: list[str], timeout: Optional[float] = None) -> subprocess.CompletedProcess:
         try:
@@ -532,8 +545,11 @@ class Adb:
         result = self._run(["devices", "-l"])
         if result.returncode != 0:
             raise ToolError("`adb devices` failed; is the adb server able to start?", EXIT_DEVICE)
+        lines = result.stdout.splitlines()
+        if not lines or lines[0].strip() != "List of devices attached":
+            raise ToolError("adb did not return a device list.", EXIT_DEVICE)
         rows = []
-        for line in result.stdout.splitlines()[1:]:
+        for line in lines[1:]:
             fields = line.split()
             if len(fields) < 2:
                 continue
@@ -541,20 +557,47 @@ class Adb:
             for extra in fields[2:]:
                 if ":" in extra:
                     key, value = extra.split(":", 1)
+                    if key in row:
+                        raise ToolError("adb reported an ambiguous device list.", EXIT_DEVICE)
                     row[key] = value
             rows.append(row)
         return rows
 
+    def selected_transport(self) -> str:
+        rows = self.devices()
+        matching = [row for row in rows if row["serial"] == self.serial]
+        if len(matching) != 1:
+            raise ToolError(f"Expected one attached adb device with serial {self.serial!r}; this tool never picks a device for you.", EXIT_DEVICE)
+        row = matching[0]
+        if row["state"] == "unauthorized":
+            raise ToolError("The device has not authorized this Mac. Accept the debugging prompt on the TV, then retry.", EXIT_DEVICE)
+        if row["state"] != "device":
+            raise ToolError(f"The device is {row['state']!r}, not ready. Reconnect it, then retry.", EXIT_DEVICE)
+        transport = row.get("transport_id", "")
+        if not re.fullmatch(r"[1-9][0-9]*", transport) or sum(r.get("transport_id") == transport for r in rows) != 1:
+            raise ToolError("adb did not report a unique transport ID for the selected device.", EXIT_DEVICE)
+        return transport
+
     def device_args(self) -> list[str]:
-        if not self.serial:
-            raise ToolError("Internal error: device command without an explicit serial.", EXIT_FAILED)
-        return ["-s", self.serial]
+        if self.transport is None:
+            raise ToolError("Device command without a verified adb transport.", EXIT_DEVICE)
+        return ["-t", self.transport]
+
+    def mutate(self, argv: list[str]) -> tuple[int, str, str]:
+        self.check_write()
+        return self.shell(argv)
+
+    def check_write(self) -> None:
+        if self.write_guard is None:
+            raise ToolError("Device write without a verified identity.", EXIT_DEVICE)
+        self.write_guard()
 
     def shell(self, argv: list[str], timeout: Optional[float] = None) -> tuple[int, str, str]:
         result = self._run([*self.device_args(), "shell", remote_command(argv)], timeout)
         return result.returncode, result.stdout, result.stderr
 
     def install(self, apk: str, user: int) -> tuple[int, str, str]:
+        self.check_write()
         # Scoped to one Android user; without --user, adb installs for every user.
         result = self._run([*self.device_args(), "install", "--user", str(user), "-r", apk], timeout=600)
         return result.returncode, result.stdout, result.stderr
@@ -562,6 +605,7 @@ class Adb:
     def uninstall(self, package: str, user: int) -> tuple[int, str, str]:
         if package != PACKAGE:
             raise ToolError("Refusing to uninstall any package other than the Setbeam Receiver.", EXIT_REFUSED)
+        self.check_write()
         # Scoped to one Android user; without --user, adb removes the app from every profile.
         result = self._run([*self.device_args(), "uninstall", "--user", str(user), package], timeout=120)
         return result.returncode, result.stdout, result.stderr
@@ -583,33 +627,43 @@ class Device:
         self.sdk = 0
 
     def connect(self, out: Out) -> None:
-        rows = self.adb.devices()
-        matching = [row for row in rows if row["serial"] == self.adb.serial]
-        if not matching:
-            others = len(rows)
-            raise ToolError(
-                f"No adb device with serial {self.adb.serial!r} is attached ({others} other device(s) listed). "
-                "Connect it first (see receiver/docs/startup.md); this tool never picks a device for you.",
-                EXIT_DEVICE,
-            )
-        state = matching[0]["state"]
-        if state == "unauthorized":
-            raise ToolError("The device has not authorized this Mac. Accept the debugging prompt on the TV, then retry.", EXIT_DEVICE)
-        if state != "device":
-            raise ToolError(f"The device is {state!r}, not ready. Reconnect it, then retry.", EXIT_DEVICE)
-        rc, stdout, _ = self.adb.shell(["getprop"])
-        if rc != 0:
-            raise ToolError("Could not read device properties.", EXIT_DEVICE)
-        for match in re.finditer(r"^\[([^\]]+)\]: \[(.*)\]$", stdout, re.M):
-            self.props[match.group(1)] = match.group(2)
-        try:
-            self.sdk = int(self.props.get("ro.build.version.sdk", "0"))
-        except ValueError:
-            self.sdk = 0
-        rc, stdout, _ = self.adb.shell(["am", "get-current-user"])
-        if rc != 0 or not stdout.strip().isdigit():
+        self.adb.transport = self.adb.selected_transport()
+        expected = os.environ.get("SETBEAM_EXPECT_TRANSPORT_ID")
+        if expected is not None and expected != self.adb.transport:
+            raise ToolError("The selected adb transport does not match the expected transport.", EXIT_DEVICE)
+        self.props, self.user = self.read_identity()
+        expected_fields = {
+            "SETBEAM_EXPECT_ANDROID_USER": str(self.user),
+            "SETBEAM_EXPECT_HARDWARE_SERIAL_SHA256": hashlib.sha256(self.hardware_serial.encode()).hexdigest(),
+            "SETBEAM_EXPECT_BUILD_FINGERPRINT": self.props["ro.build.fingerprint"],
+        }
+        if any(os.environ.get(key, value) != value for key, value in expected_fields.items()):
+            raise ToolError("The selected Android user or device does not match the expected identity.", EXIT_DEVICE)
+        self.sdk = int(self.props["ro.build.version.sdk"])
+        self.adb.write_guard = self.check_identity
+
+    def read_identity(self) -> tuple[dict[str, str], int]:
+        rc, stdout, stderr = self.adb.shell(["getprop"])
+        pairs = re.findall(r"^\[([^\]]+)\]: \[(.*)\]$", stdout, re.M)
+        props = dict(pairs)
+        required = ("ro.product.manufacturer", "ro.product.model", "ro.product.device", "ro.build.fingerprint")
+        if (rc or stderr.strip() or len(pairs) != len(props)
+                or any(props.get(key, "").strip().lower() in PLACEHOLDER_SERIALS for key in required)
+                or not re.fullmatch(r"[1-9][0-9]*", props.get("ro.build.version.sdk", ""))):
+            raise ToolError("Could not read complete device identity properties.", EXIT_DEVICE)
+        rc, stdout, stderr = self.adb.shell(["am", "get-current-user"])
+        if rc or stderr.strip() or not re.fullmatch(r"[0-9]+", stdout.strip()):
             raise ToolError("Could not read the current Android user (profile) on the device.", EXIT_DEVICE)
-        self.user = int(stdout.strip())
+        return props, int(stdout.strip())
+
+    def check_identity(self) -> None:
+        if self.adb.selected_transport() != self.adb.transport:
+            raise ToolError("The adb transport changed during this run. Reconnect and run status before retrying.", EXIT_DEVICE)
+        props, user = self.read_identity()
+        keys = ("ro.serialno", "ro.boot.serialno", "ro.product.manufacturer", "ro.product.model",
+                "ro.product.device", "ro.build.fingerprint", "ro.build.version.sdk")
+        if user != self.user or any(props.get(key) != self.props.get(key) for key in keys):
+            raise ToolError("The device identity or Android user changed during this run.", EXIT_DEVICE)
 
     @property
     def hardware_serial(self) -> str:
@@ -651,28 +705,52 @@ class Device:
         """The receiver's state for the current Android user, plus which other
         users have it. `pm path` defaults to user 0 (AOSP runPath), so --user
         is always passed; per-user state comes from dumpsys "User N: ... installed=" lines."""
-        rc, stdout, _ = self.adb.shell(["pm", "path", "--user", str(self.user), PACKAGE])
-        installed = rc == 0 and "package:" in stdout
+        rc, stdout, stderr = self.adb.shell(["pm", "path", "--user", str(self.user), PACKAGE])
+        paths = stdout.strip().splitlines()
+        path_present = rc == 0 and not stderr.strip() and bool(paths) and all(
+            re.fullmatch(r"package:/[^\r\n]+\.apk", line) for line in paths
+        )
+        path_absent = rc == 1 and not stdout.strip() and not stderr.strip()
         info: dict[str, Any] = {
-            "installed": installed, "user": self.user, "present_on_device": installed, "users": {},
-            "other_users": [], "version_code": None, "version_name": None, "permissions": [],
+            "installed": None, "user": self.user, "present_on_device": None, "users": None,
+            "other_users": None, "version_code": None, "version_name": None, "permissions": [],
+            "boot_permission_granted": False,
         }
-        rc, stdout, _ = self.adb.shell(["dumpsys", "package", PACKAGE])
-        if rc != 0 or f"Package [{PACKAGE}]" not in stdout:
+        rc, stdout, stderr = self.adb.shell(["dumpsys", "package", PACKAGE])
+        if rc or stderr.strip():
+            return info
+        if stdout.strip() == f"Unable to find package: {PACKAGE}" and path_absent:
+            info.update(installed=False, present_on_device=False, users={}, other_users=[])
+            return info
+        if len(re.findall(rf"^\s*Package \[{re.escape(PACKAGE)}\] \(", stdout, re.M)) != 1:
             return info
         info["present_on_device"] = True
-        users = {int(m.group(1)): m.group(2) == "true" for m in re.finditer(r"^\s*User (\d+):.*?\binstalled=(true|false)\b", stdout, re.M)}
-        if not users or users.get(self.user, False) != installed:
-            info["users"] = None  # Per-profile state is not readable consistently.
-        else:
-            info["users"] = users
-            info["other_users"] = sorted(u for u, present in users.items() if present and u != self.user)
-        version = re.search(r"versionCode=(\d+)", stdout)
-        name = re.search(r"versionName=(\S+)", stdout)
+        lines = re.findall(r"^[ \t]*User [0-9]+:.*$", stdout, re.M)
+        rows = [re.match(r"\s*User (\d+):.*?\binstalled=(true|false)\b", line) for line in lines]
+        users = {int(row[1]): row[2] == "true" for row in rows if row}
+        if (len(lines) == len(users) and self.user in users
+                and (path_present if users[self.user] else path_absent)):
+            info.update(installed=users[self.user], users=users,
+                        other_users=sorted(u for u, present in users.items() if present and u != self.user))
+        version = re.search(r"\bversionCode=(\d+)", stdout)
+        name = re.search(r"\bversionName=(\S+)", stdout)
         info["version_code"] = int(version.group(1)) if version else None
         info["version_name"] = name.group(1) if name else None
         info["permissions"] = parse_requested_permissions(stdout)
+        info["boot_permission_granted"] = bool(re.search(rf"^\s*{re.escape(BOOT_PERMISSION)}: granted=true\s*$", stdout, re.M))
         return info
+
+    def require_boot_receiver(self, package: dict[str, Any]) -> None:
+        rc, stdout, stderr = self.adb.shell(
+            ["cmd", "package", "query-receivers", "--user", str(self.user), "-a", BOOT_ACTION, PACKAGE]
+        )
+        available = not rc and not stderr.strip() and any(
+            info.get("packageName") == PACKAGE and info.get("enabled") == "true"
+            and info.get("exported") == "true" and info.get("permission") in (None, "null")
+            for info in parse_activity_infos(stdout)
+        )
+        if not available or not package["boot_permission_granted"] or BOOT_PERMISSION not in package["permissions"]:
+            raise ToolError("--allow-background-start needs an enabled, exported BOOT_COMPLETED receiver with RECEIVE_BOOT_COMPLETED granted.", EXIT_REFUSED)
 
     def _query(self, verb: str, action: str, categories: tuple[str, ...] = (), package: Optional[str] = None) -> str:
         argv = ["cmd", "package", verb, "--brief", "--user", str(self.user), "-a", action]
@@ -681,7 +759,7 @@ class Device:
         if package:
             argv.append(package)
         rc, stdout, stderr = self.adb.shell(argv)
-        if rc != 0:
+        if rc != 0 or stderr.strip():
             raise ToolError(f"`cmd package {verb}` failed on the device.", EXIT_DEVICE)
         return stdout
 
@@ -689,8 +767,13 @@ class Device:
         return parse_brief_list(self._query("query-activities", "android.intent.action.MAIN", ("android.intent.category.HOME",)))
 
     def home_resolved(self) -> Optional[str]:
-        listed = parse_brief_list(self._query("resolve-activity", "android.intent.action.MAIN", ("android.intent.category.HOME",)))
-        return listed[0]["component"] if listed else None
+        raw = self._query("resolve-activity", "android.intent.action.MAIN", ("android.intent.category.HOME",))
+        listed = parse_brief_list(raw)
+        if raw.strip() == "No activity found":
+            return None
+        if len(listed) != 1:
+            raise ToolError("Could not read the resolved HOME activity.", EXIT_DEVICE)
+        return listed[0]["component"]
 
     def home_holders(self) -> tuple[Optional[list[str]], Optional[str]]:
         """Exact HOME role holders ("role", Android 14+), or the shortcut
@@ -699,9 +782,9 @@ class Device:
         if self.sdk >= MIN_HOME_SDK:
             rc, stdout, stderr = self.adb.shell(["cmd", "role", "get-role-holders", "--user", str(self.user), ROLE_HOME])
             text = stdout + stderr
-            if rc == 0 and "Unknown command" not in text and "Error" not in text and "Exception" not in text:
+            if rc == 0 and not stderr.strip() and "Unknown command" not in text and "Error" not in text and "Exception" not in text:
                 holders = [p for p in stdout.strip().split(";") if p]
-                if all(re.match(r"^[A-Za-z][\w]*(\.[\w]+)+$", h) for h in holders):
+                if len(holders) <= 1 and stdout.strip() == ";".join(holders) and all(re.fullmatch(r"[A-Za-z][\w]*(\.[\w]+)+", h) for h in holders):
                     return holders, "role"
         rc, stdout, _ = self.adb.shell(["cmd", "shortcut", "get-default-launcher", "--user", str(self.user)])
         match = re.search(r"ComponentInfo\{([^/}]+)/", stdout)
@@ -716,10 +799,18 @@ class Device:
         guarded exported activity and no exported handler without the guard."""
         infos: list[tuple[str, dict[str, str]]] = []
         for verb, kind in (("query-activities", "activity"), ("query-receivers", "receiver")):
-            rc, stdout, _ = self.adb.shell(["cmd", "package", verb, "--user", str(self.user), "-a", ACTION_CONFIGURE, PACKAGE])
-            if rc != 0:
+            rc, stdout, stderr = self.adb.shell(["cmd", "package", verb, "--user", str(self.user), "-a", ACTION_CONFIGURE, PACKAGE])
+            noun = "activities" if kind == "activity" else "receivers"
+            if rc or stderr.strip():
                 return None
-            infos += [(kind, info) for info in parse_activity_infos(stdout) if info.get("packageName") == PACKAGE and info.get("name")]
+            if stdout.strip() == f"No {noun} found":
+                continue
+            header = re.match(rf"^([0-9]+) {noun} found:", stdout.strip())
+            parsed = parse_activity_infos(stdout)
+            if (not header or int(header[1]) != len(parsed) or not parsed
+                    or any(i.get("packageName") != PACKAGE or not i.get("name") or "exported" not in i for i in parsed)):
+                return None
+            infos.extend((kind, info) for info in parsed)
         exported = [(kind, info) for kind, info in infos if info.get("exported") == "true"]
         unprotected = [info["name"] for kind, info in exported if info.get("permission") != CONFIGURE_PERMISSION]
         guarded = [info for kind, info in exported if kind == "activity" and info.get("permission") == CONFIGURE_PERMISSION]
@@ -752,7 +843,7 @@ class Device:
         be lost. write-settings saves all current app-op state to disk and changes no
         mode; it needs MANAGE_APP_OPS_MODES like `appops set`. Returns None on success,
         otherwise the reason. Only a real reboot proves persistence."""
-        rc, stdout, stderr = self.adb.shell(["appops", "write-settings"])
+        rc, stdout, stderr = self.adb.mutate(["appops", "write-settings"])
         if rc != 0 or stdout.strip() != "Current settings written." or stderr.strip():
             first = (stderr.strip() or stdout.strip() or "no output").splitlines()[0][:120]
             return f"`appops write-settings` did not confirm the save (exit {rc}: {first})"
@@ -769,16 +860,14 @@ class Device:
         rc, stdout, _ = self.adb.shell(["date", "+%s"])
         return int(stdout.strip()) if rc == 0 and stdout.strip().isdigit() else None
 
-    def provision_log(self, since: int) -> Optional[str]:
-        """Latest ProvisionActivity log message at or after `since` (device epoch seconds)."""
+    def provision_log(self, since: int) -> Optional[list[tuple[str, str]]]:
+        """Read recent acknowledgements without clearing the device log."""
         rc, stdout, _ = self.adb.shell(["logcat", "-d", "-v", "epoch", "-s", PROVISION_LOG_TAG])
         if rc != 0:
             return None
-        latest = None
-        for match in re.finditer(rf"^\s*(\d+)\.\d+\s+\d+\s+\d+\s+[VDIWEF]\s+{PROVISION_LOG_TAG}\s*:\s*(.*)$", stdout, re.M):
-            if int(match.group(1)) >= since:
-                latest = match.group(2).strip()
-        return latest
+        return [(match.group(0), match.group(2).strip()) for match in re.finditer(
+            rf"^[ \t]*(\d+)\.\d+\s+\d+\s+\d+\s+[VDIWEF]\s+{PROVISION_LOG_TAG}\s*:[ \t]*(.*)$", stdout, re.M
+        ) if int(match.group(1)) >= since]
 
     def top_activity(self) -> Optional[str]:
         rc, stdout, _ = self.adb.shell(["dumpsys", "activity", "activities"])
@@ -847,9 +936,10 @@ def parse_activity_infos(text: str) -> list[dict[str, str]]:
         for key in ("name", "packageName", "permission"):
             if line.startswith(key + "=") and key not in current:
                 current[key] = line[len(key) + 1 :].strip()
-        exported = re.search(r"(?:^|\s)exported=(true|false)\b", line)
-        if exported and "exported" not in current:
-            current["exported"] = exported.group(1)
+        for key in ("exported", "enabled"):
+            match = re.search(rf"(?:^|\s){key}=(true|false)\b", line)
+            if match and key not in current:
+                current[key] = match.group(1)
     return infos
 
 
@@ -1003,10 +1093,10 @@ class ReceiptStore:
 
 
 def set_home(device: Device) -> None:
-    rc, stdout, stderr = device.adb.shell(
+    rc, stdout, stderr = device.adb.mutate(
         ["cmd", "package", "set-home-activity", "--user", str(device.user), f"{PACKAGE}/.MainActivity"]
     )
-    if rc != 0 or "Success" not in stdout:
+    if rc != 0 or "Success" not in stdout.splitlines():
         raise ToolError("The device refused to set Setbeam Receiver as HOME (set-home-activity did not report Success).", EXIT_DEVICE)
 
 
@@ -1016,31 +1106,22 @@ def restore_home(device: Device, before: dict[str, Any]) -> None:
         raise ToolError("The original HOME role holder was not recorded exactly; refusing to guess.", EXIT_REFUSED)
     holders = [h for h in before["holders"] if h != PACKAGE]
     if holders:
-        rc, stdout, _ = device.adb.shell(["cmd", "package", "set-home-activity", "--user", str(device.user), holders[0]])
-        if rc != 0 or "Success" not in stdout:
+        rc, stdout, _ = device.adb.mutate(["cmd", "package", "set-home-activity", "--user", str(device.user), holders[0]])
+        if rc != 0 or "Success" not in stdout.splitlines():
             raise ToolError(f"The device refused to give HOME back to {holders[0]}.", EXIT_DEVICE)
     else:
-        rc, stdout, stderr = device.adb.shell(["cmd", "role", "remove-role-holder", "--user", str(device.user), ROLE_HOME, PACKAGE])
+        rc, stdout, stderr = device.adb.mutate(["cmd", "role", "remove-role-holder", "--user", str(device.user), ROLE_HOME, PACKAGE])
         if rc != 0:
             raise ToolError("The device refused to remove Setbeam Receiver from the HOME role.", EXIT_DEVICE)
 
 
 def home_restored(before: dict[str, Any], current: dict[str, Any]) -> bool:
-    """True when HOME is back to the recorded state.
-
-    Both states must come from exact role holders. With recorded holders, the
-    holders and resolution must match exactly. With no recorded holder, Android
-    may assign its own default holder after Setbeam is removed, so success is
-    "Setbeam holds nothing and HOME resolves as before".
-    """
-    if before.get("holders_source") != "role" or current.get("holders_source") != "role":
-        return False
-    if before.get("resolved") != current.get("resolved"):
-        return False
-    before_holders = sorted(before.get("holders") or [])
-    if before_holders:
-        return sorted(current.get("holders") or []) == before_holders
-    return PACKAGE not in (current.get("holders") or [])
+    """Require the same role holders and resolved component."""
+    return (
+        before.get("holders_source") == current.get("holders_source") == "role"
+        and before.get("holders") == current.get("holders")
+        and before.get("resolved") == current.get("resolved")
+    )
 
 
 HOLDER_SOURCES = {"role": "exact", "shortcut": "approximate: shortcut service"}
@@ -1061,7 +1142,7 @@ def describe_home(state: dict[str, Any]) -> list[str]:
 IDENTITY_FIELDS = ("manufacturer", "model", "device")
 
 
-def check_receipt_matches(receipt: dict[str, Any], device: Device, force: bool, out: Out) -> None:
+def check_receipt_matches(receipt: dict[str, Any], device: Device, out: Out) -> None:
     """Refuse a receipt recorded for another Android user, or (unless forced) another device."""
     recorded = receipt["device"]
     if recorded.get("user") != device.user:
@@ -1071,15 +1152,10 @@ def check_receipt_matches(receipt: dict[str, Any], device: Device, force: bool, 
             EXIT_REFUSED,
         )
     current = device.identity()
-    differing = [f for f in IDENTITY_FIELDS if recorded.get(f) != current.get(f)]
+    differing = [f for f in (*IDENTITY_FIELDS, "hardware_serial_sha256")
+                 if not recorded.get(f) or recorded.get(f) != current.get(f)]
     if differing:
-        detail = ", ".join(f"{f} {recorded.get(f)!r} now {current.get(f)!r}" for f in differing)
-        if not force:
-            raise ToolError(
-                f"The receipt appears to belong to a different device with the same serial ({detail}); refusing without --force.",
-                EXIT_REFUSED,
-            )
-        out.warn(f"continuing with --force although the device identity differs ({detail}).")
+        raise ToolError(f"The receipt appears to belong to a different device (identity differs in {', '.join(differing)}).", EXIT_REFUSED)
     if recorded.get("build_fingerprint") != current.get("build_fingerprint"):
         out.warn("the OS build changed since provisioning (fingerprint differs); results are verified, but re-qualify startup.")
 
@@ -1115,8 +1191,37 @@ def cmd_devices(args: argparse.Namespace, out: Out) -> int:
     return EXIT_OK
 
 
+def check_expected_signer(expected: Optional[str], info: Optional[dict[str, Any]]) -> None:
+    if expected is None:
+        return
+    if not re.fullmatch(r"[0-9a-fA-F]{64}", expected):
+        raise ToolError("--expect-signer requires one 64-digit SHA-256 certificate digest.", EXIT_REFUSED)
+    if info is None or info["signer_sha256"] != expected.lower():
+        raise ToolError("The APK signer does not match --expect-signer (or could not be checked).", EXIT_REFUSED)
+
+
+@contextlib.contextmanager
+def staged_apk(apk: str):
+    source = Path(apk).expanduser().resolve()
+    if not source.is_file() or source.suffix.lower() != ".apk":
+        raise ToolError("--apk must name an existing .apk file.", EXIT_REFUSED)
+    with tempfile.TemporaryDirectory(prefix="setbeam-receiver-apk-") as directory:
+        staged = Path(directory) / source.name
+        # Copy once into a private directory before invoking the inspection tools.
+        with source.open("rb") as original, staged.open("wb") as copy:
+            for chunk in iter(lambda: original.read(1 << 20), b""):
+                if copy.tell() + len(chunk) > 512 * 1024 * 1024:
+                    raise ToolError("--apk is larger than 512 MB; refusing.", EXIT_REFUSED)
+                copy.write(chunk)
+        staged.chmod(0o400)
+        yield source, staged
+
+
 def cmd_verify_apk(args: argparse.Namespace, out: Out) -> int:
-    info = verify_apk(args.apk, find_aapt2(args.aapt2), out)
+    with staged_apk(args.apk) as (source, staged):
+        info = verify_apk(str(staged), find_aapt2(args.aapt2), out)
+        check_expected_signer(args.expect_signer, info)
+    info["path"] = str(source)
     if args.json:
         print(json.dumps(info, indent=2, sort_keys=True))
         return EXIT_OK
@@ -1125,8 +1230,6 @@ def cmd_verify_apk(args: argparse.Namespace, out: Out) -> int:
         out.item(key, info[key])
     out.item("configure_handler", f"{info['configure_handler']['name']} (requires {info['configure_handler']['permission']})")
     out.item("signer_sha256", info["signer_sha256"] or "not checked (apksigner needs a Java runtime)")
-    if args.expect_signer and info["signer_sha256"] != args.expect_signer.lower():
-        raise ToolError("The APK signer does not match --expect-signer (or could not be checked).", EXIT_REFUSED)
     return EXIT_OK
 
 
@@ -1163,6 +1266,8 @@ def collect_status(device: Device, store: Optional[ReceiptStore]) -> dict[str, A
 
 def startup_assessment(status: dict[str, Any]) -> str:
     home = status["home"]
+    if status["package"]["installed"] is None:
+        return "Setbeam Receiver install state is unknown."
     if not status["package"]["installed"]:
         return "Setbeam Receiver is not installed."
     if home["resolves_to_setbeam"]:
@@ -1190,7 +1295,7 @@ def cmd_status(args: argparse.Namespace, out: Out) -> int:
     out.item("television", "yes" if status["is_tv"] else "no (leanback feature missing)")
     pkg = status["package"]
     out.line("Setbeam Receiver")
-    out.item(f"installed for Android user {pkg['user']}", "yes" if pkg["installed"] else "no")
+    out.item(f"installed for Android user {pkg['user']}", {True: "yes", False: "no", None: "unknown"}[pkg["installed"]])
     if pkg["other_users"]:
         out.item("also installed for Android user(s)", ", ".join(str(u) for u in pkg["other_users"]))
     if pkg["installed"]:
@@ -1271,14 +1376,17 @@ def new_receipt(device: Device, before_home: dict[str, Any], package: dict[str, 
 # could not be verified; only restore resolves it, and provisioning is blocked meanwhile.
 # "rolling-back" and "restoring" are in-flight markers saved before a rollback or restore
 # command is sent and cleared only after verified success; a killed run leaves them behind.
-UNRESOLVED_STATES = ("rollback-failed", "rolling-back", "restoring", "flush-pending")
-RESTORE_OPEN_STATES = ("pending", "done") + UNRESOLVED_STATES
+UNRESOLVED_STATES = ("pending", "rollback-failed", "rolling-back", "restoring", "flush-pending")
+RESTORE_OPEN_STATES = ("done",) + UNRESOLVED_STATES
 
 
 def needs_restore(receipt: Optional[dict[str, Any]]) -> bool:
     if not receipt or receipt.get("status") == "restored":
         return False
-    return receipt.get("status") == "needs-restore" or any(c["state"] in UNRESOLVED_STATES for c in receipt["changes"])
+    return receipt.get("status") == "needs-restore" or any(
+        c["state"] in UNRESOLVED_STATES or any(u.get("result") == "pending" for u in c.get("updates", []))
+        for c in receipt["changes"]
+    )
 
 
 def find_change(receipt: dict[str, Any], kind: str) -> Optional[dict[str, Any]]:
@@ -1311,35 +1419,43 @@ def restore_command(serial: str) -> str:
 def cmd_provision(args: argparse.Namespace, out: Out) -> int:
     host = validate_host(args.host)
     name = validate_name(args.name)
-    apk_info = None
-    if args.apk:
-        apk_info = verify_apk(args.apk, find_aapt2(args.aapt2), out)
-        if args.expect_signer and apk_info["signer_sha256"] != args.expect_signer.lower():
-            raise ToolError("The APK signer does not match --expect-signer (or could not be checked).", EXIT_REFUSED)
+    if not args.apk:
+        check_expected_signer(args.expect_signer, None)
+        return provision_device(args, out, host, name, None, None)
+    with staged_apk(args.apk) as (source, staged):
+        apk_info = verify_apk(str(staged), find_aapt2(args.aapt2), out)
+        check_expected_signer(args.expect_signer, apk_info)
+        apk_info["path"] = str(source)
+        return provision_device(args, out, host, name, apk_info, staged)
+
+
+def provision_device(
+    args: argparse.Namespace, out: Out, host: str, name: str,
+    apk_info: Optional[dict[str, Any]], staged: Optional[Path],
+) -> int:
     device = open_device(args, out)
     store = ReceiptStore(check_receipt_dir(Path(args.receipt_dir) if args.receipt_dir else default_receipt_dir()))
     print_identity(out, device.identity())
     out.item("receiver host", host)
     out.item("receiver label (unverified on the Mac)", name)
-    if not device.is_tv() and not args.allow_non_tv:
+    is_emulator = (device.props.get("ro.kernel.qemu") or device.props.get("ro.boot.qemu")) == "1"
+    if not device.is_tv() and not (args.allow_non_tv and is_emulator):
         raise ToolError("This device does not report the Android TV leanback feature; refusing (use --allow-non-tv for an emulator).", EXIT_REFUSED)
     receipt_path = store.path(device)  # Refuses missing or placeholder hardware serials before any change.
 
     # ---- Preflight: everything below is read-only.
     package = device.package_info()
+    if package["installed"] is None:
+        raise ToolError("The receiver's per-profile install state cannot be read; refusing to change the device.", EXIT_REFUSED)
     if apk_info is None and not package["installed"]:
         raise ToolError(
             f"Setbeam Receiver is not installed for Android user {device.user} on this device; pass --apk with a verified build.",
             EXIT_REFUSED,
         )
     if apk_info and package["present_on_device"]:
-        if package["users"] is None:
-            raise ToolError(
-                "The receiver is on this device but its per-profile install state cannot be read; refusing to install, "
-                "because restore could not tell which profiles this tool changed.",
-                EXIT_REFUSED,
-            )
-        if package["version_code"] and apk_info["version_code"] is not None and apk_info["version_code"] < package["version_code"]:
+        if package["version_code"] is None:
+            raise ToolError("Cannot compare receiver version codes; refusing to install.", EXIT_REFUSED)
+        if apk_info["version_code"] < package["version_code"]:
             raise ToolError("The supplied APK is older than the installed receiver; downgrades are refused.", EXIT_REFUSED)
         if package["other_users"]:
             out.warn(
@@ -1362,6 +1478,11 @@ def cmd_provision(args: argparse.Namespace, out: Out) -> int:
         requested = ([OVERLAY_PERMISSION] if apk_info["requests_overlay"] else []) if apk_info else package["permissions"]
         if OVERLAY_PERMISSION not in requested:
             raise ToolError("--allow-background-start needs a receiver build that requests SYSTEM_ALERT_WINDOW.", EXIT_REFUSED)
+        if apk_info:
+            if not apk_info["boot_available"] or not apk_info["requests_boot"]:
+                raise ToolError("--allow-background-start needs an enabled, exported BOOT_COMPLETED receiver and RECEIVE_BOOT_COMPLETED in the APK.", EXIT_REFUSED)
+        else:
+            device.require_boot_receiver(package)
         readable = overlay_before is not None if package["installed"] else device.appops_readable()
         if not readable:
             raise ToolError(
@@ -1377,7 +1498,7 @@ def cmd_provision(args: argparse.Namespace, out: Out) -> int:
         if receipt and receipt.get("status") == "restored":
             receipt = None
         if needs_restore(receipt):
-            check_receipt_matches(receipt, device, force=False, out=out)
+            check_receipt_matches(receipt, device, out)
             effect = "Nothing was changed" if args.apply else "--apply would be refused"
             raise ToolError(
                 "This device's receipt needs restore: an earlier rollback or restore could not be verified. "
@@ -1388,7 +1509,7 @@ def cmd_provision(args: argparse.Namespace, out: Out) -> int:
         if receipt is None:
             receipt = new_receipt(device, before_home, package, overlay_before)
         else:
-            check_receipt_matches(receipt, device, force=False, out=out)
+            check_receipt_matches(receipt, device, out)
             out.line(f"  existing receipt reused (created {receipt['created_at']}; its first snapshot is kept as history)")
             open_home = find_change(receipt, "home_role")
             if open_home is None and home_summary(before_home) != home_summary(receipt["before"]["home"]):
@@ -1418,6 +1539,10 @@ def cmd_provision(args: argparse.Namespace, out: Out) -> int:
             install_change = find_change(receipt, "install")
 
             def do_install() -> None:
+                if device.package_info() != package:
+                    raise ToolError("Receiver package state changed since preflight; retry.", EXIT_REFUSED)
+                if sha256_file(staged) != apk_info["sha256"]:
+                    raise ToolError("The inspected APK bytes changed before install.", EXIT_REFUSED)
                 update = {"at": now_iso(), "apk_sha256": apk_info["sha256"], "version_code": apk_info["version_code"], "previous_version_code": package["version_code"]}
                 if install_change is None:
                     # Ownership is per Android user: "fresh" means this tool installed it for `user`.
@@ -1427,21 +1552,22 @@ def cmd_provision(args: argparse.Namespace, out: Out) -> int:
                     })
                 else:
                     change = install_change
+                    update["result"] = "pending"
                     change["updates"].append(update)
                     store.save(device, receipt)
-                rc, stdout, stderr = device.adb.install(apk_info["path"], device.user)
-                installed = device.package_info() if rc == 0 and "Success" in stdout else None
-                lost = [u for u in package["other_users"] if installed and u not in installed["other_users"]]
-                if lost:
-                    raise ToolError(f"After the install the receiver is missing for Android user(s) {lost}; stopping.", EXIT_DEVICE)
-                if installed is None or not installed["installed"] or (apk_info["version_code"] is not None and installed["version_code"] != apk_info["version_code"]):
-                    if install_change is None:
-                        change["state"] = "failed"  # Nothing was installed by this tool.
-                    else:
-                        update["result"] = "failed"  # The earlier install is still present.
-                    store.save(device, receipt)
+                rc, stdout, stderr = device.adb.install(str(staged), device.user)
+                installed = device.package_info()
+                lost = [u for u in package["other_users"] if u not in (installed["other_users"] or [])]
+                if (rc or "Success" not in stdout.splitlines() or installed["installed"] is not True or lost
+                        or installed["version_code"] != apk_info["version_code"]):
+                    if installed == package and installed["installed"] is False:
+                        if install_change is None:
+                            change["state"] = "failed"
+                        else:
+                            update["result"] = "failed"
+                        store.save(device, receipt)
                     reason = re.search(r"(INSTALL_[A-Z_]+)", stdout + stderr)
-                    raise ToolError(f"Install failed{': ' + reason.group(1) if reason else ' (expected version not present)'}.", EXIT_DEVICE)
+                    raise ToolError(f"Install could not be verified{': ' + reason.group(1) if reason else ''}. Check the receipt before retrying.", EXIT_DEVICE)
                 change["state"] = "done"
                 update["result"] = "done"
                 store.save(device, receipt)
@@ -1459,6 +1585,11 @@ def cmd_provision(args: argparse.Namespace, out: Out) -> int:
             if not home_now["setbeam_declares_home"]:
                 raise ToolError(f"The installed receiver does not offer {MAIN_ACTIVITY} for HOME; refusing to continue.", EXIT_REFUSED)
             handler = require_protected_handler(device.configure_handler())
+            if args.overlay and apk_info:
+                current_package = device.package_info()
+                if current_package["installed"] is not True or OVERLAY_PERMISSION not in current_package["permissions"]:
+                    raise ToolError("The installed receiver did not confirm the requested overlay permission.", EXIT_REFUSED)
+                device.require_boot_receiver(current_package)
         elif package["installed"] and apk_info is None:
             handler = require_protected_handler(device.configure_handler())
         else:
@@ -1472,24 +1603,39 @@ def cmd_provision(args: argparse.Namespace, out: Out) -> int:
 
         def do_configure() -> None:
             since = device.device_time()
-            rc, stdout, stderr = device.adb.shell(configure_argv)
-            text = stdout + stderr
-            if rc != 0 or "Error" in text or "Exception" in text:
-                raise ToolError("The configuration intent could not be delivered to the receiver.", EXIT_DEVICE)
-            message = device.provision_log(since) if since is not None else None
-            change = {"kind": "configure", "at": now_iso(), "host": host, "name": name, "reversible": False}
-            if message and message.startswith("Pairing refused"):
-                change["state"] = "refused"
-                record(change)
-                raise ToolError("The receiver refused the configuration; check the TV screen.", EXIT_DEVICE)
-            if message and message.startswith("Pairing accepted for ") and message[len("Pairing accepted for "):].strip() == host:
+            prior = device.provision_log(since) if since is not None else None
+            if prior is None:
+                raise ToolError("Cannot read the acknowledgement log before configuration.", EXIT_DEVICE)
+            change = record({"kind": "configure", "state": "pending", "at": now_iso(),
+                             "host": host, "name": name, "reversible": False})
+            rc, stdout, stderr = device.adb.mutate(configure_argv)
+            if rc or stderr.strip() or "Status: ok" not in stdout.splitlines() or re.search(r"Error|Exception", stdout):
+                raise ToolError("The configuration intent could not be verified as delivered.", EXIT_DEVICE)
+            deadline = time.monotonic() + min(args.settle_seconds, 5)
+            while True:
+                messages = device.provision_log(since)
+                old = Counter(line for line, _ in prior)
+                fresh = []
+                for line, message in messages or []:
+                    if old[line]:
+                        old[line] -= 1
+                    elif message.startswith(("Pairing accepted for ", "Pairing refused")):
+                        fresh.append(message)
+                if fresh or messages is None or time.monotonic() >= deadline:
+                    break
+                time.sleep(0.25)
+            if fresh == [f"Pairing accepted for {host}"]:
                 change["state"] = "accepted"
-                record(change)
+                store.save(device, receipt)
                 out.line("    configuration accepted by the receiver (its log names the same host)")
-            else:
-                change["state"] = "delivered"
-                record(change)
-                out.line("    configuration delivered; the receiver's acceptance was not observed. Check the host and label on the TV.")
+                return
+            if len(fresh) == 1 and fresh[0].startswith("Pairing refused"):
+                change["state"] = "refused"
+                store.save(device, receipt)
+                raise ToolError("The receiver refused the configuration; check the TV screen.", EXIT_DEVICE)
+            change["state"] = "delivered"
+            store.save(device, receipt)
+            raise ToolError("Configuration delivered; the receiver's acceptance was not observed. Check the host and label on the TV.", EXIT_DEVICE)
         plan.step("send the configuration intent (host and label) to the receiver's provisioning activity", [adb_display(device.adb.serial, configure_argv)], do_configure)
 
         # 4. HOME
@@ -1588,7 +1734,7 @@ def cmd_provision(args: argparse.Namespace, out: Out) -> int:
                     recorded["state"] = "superseded"
                     recorded["superseded_at"] = now_iso()
                 change = record({"kind": "overlay_appop", "state": "pending", "at": now_iso(), "previous_mode": live})
-                rc, _, _ = device.adb.shell(overlay_argv)
+                rc, _, _ = device.adb.mutate(overlay_argv)
                 if rc != 0 or device.overlay_mode() != "allow":
                     raise ToolError("The device did not apply the overlay app-op.", EXIT_DEVICE)
                 return flush_owned(change)
@@ -1616,14 +1762,14 @@ def home_key_probe(device: Device, out: Out, args: argparse.Namespace) -> str:
     Returns "passed", "failed" or "inconclusive". Settings is opened first so a
     HOME key that does nothing cannot be mistaken for success.
     """
-    device.adb.shell(["am", "start", "-W", "--user", str(device.user), "-a", SETTINGS_ACTION])
+    device.adb.mutate(["am", "start", "-W", "--user", str(device.user), "-a", SETTINGS_ACTION])
     if args.settle_seconds:
         time.sleep(args.settle_seconds)
     start = device.top_activity()
     if start is None or component_package(start) == PACKAGE:
         out.line("  HOME key probe: inconclusive (no other screen could be brought to the front first, so no transition was observable).")
         return "inconclusive"
-    device.adb.shell(["input", "keyevent", "KEYCODE_HOME"])
+    device.adb.mutate(["input", "keyevent", "KEYCODE_HOME"])
     if args.settle_seconds:
         time.sleep(args.settle_seconds)
     top = device.top_activity()
@@ -1705,12 +1851,17 @@ def cmd_restore(args: argparse.Namespace, out: Out) -> int:
         receipt = store.load(device)
         if receipt is None:
             raise ToolError("No open receipt exists for this device (matched by hardware serial); nothing to restore.", EXIT_REFUSED)
-        check_receipt_matches(receipt, device, args.force, out)
+        check_receipt_matches(receipt, device, out)
         plan = Plan(args.apply, out, device.adb.serial)
         out.line("Restore plan" if not args.apply else "Restoring")
         failures: list[str] = []
         package = device.package_info()
+        if package["installed"] is None:
+            raise ToolError("The receiver's per-profile install state cannot be read; restore left the receipt open.", EXIT_REFUSED)
         open_changes = [c for c in receipt["changes"] if c["state"] in RESTORE_OPEN_STATES]
+        for change in open_changes:
+            if change["kind"] == "install" and "user" in change and change["user"] != device.user:
+                raise ToolError("The recorded install belongs to a different Android user.", EXIT_REFUSED)
 
         def save() -> None:
             if args.apply:
@@ -1771,7 +1922,7 @@ def cmd_restore(args: argparse.Namespace, out: Out) -> int:
 
             def do_overlay(change=change, argv=argv, previous=previous) -> None:
                 in_flight(change)
-                device.adb.shell(argv)
+                device.adb.mutate(argv)
                 if device.overlay_mode() != previous:
                     failures.append(f"overlay app-op is not back to {previous}")
                     return
@@ -1823,7 +1974,8 @@ def cmd_restore(args: argparse.Namespace, out: Out) -> int:
                 after = device.home_state()
                 if home_restored(before, after):
                     mark(change)
-                elif args.force and not [h for h in before.get("holders") or [] if h != PACKAGE] and PACKAGE not in (after["holders"] or []):
+                elif (args.force and after["holders_source"] == "role"
+                      and not before["holders"] and PACKAGE not in after["holders"]):
                     # No explicit holder existed before; Android assigned its own default after removal.
                     out.warn(
                         f"Android assigned {', '.join(after['holders'] or []) or 'no holder'} after Setbeam was removed; "
@@ -1834,6 +1986,10 @@ def cmd_restore(args: argparse.Namespace, out: Out) -> int:
                     failures.append(f"HOME resolves to {after['resolved']} with holders {after['holders']}, expected {before.get('resolved')}")
             plan.step(f"give HOME back to {', '.join(holders) or 'no explicit holder'} (original resolution {before.get('resolved')})", commands, do_home)
 
+        for change in open_changes:
+            if change["kind"] == "configure":
+                change["state"] = "unverified"
+                save()
         if any(c["kind"] == "configure" for c in receipt["changes"]):
             out.line("  configuration: kept in the receiver's app data (removed only by uninstalling the receiver).")
 
@@ -1842,17 +1998,12 @@ def cmd_restore(args: argparse.Namespace, out: Out) -> int:
             owner = installs[0]
             fresh = bool(owner.get("fresh"))
             resuming = any(c["state"] == "restoring" for c in installs)
-            if resuming and not package["installed"]:
-                # An interrupted uninstall that had already taken effect.
-                out.line(f"  receiver app: the interrupted uninstall completed; absent for Android user {owner.get('user')}.")
-                for change in installs:
-                    mark(change)
-            elif not args.uninstall_receiver:
+            keep = owner.get("other_users_before") or []
+            lost = [u for u in keep if u not in package["other_users"]]
+            if lost:
+                failures.append(f"the receiver app is missing for Android user(s) {lost}, which this tool did not install")
+            elif not args.uninstall_receiver and not resuming:
                 out.line("  receiver app: left installed (pass --uninstall-receiver to remove it if this tool installed it).")
-                if resuming and args.apply:
-                    for change in installs:
-                        change["state"] = "done"  # The interrupted uninstall never took effect.
-                    store.save(device, receipt)
             elif "user" not in owner:
                 out.line("  receiver app: left installed; the receipt does not record which profile it was installed for.")
             elif not fresh:
@@ -1865,14 +2016,13 @@ def cmd_restore(args: argparse.Namespace, out: Out) -> int:
                     mark(change)
             else:
                 user = owner["user"]  # Equal to the current user; check_receipt_matches refused otherwise.
-                keep = owner.get("other_users_before") or []
 
                 def do_uninstall() -> None:
                     in_flight(*installs)
                     device.adb.uninstall(PACKAGE, user)
                     after = device.package_info()
-                    lost = [u for u in keep if u not in after["other_users"]]
-                    if after["installed"]:
+                    lost = [u for u in keep if u not in (after["other_users"] or [])]
+                    if after["installed"] is not False:
                         failures.append(f"the receiver app could not be uninstalled for Android user {user}")
                     elif lost:
                         failures.append(f"the receiver app is now missing for Android user(s) {lost}, which this tool did not install")
@@ -1971,6 +2121,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     except ToolError as error:
         print(f"error: {error}", file=sys.stderr)
         return error.code
+    except (OSError, subprocess.TimeoutExpired) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_FAILED
     except KeyboardInterrupt:
         print("error: interrupted; run `status` to see the device state and receipt.", file=sys.stderr)
         return EXIT_FAILED

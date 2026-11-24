@@ -653,6 +653,27 @@ power restoration, CEC/standby, Wi-Fi/mDNS, sustained decode, graphics memory,
 energy saver and actual HDMI mode remain open in the
 [physical checklist](../receiver/docs/hardware-qualification.md).
 
+## Receiver provisioning audit, 2026-11-24
+
+The provisioning tool pins the adb transport and checks device and profile
+identity again before each write. It installs the inspected APK copy,
+requires a fresh configuration acknowledgement, and leaves interrupted
+changes open for restore. The TV integration driver completes read-only
+device preflight before setup. It requires every selected case to pass and
+checks the captured HOME, overlay, display, airplane and screen settings
+during cleanup. The emulator supervisor and private adb server have separate
+ownership checks.
+
+The local receiver suite passed 118 tests. The new device and process
+regressions used fake ADB and in-memory fixtures. The nine driver and
+lifecycle tests also passed on Python 3.9. The first `scripts/check.sh` run
+stopped at FFmpeg's missing `ffbuild/config.mak` in the fresh worktree.
+The full rerun passed using the existing local pinned FFmpeg build.
+
+Live emulator startup and reboot persistence, Platform-Tools compatibility,
+and physical onn qualification remain open for this change.
+[Receiver startup and restore](../receiver/docs/startup.md)
+
 ## Feature showcase assets, 2026-11-14
 
 Created ten PNGs showing additions since 0.2.0 build 20: a 2400×1350 hero,
