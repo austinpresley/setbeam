@@ -35,6 +35,9 @@ public struct ViewerActivity: Sendable, Identifiable {
     /// Shares a named pointer with other participants.
     public var pointing = false
     public var mobile = false
+    public var admittedAt: Date? = nil
+    public var playbackUpdatedAt: Date? = nil
+    public var measurements: ViewerMeasurements? = nil
 
     public var displayName: String { name ?? "\(label) \(number)" }
 }
@@ -42,9 +45,15 @@ public struct ViewerActivity: Sendable, Identifiable {
 public enum ViewerHealth: String, Sendable {
     case good, struggling, checking, playing, connecting, reconnecting, paused, background, ready, holding
 
+    static let freshFor: TimeInterval = 8
+
+    var canShowMeasurements: Bool {
+        [.good, .struggling, .checking, .playing].contains(self)
+    }
+
     static func observed(_ reported: ViewerHealth, playing: Bool, revision: Int, session: ViewerSession?, age: TimeInterval) -> ViewerHealth {
         if session?.state == .holding { return .holding }
-        if age >= 8 { return .reconnecting }
+        if age >= freshFor { return .reconnecting }
         if revision != session?.revision { return .connecting }
         if [.background, .paused, .ready].contains(reported) { return reported }
         guard playing, session?.state == .live else { return reported == .connecting ? .connecting : .reconnecting }
@@ -137,7 +146,10 @@ public final class ViewerGateway: @unchecked Sendable {
                 return (closed, false)
             }
             // Positions belong to one live picture. Hold, Stop, and every publisher revision clear them.
-            if previous?.revision != session.revision || previous?.state != session.state { presence.reset(revision: session.revision) }
+            if previous?.revision != session.revision || previous?.state != session.state {
+                presence.reset(revision: session.revision)
+                ledger.clearMeasurements()
+            }
             if previous?.revision != session.revision || session.state != .live { chatFramesAllowed = false }
             if session.state == .stopped { chat.reset() }
             return ([], previous.map { stateLocked($0) as NSDictionary != stateLocked(session) as NSDictionary } ?? true)
@@ -429,12 +441,16 @@ public final class ViewerGateway: @unchecked Sendable {
             // Only a gateway-issued pass identifies a session. Unknown passes must join again.
             guard let pass = ViewerAccessLedger.validPass(data["pass"]) else { sendJSON(connection, ["ok": false, "admission": "unknown"]); return }
             let name: String?? = data.keys.contains("name") ? .some(ViewerHealth.viewerName(data["name"] as? String)) : .none
+            let health = (data["health"] as? String).flatMap(ViewerHealth.init(rawValue:)) ?? .playing
+            let revision = data["revision"] as? Int ?? -1
+            let playing = data["playing"] as? Bool ?? false
             let record = lock.withLock { () -> ViewerAccessLedger.Record? in
-                guard session?.token == current.token else { return nil }
-                return ledger.heartbeat(pass, playing: data["playing"] as? Bool ?? false,
-                    health: (data["health"] as? String).flatMap(ViewerHealth.init(rawValue:)) ?? .playing,
-                    revision: data["revision"] as? Int ?? -1, name: name, color: PointerColor.validated(data["color"]),
-                    mobile: mobile, local: local, now: Date())
+                guard let session, session.token == current.token else { return nil }
+                let now = Date()
+                let measurements = playing && health.canShowMeasurements && revision == session.revision && session.state == .live
+                    ? ViewerMeasurements(json: data["measurements"], receivedAt: now) : nil
+                return ledger.heartbeat(pass, playing: playing, health: health, revision: revision, name: name,
+                    color: PointerColor.validated(data["color"]), mobile: mobile, local: local, now: now, measurements: measurements)
             }
             var response: [String: Any] = ["ok": record != nil, "admission": record?.admission.rawValue ?? "unknown"]
             response["chatLastID"] = lock.withLock {

@@ -475,10 +475,37 @@ test('late statistics from a replaced peer cannot change the new viewer health',
   const b = browser({eventSource: true, stats: true, deferStats: true}); await b.settle(); await b.push(); await b.track();
   await b.tick(3000);
   await b.push({...b.state, state: 'holding'});
-  await b.releaseStats(reception(500, 200));
+  const old = reception(500, 200);
+  Object.assign(old.get('video'), {frameWidth: 1920, frameHeight: 1080, framesPerSecond: 30});
+  await b.releaseStats(old);
   await b.push({...b.state, revision: 2}); await b.track();
   await b.tick(3000);
   assert.equal(b.heartbeats.at(-1).health, 'checking');
+  assert.equal(b.heartbeats.at(-1).measurements, undefined);
+});
+
+test('heartbeats report sparse current inbound video measurements and clear them on pause', async () => {
+  const b = browser({eventSource: true, stats: true}); await b.settle(); await b.push(); await b.track();
+  const full = reception(100);
+  Object.assign(full.get('video'), {frameWidth: 1920, frameHeight: 1080, framesPerSecond: 29.97});
+  await sample(b, full);
+  const partial = new Map([['video', {type: 'inbound-rtp', kind: 'video', frameWidth: 0, frameHeight: 1080,
+    framesPerSecond: 1, framesDropped: '0'}]]);
+  await sample(b, partial);
+  assert.deepEqual(b.heartbeats.at(-1).measurements, {width: 1920, height: 1080, fps: 29.97, droppedFrames: 0, ageMs: 3000});
+  await sample(b, partial);
+  assert.deepEqual(b.heartbeats.at(-1).measurements, {fps: 1, ageMs: 3000});
+  b.elements.get('video').paused = true; b.listeners['video:pause'](); await b.settle();
+  assert.equal(b.heartbeats.at(-1).measurements, undefined);
+});
+
+test('slow statistics cannot refresh an expired measurement', async () => {
+  const b = browser({eventSource: true, stats: true, deferStats: true}); await b.settle(); await b.push(); await b.track();
+  await b.tick(3000);
+  for (let i = 0; i < 3; i++) { b.frame(); await b.tick(3000); }
+  await b.releaseStats(reception(100));
+  b.frame(); await b.tick(3000);
+  assert.equal(b.heartbeats.at(-1).measurements, undefined);
 });
 
 const pass = 'b'.repeat(48);

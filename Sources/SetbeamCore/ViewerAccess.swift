@@ -41,7 +41,10 @@ struct ViewerAccessLedger {
         var local: Bool
         var admission: ViewerAdmission
         let joinedAt: Date
+        var admittedAt: Date?
         var lastSeen: Date
+        var playbackUpdatedAt: Date?
+        var measurements: ViewerMeasurements?
         var reader: ViewerReader?
         /// True once this session's media credential is accepted by the media server.
         var mediaReady: Bool
@@ -87,6 +90,8 @@ struct ViewerAccessLedger {
         prune(now: now)
         if let pass, var record = records[pass] {
             record.lastSeen = now; record.mobile = mobile; record.local = local
+            // Resuming a pass starts a fresh media connection.
+            record.measurements = nil
             if !approvalRequired, let name { record.name = name }
             if let color { record.color = color }
             records[pass] = record
@@ -108,7 +113,8 @@ struct ViewerAccessLedger {
         }
         let number = nextNumber; nextNumber += 1
         let record = Record(pass: secret(), number: number, name: name, color: color ?? .fallback(for: number), mobile: mobile, local: local,
-                            admission: approvalRequired ? .pending : .admitted, joinedAt: now, lastSeen: now,
+                            admission: approvalRequired ? .pending : .admitted, joinedAt: now,
+                            admittedAt: approvalRequired ? nil : now, lastSeen: now,
                             reader: nil, mediaReady: !approvalRequired, shortAddress: shortAddress)
         records[record.pass] = record
         return .joined(record)
@@ -119,12 +125,14 @@ struct ViewerAccessLedger {
     /// a session admitted unnamed before approval may set its first label, as with `setName`.
     /// A color is a label too, so a session may change it at any time, including under approval.
     mutating func heartbeat(_ pass: String, playing: Bool, health: ViewerHealth, revision: Int, name: String??, color: PointerColor? = nil,
-                            mobile: Bool, local: Bool, now: Date) -> Record? {
+                            mobile: Bool, local: Bool, now: Date, measurements: ViewerMeasurements? = nil) -> Record? {
         guard var record = records[pass] else { return nil }
         record.lastSeen = now; record.mobile = mobile; record.local = local
         if let color { record.color = color }
         if record.admission == .admitted {
             record.playing = playing; record.health = health; record.revision = revision
+            record.playbackUpdatedAt = now
+            record.measurements = record.mediaReady ? measurements : nil
         }
         if let name, !approvalRequired || (record.name == nil && name != nil) { record.name = name }
         records[pass] = record
@@ -136,9 +144,10 @@ struct ViewerAccessLedger {
         if !approvalRequired || records[pass]?.name == nil { records[pass]?.name = name }
     }
 
-    @discardableResult mutating func approve(number: Int) -> Bool {
+    @discardableResult mutating func approve(number: Int, now: Date = Date()) -> Bool {
         guard let pass = record(number: number)?.pass, records[pass]?.admission == .pending else { return false }
         records[pass]?.admission = .admitted
+        records[pass]?.admittedAt = now
         assignReader(pass)
         return true
     }
@@ -158,14 +167,18 @@ struct ViewerAccessLedger {
     /// Turning approval on moves already-admitted sessions to their own readers; turning it off
     /// admits waiting requests with the link's shared credential. Refusals stay refused. Requests
     /// from the short address never had the link, so turning approval off declines them instead.
-    mutating func setApproval(_ required: Bool) {
+    mutating func setApproval(_ required: Bool, now: Date = Date()) {
         guard required != approvalRequired else { return }
         if !required { setShortAddress(open: false) }
         approvalRequired = required
         for pass in Array(records.keys) {
             guard let record = records[pass] else { continue }
             if required, record.admission == .admitted, record.reader == nil { assignReader(pass) }
-            if !required, record.admission == .pending { records[pass]?.admission = .admitted; records[pass]?.mediaReady = true }
+            if !required, record.admission == .pending {
+                records[pass]?.admission = .admitted
+                records[pass]?.admittedAt = now
+                records[pass]?.mediaReady = true
+            }
         }
     }
     /// Opens or closes the short address for new requests. Closing declines its waiting requests.
@@ -178,6 +191,7 @@ struct ViewerAccessLedger {
         guard approvalRequired, let number = records[pass]?.number else { records[pass]?.mediaReady = true; return }
         records[pass]?.reader = ViewerReader(user: "viewer\(number)x\(secret().prefix(8))", password: secret())
         records[pass]?.mediaReady = false
+        records[pass]?.measurements = nil
     }
 
     /// Readers the media server must accept now.
@@ -193,6 +207,10 @@ struct ViewerAccessLedger {
         return changed
     }
 
+    mutating func clearMeasurements() {
+        for pass in records.keys { records[pass]?.measurements = nil }
+    }
+
     func activity(session: ViewerSession?, now: Date) -> [ViewerActivity] {
         records.values.filter { record in
             let age = now.timeIntervalSince(record.lastSeen)
@@ -205,12 +223,25 @@ struct ViewerAccessLedger {
             .map { record in
                 let age = now.timeIntervalSince(record.lastSeen)
                 let admitted = record.admission == .admitted
+                let playbackAge = record.playbackUpdatedAt.map { now.timeIntervalSince($0) }
+                let currentRevision = record.revision == session?.revision
+                let playing = admitted && record.playing && currentRevision && session?.state == .live
+                    && (playbackAge ?? .infinity) < ViewerHealth.freshFor
+                let health = admitted ? ViewerHealth.observed(record.health, playing: record.playing, revision: record.revision,
+                    session: session, age: playbackAge ?? age) : .connecting
+                let measurements = record.measurements.flatMap { sample in
+                    let sampleAge = now.timeIntervalSince(sample.sampledAt)
+                    return playing && record.mediaReady && health.canShowMeasurements
+                        && (0..<ViewerMeasurements.freshFor).contains(sampleAge) ? sample : nil
+                }
                 return ViewerActivity(id: "viewer-\(record.number)", label: record.mobile ? "Phone / tablet browser" : "Desktop browser",
-                    playing: admitted && record.playing && record.revision == session?.revision && session?.state == .live && age < 8,
+                    playing: playing,
                     onThisMac: record.local, revision: record.revision, lastSeen: record.lastSeen, number: record.number, name: record.name,
-                    health: admitted ? ViewerHealth.observed(record.health, playing: record.playing, revision: record.revision, session: session, age: age) : .connecting,
+                    health: health,
                     admission: record.admission, color: record.color, joinedAt: record.joinedAt, shortAddress: record.shortAddress,
-                    updatesMissing: admitted && age >= Self.visibleFor, mobile: record.mobile)
+                    updatesMissing: admitted && age >= Self.visibleFor, mobile: record.mobile,
+                    admittedAt: record.admittedAt, playbackUpdatedAt: currentRevision ? record.playbackUpdatedAt : nil,
+                    measurements: measurements)
             }.sorted { $0.number < $1.number }
     }
 

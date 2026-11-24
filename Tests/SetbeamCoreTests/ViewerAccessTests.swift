@@ -183,6 +183,82 @@ final class ViewerAccessLedgerTests: XCTestCase {
         XCTAssertTrue(ledger.activity(session: session, now: now).isEmpty)
     }
 
+    func testAdmissionContactAndPlaybackHaveSeparateTimes() throws {
+        var ledger = ViewerAccessLedger()
+        ledger.setApproval(true)
+        let request = try XCTUnwrap(joined(ledger.join(pass: nil, name: "Sam", asking: true,
+            color: nil, mobile: false, local: false, now: now)))
+        let admitted = now.addingTimeInterval(2)
+        let played = now.addingTimeInterval(3)
+        let rejoined = now.addingTimeInterval(12)
+        XCTAssertTrue(ledger.approve(number: request.number, now: admitted))
+        _ = ledger.confirm(readers: ledger.readers)
+        let session = ViewerSession(token: "test", title: "Studio", sample: true, state: .live,
+            playback: PlaybackDescriptor(origin: "http://127.0.0.1:8889", path: "live", user: "guest", password: "test"))
+        // An older client describes its playback without sending any measurements.
+        _ = ledger.heartbeat(request.pass, playing: true, health: .good, revision: session.revision,
+            name: .none, mobile: false, local: false, now: played)
+        let fresh = try XCTUnwrap(ledger.activity(session: session, now: played).first)
+        XCTAssertTrue(fresh.playing)
+        XCTAssertNil(fresh.measurements)
+        _ = ledger.join(pass: request.pass, name: nil, color: nil, mobile: false, local: false, now: rejoined)
+        let row = try XCTUnwrap(ledger.activity(session: session, now: rejoined).first)
+        XCTAssertEqual(row.joinedAt, now)
+        XCTAssertEqual(row.admittedAt, admitted)
+        XCTAssertEqual(row.lastSeen, rejoined)
+        XCTAssertEqual(row.playbackUpdatedAt, played)
+        XCTAssertFalse(row.playing)
+        XCTAssertEqual(row.health, .reconnecting)
+    }
+
+    func testMeasurementsRequireReadyCurrentFreshPlayback() throws {
+        var ledger = ViewerAccessLedger()
+        ledger.setApproval(true)
+        let request = try XCTUnwrap(joined(ledger.join(pass: nil, name: "Sam", asking: true,
+            color: nil, mobile: false, local: false, now: now)))
+        var session = ViewerSession(token: "test", title: "Studio", sample: true, state: .live,
+            playback: PlaybackDescriptor(origin: "http://127.0.0.1:8889", path: "live", user: "guest", password: "test"))
+        let sample = try XCTUnwrap(ViewerMeasurements(json: ["ageMs": 3_000, "width": 1920, "height": 1080,
+            "fps": 29.97, "droppedFrames": 0], receivedAt: now))
+        _ = ledger.heartbeat(request.pass, playing: true, health: .good, revision: 0,
+            name: .none, mobile: false, local: false, now: now, measurements: sample)
+        XCTAssertNil(ledger.activity(session: session, now: now).first?.measurements, "Pending reports are ignored")
+        XCTAssertTrue(ledger.approve(number: request.number, now: now))
+        _ = ledger.heartbeat(request.pass, playing: true, health: .good, revision: 0,
+            name: .none, mobile: false, local: false, now: now, measurements: sample)
+        XCTAssertNil(ledger.activity(session: session, now: now).first?.measurements)
+        _ = ledger.confirm(readers: ledger.readers)
+        XCTAssertNil(ledger.activity(session: session, now: now).first?.measurements)
+        _ = ledger.heartbeat(request.pass, playing: true, health: .good, revision: 0,
+            name: .none, mobile: false, local: false, now: now, measurements: sample)
+        XCTAssertEqual(ledger.activity(session: session, now: now).first?.measurements?.framesPerSecond, 29.97)
+        XCTAssertNil(ledger.activity(session: session, now: now.addingTimeInterval(4)).first?.measurements)
+        session.state = .holding
+        XCTAssertNil(ledger.activity(session: session, now: now).first?.measurements)
+        session.state = .live
+        session.revision = 1
+        XCTAssertNil(ledger.activity(session: session, now: now).first?.measurements)
+        for health in [ViewerHealth.background, .paused, .ready] {
+            _ = ledger.heartbeat(request.pass, playing: true, health: health, revision: 1,
+                name: .none, mobile: false, local: false, now: now, measurements: sample)
+            let row = ledger.activity(session: session, now: now).first
+            XCTAssertEqual(row?.health, health)
+            XCTAssertNil(row?.measurements)
+        }
+    }
+
+    func testMeasurementValidationKeepsOnlyReportedNumbers() throws {
+        let data = Data(#"{"ageMs":0,"width":1920.5,"height":1080,"fps":true,"droppedFrames":0}"#.utf8)
+        let sample = try XCTUnwrap(ViewerMeasurements(json: JSONSerialization.jsonObject(with: data), receivedAt: now))
+        XCTAssertNil(sample.width)
+        XCTAssertNil(sample.height)
+        XCTAssertNil(sample.framesPerSecond)
+        XCTAssertEqual(sample.droppedFrames, 0)
+        XCTAssertNil(ViewerMeasurements(json: ["width": 1920, "height": 1080], receivedAt: now))
+        XCTAssertNil(ViewerMeasurements(json: ["ageMs": 7_000, "fps": 30], receivedAt: now))
+        XCTAssertNil(ViewerMeasurements(json: ["ageMs": 0, "fps": "30", "droppedFrames": -1], receivedAt: now))
+    }
+
     func testNewRequestsCannotEvictApprovedSessionsWithStaleHeartbeats() throws {
         var ledger = ViewerAccessLedger(); ledger.setApproval(true)
         for index in 0..<ViewerAccessLedger.maxRecords {

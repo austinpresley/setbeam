@@ -26,7 +26,8 @@ final class ViewerHealthTests: XCTestCase {
         defer { host.stop() }
         let root = URL(string: "http://127.0.0.1:\(port)/s/viewer-health-test/")!
         var passes: [String: String] = [:]
-        func beat(_ id: String, name: String? = nil, mobile: Bool = true, health: String = "good") async throws {
+        func beat(_ id: String, name: String? = nil, mobile: Bool = true, health: String = "good",
+                  measurements: [String: Any]? = nil) async throws {
             if passes[id] == nil {
                 var join = URLRequest(url: root.appendingPathComponent("join"))
                 join.httpMethod = "POST"; join.httpBody = Data(#"{"mobile":true}"#.utf8)
@@ -35,29 +36,37 @@ final class ViewerHealthTests: XCTestCase {
             }
             var value: [String: Any] = ["pass": passes[id]!, "mobile": mobile, "playing": true, "revision": 1, "health": health]
             value["name"] = name
+            value["measurements"] = measurements
             var request = URLRequest(url: root.appendingPathComponent("heartbeat"))
             request.httpMethod = "POST"; request.httpBody = try JSONSerialization.data(withJSONObject: value)
-            let (_, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await URLSession.shared.data(for: request)
             XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+            XCTAssertNil((try JSONSerialization.jsonObject(with: data) as? [String: Any])?["measurements"])
         }
         try await beat("viewer-zzz")
         try await beat("viewer-aaa")
         XCTAssertEqual(host.viewers.map(\.number), [1, 2])
         XCTAssertEqual(Set(host.viewers.map(\.displayName)).count, 2)
-        try await beat("viewer-zzz", name: "  Sam\n\u{202e} iPad  ")
+        try await beat("viewer-zzz", name: "  Sam\n\u{202e} iPad  ",
+            measurements: ["ageMs": 0, "width": 1920, "height": 1080, "fps": 24, "droppedFrames": 2])
         XCTAssertEqual(host.viewers.first?.number, 1)
         XCTAssertEqual(host.viewers.first?.displayName, "Sam iPad")
         XCTAssertEqual(host.viewers.first?.health, .good)
+        XCTAssertEqual(host.viewers.first?.measurements?.width, 1920)
+        XCTAssertNil(host.viewers.last?.measurements)
         try await beat("viewer-aaa", name: String(repeating: "x", count: 90), health: "invented")
         XCTAssertEqual(host.viewers.last?.name?.count, 40)
         XCTAssertEqual(host.viewers.last?.health, .playing)
         for path in ["state.json", "config.json", "viewers"] {
             let (data, response) = try await URLSession.shared.data(from: root.appendingPathComponent(path))
             XCTAssertFalse(String(decoding: data, as: UTF8.self).contains("Sam iPad"))
+            XCTAssertFalse(String(decoding: data, as: UTF8.self).contains("droppedFrames"))
             if path == "viewers" { XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 404) }
         }
         host.update(session(state: .holding))
         XCTAssertEqual(host.viewers.map(\.health), [.holding, .holding])
+        host.update(session())
+        XCTAssertNil(host.viewers.first?.measurements, "A previous live sample must not reappear after Hold")
         host.stop()
         XCTAssertTrue(host.viewers.isEmpty)
     }

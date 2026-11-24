@@ -61,6 +61,7 @@ struct ViewerActivityRow: View {
     @ObservedObject var model: SessionModel
     let viewer: ViewerActivity
     @State private var hover = false
+    @State private var showingDetails = false
     @FocusState private var removeFocused: Bool
 
     var body: some View {
@@ -76,6 +77,13 @@ struct ViewerActivityRow: View {
                     .help("Pointing").accessibilityLabel("Pointing")
             }
             ViewerDeviceIcon(viewer: viewer)
+            ChromeIconButton("Details for \(viewer.displayName), session \(viewer.number)", symbol: "info.circle", size: 28,
+                             hint: "Viewer details") { showingDetails.toggle() }
+                .foregroundStyle(.secondary)
+                .popover(isPresented: $showingDetails) {
+                    ViewerDetails(viewer: viewer, status: status.title,
+                                  measurements: model.state.audience == .live && !model.busy ? viewer.measurements : nil)
+                }
             ZStack {
                 Image(systemName: status.symbol, variableValue: status.variableValue).font(.system(size: 14)).foregroundStyle(status.tint)
                     .help(status.title).accessibilityLabel(status.title)
@@ -99,6 +107,56 @@ struct ViewerActivityRow: View {
                     Button("Remove Viewer", role: .destructive) { model.removeViewer(reference) }
                 }
             }
+    }
+}
+
+private struct ViewerDetails: View {
+    let viewer: ViewerActivity
+    let status: String
+    let measurements: ViewerMeasurements?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(viewer.displayName).font(.headline)
+                Text("Session \(viewer.number) · Admitted").foregroundStyle(.secondary)
+            }
+            Divider()
+            LabeledContent("Playback", value: status)
+            if let joined = viewer.admittedAt {
+                LabeledContent("Joined") { timestamp(joined) }
+            }
+            LabeledContent("Last update") { timestamp(viewer.lastSeen) }
+            LabeledContent("Last playback report") {
+                if let updated = viewer.playbackUpdatedAt { timestamp(updated) }
+                else { Text("Unavailable") }
+            }
+            if let measurements {
+                Divider()
+                if let width = measurements.width, let height = measurements.height {
+                    LabeledContent("Received resolution") { Text("\(width) × \(height)") }
+                }
+                if let fps = measurements.framesPerSecond {
+                    LabeledContent("Inbound frame rate") {
+                        Text("\(fps, format: .number.precision(.fractionLength(0...1))) fps")
+                    }
+                }
+                if let dropped = measurements.droppedFrames {
+                    LabeledContent("Dropped frames") {
+                        Text(dropped, format: .number)
+                            .help("Total for the current inbound video stream")
+                    }
+                }
+            }
+        }
+        .font(.callout)
+        .padding(16)
+        .frame(width: 304)
+    }
+
+    private func timestamp(_ date: Date) -> some View {
+        Text(date.formatted(.dateTime.month().day().hour().minute().second()))
+            .monospacedDigit()
     }
 }
 

@@ -25,6 +25,8 @@
   if (!Object.hasOwn(palette, viewerColor)) viewerColor = colorNames[Math.floor(Math.random() * colorNames.length)];
   let draftColor = viewerColor, editing = false;
   let healthGeneration = 0, statsPrevious, statsPending = false, healthQuality = 'checking', healthAt = 0, badSamples = 0, goodSamples = 0;
+  const statsFreshFor = 7000;
+  let measurements, measuredAt;
   let keepAwake = false, wakeLock, wakeLockPending = false;
   const id = globalThis.crypto?.randomUUID?.() || Math.random().toString(36).slice(2) + Date.now().toString(36);
   // Setbeam issues each tab a secret pass. Only that pass identifies this session; under approval
@@ -399,6 +401,10 @@
     if (!pass || refused()) return Promise.resolve();
     const sent = pass;
     const body = {pass, mobile: /iPhone|iPad|Android/.test(navigator.userAgent), playing: reportedPlaying, health: viewerHealth(), revision, color: viewerColor};
+    const ageMs = Date.now() - measuredAt;
+    if (measurements && access === 'admitted' && reportedPlaying && !document.hidden && !playBlocked && ageMs >= 0 && ageMs < statsFreshFor) {
+      body.measurements = {...measurements, ageMs};
+    }
     // Under approval the gateway accepts only a first label for a session admitted unnamed.
     if (!approval || viewerName) body.name = viewerName;
     return request('heartbeat', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)})
@@ -466,6 +472,7 @@
   function resetHealth() {
     healthGeneration++;
     statsPrevious = undefined; statsPending = false; healthQuality = 'checking'; healthAt = 0; badSamples = 0; goodSamples = 0;
+    measurements = undefined;
   }
   function viewerHealth() {
     if (document.hidden) return 'background';
@@ -473,15 +480,29 @@
     if (receivedTrack && video.paused) return 'paused';
     if (!playing()) return everPlayed ? 'reconnecting' : 'connecting';
     if (typeof reader?.getStats !== 'function') return 'playing';
-    return Date.now() - healthAt < 7000 ? healthQuality : 'checking';
+    return Date.now() - healthAt < statsFreshFor ? healthQuality : 'checking';
+  }
+  function inboundMeasurements(inbound) {
+    if (!inbound) return;
+    const values = {};
+    const {frameWidth: width, frameHeight: height, framesPerSecond: fps, framesDropped: droppedFrames} = inbound;
+    const dimension = value => Number.isInteger(value) && value > 0 && value <= 16384;
+    if (dimension(width) && dimension(height)) { values.width = width; values.height = height; }
+    if (Number.isFinite(fps) && fps >= 0 && fps <= 1000) values.fps = fps;
+    if (Number.isSafeInteger(droppedFrames) && droppedFrames >= 0) values.droppedFrames = droppedFrames;
+    if (Object.keys(values).length) return values;
   }
   function sampleHealth() {
     if (!playing() || document.hidden || statsPending || typeof reader?.getStats !== 'function') return;
     const generation = healthGeneration;
+    const sampledRevision = revision, startedAt = Date.now();
     statsPending = true;
     reader.getStats().then(report => {
-      if (generation !== healthGeneration) return;
-      const inbound = [...report.values()].find(s => s.type === 'inbound-rtp' && s.kind === 'video' && Number.isFinite(s.packetsReceived) && Number.isFinite(s.packetsLost) && Number.isFinite(s.timestamp));
+      if (generation !== healthGeneration || sampledRevision !== revision || !playing() || playBlocked || document.hidden) return;
+      const videoStats = [...report.values()].filter(s => s.type === 'inbound-rtp' && s.kind === 'video');
+      const inbound = videoStats.find(s => Number.isFinite(s.packetsReceived) && Number.isFinite(s.packetsLost) && Number.isFinite(s.timestamp));
+      measurements = inboundMeasurements(inbound || videoStats[0]);
+      measuredAt = startedAt;
       const previous = statsPrevious;
       statsPrevious = inbound && {...inbound};
       healthAt = Date.now();
@@ -502,7 +523,9 @@
       if (badSamples >= 2) healthQuality = 'struggling';
       else if (goodSamples >= 2) healthQuality = 'good';
     }).catch(() => {
-      if (generation === healthGeneration) { healthQuality = 'playing'; healthAt = Date.now(); statsPrevious = undefined; }
+      if (generation === healthGeneration) {
+        healthQuality = 'playing'; healthAt = Date.now(); statsPrevious = undefined; measurements = undefined;
+      }
     }).finally(() => { if (generation === healthGeneration) statsPending = false; });
   }
   function cleanName(value) {
