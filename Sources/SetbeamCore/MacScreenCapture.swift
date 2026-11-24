@@ -51,6 +51,8 @@ public final class MacScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate,
     private var cursorFrame: PresenterCursorFrame?
     private var highlightedPixel: CVPixelBuffer?
     private var cursorCompositor: PresenterCursorHighlight?
+    private var encoderTick: UInt64 = 0
+    private var windowValidation: (tick: UInt64, frame: PresenterCursorFrame, pixel: CVPixelBuffer)?
 
     public static func requestPermission() -> Bool { CGPreflightScreenCaptureAccess() || CGRequestScreenCaptureAccess() }
 
@@ -106,6 +108,7 @@ public final class MacScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate,
         queue.sync {
             cursorHighlightEnabled = enabled
             clearCursorFrame()
+            windowValidation = nil
             if !enabled { cursorCompositor = nil }
         }
     }
@@ -140,10 +143,7 @@ public final class MacScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate,
             active = true
             let clock = DispatchSource.makeTimerSource(queue: queue)
             clock.schedule(deadline: .now(), repeating: 1.0 / Double(fps))
-            clock.setEventHandler { [weak self] in
-                guard let self, self.active, let pixel = self.pixel else { return }
-                self.encoder?.encode(self.presentation(of: pixel))
-            }
+            clock.setEventHandler { [weak self] in self?.encodeLatestFrame() }
             timer = clock; clock.resume()
         }
         try await capture.startCapture()
@@ -166,16 +166,48 @@ public final class MacScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate,
         if cursorHighlightEnabled { cursorFrame = cursorSource?.sample(frame, image: image) }
     }
 
-    private func presentation(of pixel: CVPixelBuffer) -> CVPixelBuffer {
-        guard let cursorFrame else { return pixel }
-        // Revalidate even when the encoder repeats an idle capture at the chosen rate.
-        guard cursorSource?.permitsRing(on: cursorFrame) == true else { clearCursorFrame(); return pixel }
-        if let highlightedPixel { return highlightedPixel }
+    private func encodeLatestFrame() {
+        guard active, let pixel else { return }
+        encoderTick &+= 1
+        guard let cursorFrame, let cursorSource else { encoder?.encode(pixel); return }
+        switch cursorSource {
+        case .display:
+            // Revalidate even when the encoder repeats an idle capture.
+            guard cursorSource.permitsDisplayRing(on: cursorFrame) else {
+                clearCursorFrame(); encoder?.encode(pixel); return
+            }
+            if highlightedPixel == nil { highlightedPixel = highlight(cursorFrame, on: pixel) }
+            encoder?.encode(highlightedPixel ?? pixel)
+        case .window(let identity):
+            // Main-actor hit testing must not block the capture queue. If it spans
+            // a later encoding tick, encode normally and discard the late result.
+            guard windowValidation == nil else { encoder?.encode(pixel); return }
+            let tick = encoderTick
+            windowValidation = (tick, cursorFrame, pixel)
+            Task { @MainActor [weak self] in
+                let hit = PresenterCursorSource.windowCursorHit(identity, for: cursorFrame)
+                self?.queue.async { [weak self] in self?.finishWindowValidation(tick, hit: hit) }
+            }
+        }
+    }
+
+    private func finishWindowValidation(_ tick: UInt64, hit: CGPoint?) {
+        guard let pending = windowValidation, pending.tick == tick else { return }
+        windowValidation = nil
+        guard active, pixel != nil, tick == encoderTick else { return }
+        guard let hit, let pointer = CGEvent(source: nil)?.location,
+              abs(hit.x - pointer.x) <= 4, abs(hit.y - pointer.y) <= 4,
+              pending.frame.acceptsCurrentCursor(pointer, now: CMClockGetTime(CMClockGetHostTimeClock())) else {
+            encoder?.encode(pending.pixel); return
+        }
+        encoder?.encode(highlight(pending.frame, on: pending.pixel))
+    }
+
+    private func highlight(_ frame: PresenterCursorFrame, on pixel: CVPixelBuffer) -> CVPixelBuffer {
         if cursorCompositor == nil {
             cursorCompositor = PresenterCursorHighlight(width: CVPixelBufferGetWidth(pixel), height: CVPixelBufferGetHeight(pixel))
         }
-        highlightedPixel = cursorCompositor?.draw(cursorFrame, on: pixel)
-        return highlightedPixel ?? pixel
+        return cursorCompositor?.draw(frame, on: pixel) ?? pixel
     }
     public func stream(_ stream: SCStream, didStopWithError error: Error) {
         queue.async { [weak self] in
@@ -188,6 +220,7 @@ public final class MacScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate,
         queue.sync {
             active = false; timer?.cancel(); timer = nil; pixel = nil
             clearCursorFrame(); cursorSource = nil; cursorCompositor = nil
+            windowValidation = nil
             writer?.close(); writer = nil; encoder?.invalidate(); encoder = nil
         }
     }

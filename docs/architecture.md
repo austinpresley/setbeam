@@ -251,6 +251,19 @@ MacWindowIdentity is the window number, the owner process ID, and that process's
 
 The chooser lists other applications' ordinary on-screen windows (layer 0, at least 64 by 48 points) only when Screen Recording access already exists. Without it, the chooser offers an explicit Screen Recording action. WindowSourcePreviews keeps chooser-lifetime state: it refreshes every two seconds, takes at most nine silent, shadowless single-window screenshots per pass, one at a time, for rows on screen, and fits each into 280 by 168 pixels shown in a 140 by 84 point frame. The monitored window shows the existing NativePreview picture instead of a screenshot. Closing the chooser invalidates in-flight screenshots and clears every image, icon, and handle. An identity lasts only as long as its owner process. The last-source button restores a proven window setup privately only if the same window of the same running process still exists; otherwise Setbeam asks the operator to choose again.
 
+## Presenter cursor highlight
+
+Source Details can enable a light-and-dark ring on the active display or
+application window. This setting starts off for each new source selection and
+stays in effect through recovery of that source. The capture stage draws the ring
+on a bounded copy of the existing frame before encoding. The private and
+audience relays read that same capture and Hold replaces the outgoing picture.
+The ring shares the capture cadence. The source checks both the frame geometry
+and the cursor's location before drawing. Application-window capture uses
+AppKit hit testing on the main actor to resolve which window receives the
+pointer. The capture queue discards responses that miss their encoding tick.
+[AppKit hit testing](https://developer.apple.com/documentation/appkit/nswindow/windownumber(at:belowwindowwithwindownumber:))
+
 ## Local address
 
 LocalAddressPublisher publishes one IPv4 address record, `label.local`, for the viewing address while sharing. It uses the system DNS-SD responder: `DNSServiceCreateConnection`, then `DNSServiceRegisterRecord` with `kDNSServiceFlagsUnique` on the selected viewing interface's index, attached to the publisher's serial queue. No administrator rights are needed. The Mac's own name, other network settings, and DNS configuration are untouched, and no internet service is involved. The responder probes before answering. A conflict can be refused synchronously or reported in the callback, including after the name became active. DNS-SD leaves conflicts to the client, so the publisher tries `label-2` through `label-20` and then reports the name in use. A new viewing address keeps the label currently held; a new operator label starts again from the plain name. Responder failures and a missing interface retry every 5 s. Deallocating the connection on its queue removes the record and ends callbacks, so Stop Sharing, a failed start, a source reset, a loopback-only network, and Quit remove the name. Identical address data from another registrant is not a conflict (RFC 6762 §9), so two Setbeam sessions on one Mac and address share the name; their ports and private codes differ.

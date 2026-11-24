@@ -35,28 +35,28 @@ final class PresenterCursorTests: XCTestCase {
 
     func testWindowMustBeTheExactTopWindowAtTheCursorInTheFrameGeometry() throws {
         typealias Window = PresenterCursorSource.Window
-        let source = PresenterCursorSource.window(identity)
         let screen = CGRect(x: -730, y: -350, width: 600, height: 400)
         let cursor = CGPoint(x: -520, y: -180)
         let image = CGSize(width: 800, height: 600)
         let frame = try XCTUnwrap(PresenterCursorFrame(screen: screen,
             contentInPoints: CGRect(x: 0, y: 25, width: 600, height: 400), scale: 1, imageSize: image, cursor: cursor, isWindow: true))
         let window = Window(id: 42, owner: 9, bounds: screen)
-        XCTAssertTrue(source.ownsCursor(frame, at: cursor, windows: [window]))
-
-        let popup = Window(id: 43, owner: 9, bounds: CGRect(x: -540, y: -200, width: 30, height: 30), layer: 4)
-        XCTAssertFalse(source.ownsCursor(frame, at: cursor, windows: [popup, window]))
-        XCTAssertTrue(source.ownsCursor(frame, at: cursor, windows: [window, popup]))
-        XCTAssertFalse(source.ownsCursor(frame, at: cursor, windows: [Window(id: 42, owner: 15, bounds: screen)]))
-        XCTAssertFalse(source.ownsCursor(frame, at: cursor, windows: [Window(id: 42, owner: 9, bounds: screen, alpha: 0.8)]))
-        XCTAssertFalse(source.ownsCursor(frame, at: cursor, windows: []))
+        func owns(_ window: Window, hits: (Int, Int) = (42, 42)) -> Bool {
+            PresenterCursorSource.ownsWindowCursor(identity, frame: frame, at: cursor, in: window, hits: hits)
+        }
+        XCTAssertTrue(owns(window))
+        XCTAssertFalse(owns(window, hits: (43, 42)))
+        XCTAssertFalse(owns(window, hits: (42, 43)))
+        XCTAssertFalse(owns(window, hits: (0, 42)))
+        XCTAssertFalse(owns(Window(id: 42, owner: 15, bounds: screen)))
+        XCTAssertFalse(owns(Window(id: 42, owner: 9, bounds: screen, alpha: 0.8)))
 
         let moved = CGRect(x: -725, y: -360, width: 700, height: 450)
         let resized = Window(id: 42, owner: 9, bounds: moved)
-        XCTAssertFalse(source.ownsCursor(frame, at: cursor, windows: [resized]))
+        XCTAssertFalse(owns(resized))
         let newFrame = try XCTUnwrap(PresenterCursorFrame(screen: moved,
             contentInPoints: CGRect(x: 0, y: 0, width: 700, height: 450), scale: 1, imageSize: image, cursor: cursor, isWindow: true))
-        XCTAssertTrue(source.ownsCursor(newFrame, at: cursor, windows: [resized]))
+        XCTAssertTrue(PresenterCursorSource.ownsWindowCursor(identity, frame: newFrame, at: cursor, in: resized, hits: (42, 42)))
         XCTAssertEqual(newFrame.center, CGPoint(x: 205, y: 180))
     }
 
@@ -66,8 +66,8 @@ final class PresenterCursorTests: XCTestCase {
         let frame = try XCTUnwrap(PresenterCursorFrame(screen: area, contentInPoints: area,
                                                       scale: 1, imageSize: area.size, cursor: cursor))
         let source = PresenterCursorSource.display(1, uuid: UUID().uuidString, excluded: [100])
-        XCTAssertTrue(source.ownsCursor(frame, at: cursor, windows: [.init(id: 1, owner: 9, bounds: area)]))
-        XCTAssertFalse(source.ownsCursor(frame, at: cursor, windows: [.init(id: 1, owner: 100, bounds: area)]))
+        XCTAssertTrue(source.ownsDisplayCursor(frame, at: cursor, windows: [.init(id: 1, owner: 9, bounds: area)]))
+        XCTAssertFalse(source.ownsDisplayCursor(frame, at: cursor, windows: [.init(id: 1, owner: 100, bounds: area)]))
     }
 
     func testCursorCanMoveWithinAFreshPictureButMustStillBeOwned() throws {
@@ -77,15 +77,15 @@ final class PresenterCursorTests: XCTestCase {
         let oneSecondLater = CMTime(value: 200, timescale: 100)
         let frame = try XCTUnwrap(PresenterCursorFrame(screen: screen, contentInPoints: screen, scale: 1,
             imageSize: screen.size, cursor: CGPoint(x: 200, y: 200), isWindow: true, displayTime: captured))
-        let source = PresenterCursorSource.window(identity)
         let window = PresenterCursorSource.Window(id: 42, owner: 9, bounds: screen)
         let moved = CGPoint(x: 300, y: 300)
-        let overlay = PresenterCursorSource.Window(id: 55, owner: 123,
-                                                    bounds: CGRect(x: 290, y: 290, width: 30, height: 30))
-        XCTAssertTrue(source.ownsCursor(frame, at: moved, windows: [window], now: fresh))
-        XCTAssertFalse(source.ownsCursor(frame, at: moved, windows: [overlay, window], now: fresh))
-        XCTAssertFalse(source.ownsCursor(frame, at: moved, windows: [window], now: oneSecondLater))
-        XCTAssertTrue(source.ownsCursor(frame, at: frame.cursor, windows: [window], now: oneSecondLater))
+        func owns(_ cursor: CGPoint, now: CMTime, hits: (Int, Int) = (42, 42)) -> Bool {
+            PresenterCursorSource.ownsWindowCursor(identity, frame: frame, at: cursor, in: window, hits: hits, now: now)
+        }
+        XCTAssertTrue(owns(moved, now: fresh))
+        XCTAssertFalse(owns(moved, now: fresh, hits: (55, 42)))
+        XCTAssertFalse(owns(moved, now: oneSecondLater))
+        XCTAssertTrue(owns(frame.cursor, now: oneSecondLater))
     }
 
     func testRingAddsContrastWithoutChangingCursorPixelsLetterboxOrChroma() throws {

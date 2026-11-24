@@ -47,6 +47,9 @@ _Avoid_: Profile, account, or login.
 An admitted viewer's opt-in pointer over the shared picture, labeled with their viewer identity and seen by other participating viewers. The operator sees pointers on this Mac only after turning on Show pointers on this Mac. It is presence only and grants no control.
 _Avoid_: Remote control, annotation, or cursor highlighting of the operator's own cursor.
 
+**Presenter cursor highlight**:
+An optional ring on the operator's own cursor in the selected display or application window. Turn it on with Highlight my cursor in Source Details. Its movement follows the picture's frame rate.
+
 **Local address**:
 A readable name ending in `.local`, such as `setbeam.local`, that viewers on the same network can use in place of the IP address in the viewing link. It exists only while sharing, keeps the link's private code, and is published by this Mac without an internet service.
 _Avoid_: Hostname, domain, Bonjour name, or a permanent link.

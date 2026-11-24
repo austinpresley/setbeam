@@ -1,3 +1,4 @@
+import AppKit
 import CoreGraphics
 import CoreMedia
 import CoreVideo
@@ -5,7 +6,7 @@ import ScreenCaptureKit
 import Darwin
 
 /// Quartz screen coordinates and ScreenCaptureKit's top-left content rectangle for one picture.
-struct PresenterCursorFrame {
+struct PresenterCursorFrame: Sendable {
     let screen: CGRect
     let content: CGRect
     let cursor: CGPoint
@@ -64,7 +65,7 @@ struct PresenterCursorFrame {
     }
 }
 
-enum PresenterCursorSource {
+enum PresenterCursorSource: Sendable {
     case display(CGDirectDisplayID, uuid: String, excluded: Set<pid_t>)
     case window(MacWindowIdentity)
 
@@ -116,48 +117,57 @@ enum PresenterCursorSource {
                                     displayTime: frameTime)
     }
 
-    func permitsRing(on frame: PresenterCursorFrame) -> Bool {
+    func permitsDisplayRing(on frame: PresenterCursorFrame) -> Bool {
         let clock = CMClockGetHostTimeClock()
-        guard let cursor = CGEvent(source: nil)?.location, frame.acceptsCurrentCursor(cursor, now: CMClockGetTime(clock)),
+        guard case .display(let id, let uuid, _) = self,
+              CGDisplayIsActive(id) != 0, MacDisplay.identity(id)?.caseInsensitiveCompare(uuid) == .orderedSame,
+              PresenterCursorFrame.sameBounds(frame.screen, CGDisplayBounds(id)),
+              let cursor = CGEvent(source: nil)?.location, frame.acceptsCurrentCursor(cursor, now: CMClockGetTime(clock)),
               let rows = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] else { return false }
         let windows = rows.compactMap(Window.init)
         guard rows.count == windows.count, let current = CGEvent(source: nil)?.location,
               abs(cursor.x - current.x) <= 4, abs(cursor.y - current.y) <= 4 else { return false }
-        switch self {
-        case .display(let id, let uuid, _):
-            guard CGDisplayIsActive(id) != 0, MacDisplay.identity(id)?.caseInsensitiveCompare(uuid) == .orderedSame,
-                  PresenterCursorFrame.sameBounds(frame.screen, CGDisplayBounds(id)) else { return false }
-        case .window(let identity):
-            var count: UInt32 = 0
-            guard CGGetDisplaysWithPoint(current, 0, nil, &count) == .success, count > 0,
-                  MacProcess.startTime(identity.processID) == identity.processStart else { return false }
-        }
         let now = CMClockGetTime(clock)
-        return ownsCursor(frame, at: cursor, windows: windows, now: now) &&
-            ownsCursor(frame, at: current, windows: windows, now: now)
+        return ownsDisplayCursor(frame, at: cursor, windows: windows, now: now) &&
+            ownsDisplayCursor(frame, at: current, windows: windows, now: now)
     }
 
-    /// The window list is front to back. An overlapping window's bounds are enough to
-    /// suppress the ring, since Quartz does not describe its per-pixel hit region.
-    func ownsCursor(_ frame: PresenterCursorFrame, at cursor: CGPoint, windows: [Window], now: CMTime = .invalid) -> Bool {
-        guard frame.acceptsCurrentCursor(cursor, now: now) else { return false }
-        switch self {
-        case .display(_, _, let excluded):
-            return !windows.contains {
-                excluded.contains($0.owner) && $0.alpha != 0 &&
-                    (!PresenterCursorFrame.valid($0.bounds) || $0.bounds.contains(frame.cursor) || $0.bounds.contains(cursor))
-            }
-        case .window(let identity):
-            guard let top = windows.first(where: {
-                $0.alpha != 0 && (!PresenterCursorFrame.valid($0.bounds) || $0.bounds.contains(frame.cursor) || $0.bounds.contains(cursor))
-            }), top.id == identity.windowID, top.owner == identity.processID, top.layer == 0, top.alpha == 1,
-                PresenterCursorFrame.sameBounds(frame.screen, top.bounds) else { return false }
-            // Suppress ambiguous rounded corners and the outermost point of the frame.
-            let inset = PresenterCursorFrame.windowCornerInset
-            return [frame.cursor, cursor].allSatisfy { point in
-                top.bounds.insetBy(dx: 1, dy: 1).contains(point) &&
-                    PresenterCursorFrame.awayFromCorners(point, in: top.bounds, dx: inset, dy: inset)
-            }
+    @MainActor static func windowCursorHit(_ identity: MacWindowIdentity, for frame: PresenterCursorFrame) -> CGPoint? {
+        guard let event = CGEvent(source: nil),
+              MacProcess.startTime(identity.processID) == identity.processStart,
+              let rows = CGWindowListCopyWindowInfo(.optionIncludingWindow, identity.windowID) as? [[String: Any]],
+              let target = rows.compactMap(Window.init).first(where: { $0.id == identity.windowID }) else { return nil }
+        let current = event.location, unflipped = event.unflippedLocation
+        // AppKit hit testing ignores transparent and click-through layers. Window bounds
+        // alone also include cursor sprites and fullscreen utilities over the picture.
+        let captured = CGPoint(x: unflipped.x + frame.cursor.x - current.x,
+                               y: unflipped.y - (frame.cursor.y - current.y))
+        let window = Int(identity.windowID)
+        let hit = NSWindow.windowNumber(at: unflipped, belowWindowWithWindowNumber: 0)
+        let captureHit = NSWindow.windowNumber(at: captured, belowWindowWithWindowNumber: 0)
+        guard ownsWindowCursor(identity, frame: frame, at: current, in: target, hits: (hit, captureHit),
+                               now: CMClockGetTime(CMClockGetHostTimeClock())) else { return nil }
+        return current
+    }
+
+    static func ownsWindowCursor(_ identity: MacWindowIdentity, frame: PresenterCursorFrame, at cursor: CGPoint,
+                                 in window: Window, hits: (Int, Int), now: CMTime = .invalid) -> Bool {
+        let expected = Int(identity.windowID)
+        guard hits.0 == expected, hits.1 == expected, frame.acceptsCurrentCursor(cursor, now: now),
+              window.id == identity.windowID, window.owner == identity.processID,
+              window.layer == 0, window.alpha == 1, PresenterCursorFrame.sameBounds(frame.screen, window.bounds) else { return false }
+        let inset = PresenterCursorFrame.windowCornerInset
+        return [frame.cursor, cursor].allSatisfy { point in
+            window.bounds.insetBy(dx: 1, dy: 1).contains(point) &&
+                PresenterCursorFrame.awayFromCorners(point, in: window.bounds, dx: inset, dy: inset)
+        }
+    }
+
+    func ownsDisplayCursor(_ frame: PresenterCursorFrame, at cursor: CGPoint, windows: [Window], now: CMTime = .invalid) -> Bool {
+        guard case .display(_, _, let excluded) = self, frame.acceptsCurrentCursor(cursor, now: now) else { return false }
+        return !windows.contains {
+            excluded.contains($0.owner) && $0.alpha != 0 &&
+                (!PresenterCursorFrame.valid($0.bounds) || $0.bounds.contains(frame.cursor) || $0.bounds.contains(cursor))
         }
     }
 
