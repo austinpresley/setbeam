@@ -27,6 +27,17 @@ class DriverTests(unittest.TestCase):
                 (0.835, [(0.41, "off"), (0.565, "on")])]
         self.assertEqual(e2e.menu_choices(rows), {"Sound": False, "Pop-ups": False, "Pointers": True})
 
+    def test_startup_only_seeds_the_exact_admission_before_reboot(self):
+        run = self.run_fixture()
+        run.name = "Fixture TV"
+        run.fixture.viewers.return_value = [{"lastSeenAgo": 1, "admission": "pending", "number": 7}]
+        run.pending_request = mock.Mock(return_value={"number": 7})
+        run.wait = mock.Mock()
+        run.seed_boot_admission()
+        run.device.start_main.assert_called_once()
+        run.fixture.command.assert_called_once_with("admit", number=7)
+        run.wait.assert_called_once_with("admitted receiver playing before reboot", run.viewer_playing, 60, 2)
+
     def run_fixture(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

@@ -1423,6 +1423,7 @@ class Run:
                     raise Failure("Android did not acknowledge the app-op save")
             boots = []
             if self.args.reboot:
+                self.seed_boot_admission()
                 modes = ["graceful", "hard"] if self.args.reboot_mode == "both" else [self.args.reboot_mode]
                 for mode in modes:
                     boots.append(self.boot_check(mode, flush))
@@ -1434,6 +1435,21 @@ class Run:
         if bad:
             raise Failure(f"receiver did not open and play by itself after reboot: {json.dumps(bad)[:1500]}")
         return result
+
+    def viewer_playing(self):
+        revision = self.fixture.status()["revision"]
+        return any(row["lastSeenAgo"] < 8 and row["playing"] and row["revision"] == revision
+                   for row in self.fixture.viewers(self.name))
+
+    def seed_boot_admission(self):
+        # Learn whether a previously admitted share resumes without input after boot.
+        # A startup-only run needs the same explicit Mac approval as a longer run.
+        self.device.start_main()
+        if not any(row["lastSeenAgo"] < 8 and row["admission"] == "admitted"
+                   for row in self.fixture.viewers(self.name)):
+            request = self.pending_request(45)
+            self.fixture.command("admit", number=request["number"])
+        self.wait("admitted receiver playing before reboot", self.viewer_playing, 60, 2)
 
     def run_provision(self, base, args, log_name):
         self.device.check_identity()
@@ -1498,8 +1514,7 @@ class Run:
         if front.startswith(PACKAGE):
             # No input yet: the operator row must show this receiver playing the current revision, and the screen picture must move.
             try:
-                self.wait("receiver playing after boot", lambda: any(v["lastSeenAgo"] < 8 and v["playing"] and v["revision"] == self.fixture.status()["revision"]
-                                                                     for v in self.fixture.viewers(self.name)), 90, 3)
+                self.wait("receiver playing after boot", self.viewer_playing, 90, 3)
                 sig1 = self.device.picture_signature(); time.sleep(6); sig2 = self.device.picture_signature()
                 boot["pictureChangedNoInput"] = changed(sig1, sig2)
                 boot["operatorRow"] = [(v["number"], v["admission"], v["health"]) for v in self.fixture.viewers(self.name) if v["lastSeenAgo"] < 8]
