@@ -35,7 +35,58 @@ source operation separately.
 
 For each viable connection route, test both a computer display and camera video. A DigiTech screen such as Capture One is a primary workflow. The Master 4K computer-display result below covers a live clock/browser picture, small text, aspect ratio, and source-loss recovery. Capture One specifically, camera content, format changes, and display-sleep behavior still need testing.
 
-Direct capture of the receiving Mac's own screen is separate from receiving a computer display through a transmitter or capture input. It is not implemented in this checkpoint.
+Native screen and window capture are routes of their own. Generated display and
+window fixtures exercise them in development. They do not cover a real Capture
+One workstation or a display coming in through wireless or HDMI capture.
+
+## Current manual rehearsals
+
+Both gates are open. Run them on the candidate build before relying on either
+workflow on set. Use a separate phone or tablet on the intended viewing network.
+Record the Setbeam version and build, macOS and viewer OS/browser, source and
+viewing routes, exact equipment and firmware, picture format, audio choice, and
+what happened at each step. Save timestamps, recovery times and redacted evidence.
+Use a test session and leave viewing links and Wi-Fi credentials out of the record.
+
+### Capture One computer display
+
+1. Open a test Capture One session with fine text, a detailed image and a crop.
+   Select the actual shoot route in Setbeam. For an on-Mac workflow, use
+   **Window → Capture One**. For a separate DigiTech workstation, select its
+   wireless transmitter or capture input and record that route separately.
+2. Confirm the full image and readable text in the private and floating
+   monitors. Set the viewer output to **Best** and **1 fps** for still review.
+   Run **Test My Setup** with viewer approval on and sound not required for a
+   silent capture. Scan the Watch code from the separate device. Match its
+   session and route in People, admit it and wait for fresh video.
+3. Change the selected image and crop. Check that text stays readable and the
+   new image reaches the viewer without clipping. For window capture, move,
+   cover, resize and minimize the chosen window. Restore it and check that
+   only that window returns. Close it with a same-titled window still open and
+   check that Setbeam offers **Choose a Window** without switching. For an external route, interrupt the input
+   or sleep the source display, then verify the same feed returns.
+4. Confirm Hold conceals the source on the viewer while the operator can
+   keep working. Resume in the same tab, then Stop Sharing and verify the
+   test link expires while private monitoring continues.
+
+### Camera feed
+
+1. Use the camera and capture device or wireless transmitter planned for the
+   shoot. Record the exact camera mode, cable and the capture device or
+   transmitter model, firmware and connection route. Use a moving subject
+   and a deliberate sound cue if the feed will carry sound. For a local
+   capture input, choose the exact sound input in Source Details.
+2. Run **Test My Setup** on the intended viewing network. Admit the test
+   device if approval is on. Confirm motion and the full frame locally and
+   on the device. For a sound feed, enable sound on the device and check
+   audibility and sync against the cue. Record audio track presence separately.
+3. Put viewers on Hold. Check source video and sound are suppressed on the
+   test device while the local picture continues. Resume and confirm the
+   same page recovers. Disconnect and reconnect the input. Verify it
+   recovers the exact source and record how long recovery takes. Repeat for
+   any mode change required during the shoot.
+4. Stop Sharing and verify the local monitor continues and the viewing link
+   expires. Record any failed or skipped step with the observed behavior.
 
 ## CineView Master 4K live investigation, 2026-10-20
 

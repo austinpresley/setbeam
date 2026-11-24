@@ -8,9 +8,17 @@ Setbeam receives a computer display or camera feed on your Mac, then shares it w
 
 The app is signed with Developer ID and notarized by Apple, so macOS opens it normally. Setbeam checks for signed updates once a day. Choose **Setbeam → Check for Updates…** to check now, or turn automatic checks off in **Settings → Updates**. Installing an update quits and reopens the app. An update found while you're sharing waits in the menus.
 
-Build 40 and earlier can't update themselves; install build 41 once by hand. Because the signature changed, macOS asks again for Screen Recording, Camera, Microphone, Local Network and Location access the first time each is needed.
+Build 40 and earlier require a manual install of build 41 to receive signed
+updates. After the signature change, macOS may ask again for Screen
+Recording, Camera, Microphone or Location when you use the corresponding
+feature. The Local Network privacy prompt and controls apply on macOS 15
+and later.
 
-The development build was tested on macOS 27. Older supported macOS versions still need physical verification. See the [release notes](releases/0.3.0-build41.md) for validation and current limits.
+The instructions below describe the current source build, 0.3.1 build 43
+by default. Build 41 uses earlier menus. See the [build 41 release notes](releases/0.3.0-build41.md)
+and the [private build 43 validation record](status.md#unified-release-candidate-2026-11-23).
+The development Mac runs macOS 27. Physical verification on older supported
+macOS versions remains open.
 
 ## Build from source
 
@@ -31,11 +39,11 @@ The default source build is ad-hoc signed, not notarized, and doesn't check for 
 
 ## Connect a source
 
-Choose **Screen**, **Camera**, **Window**, or **Wireless** on the empty monitor. Click the last-source button to reconnect privately, or **Sample** to try the labeled demo. The source control at the top left opens the chooser or the current source’s actions. The **Stream address** tile under Wireless opens RTSP setup. The CineView guide offers the Accsoon SEE incoming-stream route. These controls describe the current developer build; earlier published builds use the older menus. For this computer's display, choose **Screen** and select the display by name or resolution. Allow Setbeam in Screen Recording when requested, then retry. Setbeam excludes its own windows and includes your cursor. This source has no sound. If the display disconnects, Setbeam waits for that same display.
+Choose **Screen**, **Camera**, **Window**, or **Wireless** on the empty monitor. Click the last-source button to reconnect privately, or **Sample** to try the labeled demo. The source control at the top left opens the chooser or the current source’s actions. The **Stream address** tile under Wireless opens RTSP setup. The CineView guide offers the Accsoon SEE incoming-stream route. For this computer's display, choose **Screen** and select the display by name or resolution. Allow Setbeam in Screen Recording when requested, then retry. Setbeam excludes its own windows and includes your cursor. This source has no sound. If the display disconnects, Setbeam waits for that same display.
 
 To share one application window instead, such as Capture One, choose it under **Windows** in the same chooser. Windows are listed with their application, title, and an updating preview once Setbeam has Screen Recording access; opening the chooser never asks for it. Only that window is shared, without sound, wherever it moves and even when other windows cover it. Its size when chosen sets the picture size; after a resize the whole window is fitted inside that picture without cropping. Minimizing it, hiding its application, or closing it pauses the picture until that same window is shown again. If its application quits, choose the window again: Setbeam never switches to another window or the whole display. The last-source button restores the same window only while its application is still running.
 
-For the physically tested Accsoon CineView Master 4K on firmware 3.30:
+For the Accsoon CineView Master 4K direct Wi-Fi route tested with a 1080p60 computer display on firmware 3.30:
 
 1. Power the transmitter and give it a live HDMI or SDI picture from a computer or camera.
 2. Join the Wi-Fi network named on the transmitter's screen.
@@ -47,10 +55,10 @@ For the ported Hollyland Pyro H connection:
 
 1. Power the Pyro H transmitter and supply a live HDMI picture from a computer or camera.
 2. Join the **transmitter's** Wi-Fi on the Mac. Close HollyView or other clients receiving directly from that transmitter.
-3. Open **Choose a source**. Setbeam checks only that Wi-Fi router for the original launcher's `/live` stream on ports 5554, 554, and 8554. Choose **Hollyland Pyro H** when a compatible stream appears, after confirming the connected transmitter model.
-4. Check the private picture, then start sharing when ready. For another IP/port, enter the complete RTSP address under **Source → Enter Stream Address**.
+3. Open **Choose a source**. Setbeam checks only that Wi-Fi router for the original launcher's `/live` stream on ports 5554, 554, and 8554. Choose **Hollyland Pyro H** when an RTSP stream appears, after confirming the connected transmitter model.
+4. Check the private picture, then start sharing when ready. For another IP/port, enter the complete RTSP address under **Wireless → Stream address** in the chooser.
 
-The Pyro H software path is tested with simulated H.264/AAC media; a physical Pyro H has not been verified in Setbeam. Discovery checks a compatible endpoint, not a unique transmitter identity. A proven setup restores its exact saved address privately and retries that address after loss. It does not switch Wi-Fi or substitute another discovered endpoint. Discovery pauses during network-source monitoring to protect transmitters with a single-client limit. See [Pyro H verification](verification-pyro-h-2026-10-29.md) for evidence and the remaining hardware checks.
+The Pyro H software path is tested with simulated H.264/AAC media; a physical Pyro H has not been verified in Setbeam. Discovery checks for a reachable RTSP endpoint. Confirm the transmitter model yourself. A proven setup restores its exact saved address privately and retries that address after loss. It does not switch Wi-Fi or substitute another discovered endpoint. Discovery pauses during network-source monitoring to protect transmitters with a single-client limit. See [Pyro H verification](verification-pyro-h-2026-10-29.md) for evidence and the remaining hardware checks.
 
 Connection route, model, and firmware matter. See [hardware tests](hardware-tests.md) for exact evidence and open checks. Other transmitters, camera-content formats, and physical capture hardware remain unverified.
 
@@ -60,9 +68,28 @@ Your monitor shows the picture as received. Transmitter and network streams are 
 
 The speaker control changes sound on this Mac. The adjacent picture-in-picture control opens the resizable [minimal floating preview](#minimal-floating-preview), with local inspection and audience actions.
 
-Use the Source menu for **Source Details**, the Monitor menu for **Save Frame**, and the Sharing menu for invitations, viewers, options and chat. **Test My Setup** is in Help. Capture frame rate, explicit capture sound and transmitter rejoin belong to Source Details. Permissions and diagnostics open from Settings or Help.
+Use the Source menu for **Source Details**, the Monitor menu for **Save Frame**,
+and the Sharing menu for invitations, viewers, options and chat. Capture frame
+rate, explicit capture sound and transmitter rejoin belong to Source Details.
+Permissions and diagnostics open from Settings or Help. When macOS denies a
+camera or microphone request, open the indicated Privacy & Security pane, allow
+Setbeam, and click **Retry Now** to reopen the requested device and sound input.
 
 Native audible output remains unverified. On the development Mac, the audio device stalled during startup; Setbeam returned to mute with an explanation. The outgoing stream contains audio, and silent Hold is verified. See [current limits](status.md#remaining-evidence-and-release-work).
+
+## Test before inviting viewers
+
+Open **Help → Test My Setup…**. Check the source and the viewing network,
+choose whether to ask before viewers join, and say whether the feed needs sound.
+**Start Sharing for Test** opens a live share with those access settings. Use the
+test link or QR code on a separate device. If viewer approval is on, admit that
+device in **People**. Match its name, session number and route to its request.
+
+Setbeam checks current playback from another device. If you expect sound,
+enable it there, listen, then confirm what you heard. The audio track shown on
+the Mac alone cannot establish audible playback. A changed output or a lost test
+viewer requires another confirmation. **Stop Sharing** ends the test link and
+leaves the monitor running. For on-set checks, follow the [Capture One and camera rehearsals](hardware-tests.md#current-manual-rehearsals).
 
 ## Invite viewers
 
@@ -73,8 +100,9 @@ the copied link. Click either QR code or the Enlarge icon for larger codes.
 **Done** or Escape closes them. **Sharing → Show Large Join Codes…** opens the
 same view. The Print icon opens a dated print preview.
 
-**People** lists join requests above the admitted viewers. Use the check and
-cross to admit or decline a request. You can also answer directly from the
+**People** lists join requests above the admitted viewers. Each row shows the
+session number and whether it came through the viewing link or short address.
+Use the check and cross to admit or decline a request. You can also answer directly from the
 waiting avatar in the toolbar. Avatar rings reflect reported playback health.
 Hover a row to reveal Remove when viewer approval is on. Names and colors are
 chosen by viewers. An admitted browser session stays listed until you remove
