@@ -47,6 +47,19 @@ cp "$BIN/Setbeam" "$APP/Contents/MacOS/Setbeam"
 ditto "$SPARKLE" "$APP/Contents/Frameworks/Sparkle.framework"
 cp Vendor/bin/ffmpeg Vendor/bin/ffprobe Vendor/bin/mediamtx Vendor/bin/setbeam-preview "$APP/Contents/Helpers/"
 cp "$BIN/SetbeamSupervisor" "$APP/Contents/Helpers/setbeam-supervisor"
+# SwiftPM can add its build toolchain's compatibility-library search path.
+# Keep the bundle and system paths, and audit the resulting load commands below.
+swift_toolchain_lib="$(cd "$(dirname "$(xcrun --find swift)")/../lib" && pwd -P)"
+for binary in "$APP/Contents/MacOS/Setbeam" "$APP/Contents/Helpers/setbeam-supervisor"; do
+  rpaths="$(otool -l "$binary" | awk '
+    $1 == "cmd" && $2 == "LC_RPATH" { rpath = 1; next }
+    rpath && $1 == "path" {
+      sub(/^[[:space:]]*path[[:space:]]+/, ""); sub(/[[:space:]]+\(offset [0-9]+\)$/, ""); print; rpath = 0
+    }')"
+  while IFS= read -r rpath; do
+    case "$rpath" in "$swift_toolchain_lib"/swift*) install_name_tool -delete_rpath "$rpath" "$binary";; esac
+  done <<< "$rpaths"
+done
 cp Sources/SetbeamApp/Resources/reader.js Sources/SetbeamApp/Resources/viewer.html Sources/SetbeamApp/Resources/expired.html Sources/SetbeamApp/Resources/viewer.css Sources/SetbeamApp/Resources/viewer.js Sources/SetbeamApp/Resources/keepawake.js Sources/SetbeamApp/Resources/pointers.js Sources/SetbeamApp/Resources/chat.js "$APP/Contents/Resources/"
 cp Fixtures/Demo.mp4 Fixtures/Hold.mp4 "$APP/Contents/Resources/Fixtures/"
 cp Fixtures/Compatibility-*.mp4 Fixtures/compatibility-notes.txt "$APP/Contents/Resources/Fixtures/"
