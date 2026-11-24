@@ -1,5 +1,35 @@
 # Setbeam status
 
+## Unified release candidate, 2026-11-23
+
+The local `release/unified-candidate` branch combines build 41’s signed updates
+and Developer ID packaging with the November 21 Mac and browser redesign and
+Android TV receiver. The combined build uses 0.3.1, build 43, and declares both
+the existing RTSP Bonjour service and `_setbeam._tcp.` for receiver discovery.
+
+Sparkle installed the signed combined baseline into an isolated QA copy made
+from the published build 41 binary. The loopback feed and disk image signatures
+verified, and all 124 installed files matched. In a separate scheduled-update
+check, the update appeared in the menu while the Sample share stayed LIVE.
+The combined baseline passed the audit for all 11 Mach-O files. Chrome passed
+eight layouts with decoded Sample playback and chat. macOS WebKit passed
+seven layouts, rotation draft retention, and a frame attachment.
+
+The first local suite reached the short-address check and got RTSP 404 during
+its approval transition. The probe now waits for the restarted audience
+publisher. Its focused rerun decoded 57 frames with the admitted reader. The
+separate frame-rate and large-keyframe baselines reported 1.047 fps against
+1.0 fps and 210 frames against a 300-frame floor, respectively. The large-frame
+run reported zero decoder errors. Both results need a final-suite retest.
+
+Android assembled both APKs and passed 86 JVM tests and 102 provisioning tests.
+Lint reported zero errors and eight warnings. The signed developer APK matches
+the build from the November 19 recorded run. The first emulator check received
+only part of the typed setup address. Its 1080p retry timed out in UIAutomator.
+A separate playback run reached Android’s package manager and failed with
+`Broken pipe (32)` before a share could start. The owned emulator was stopped.
+The final software and physical device checks are still in progress.
+
 ## Branch verification, 2026-11-21
 
 Local `scripts/check.sh` passed 310 Swift cases with one opt-in soak skipped,
