@@ -36,7 +36,8 @@ umask 077
 report="$(mktemp -d "$PWD/build/logs/sharing-soak.XXXXXX")"
 echo "Evidence directory: $report"
 SETBEAM_REAL_MEDIA_SECONDS="$seconds" SETBEAM_REAL_MEDIA_REPORT_DIR="$report" SETBEAM_REAL_MEDIA_NODE="$node" \
-  /usr/bin/caffeinate -i swift test -c release --filter SharingMediaSoakTests 2>&1 | tee "$report/run.log"
+  /usr/bin/caffeinate -i swift test --scratch-path "$PWD/.build/sharing-soak" -c release \
+    --filter SharingMediaSoakTests 2>&1 | tee "$report/run.log"
 if ! grep -q '"event":"passed"' "$report/mac.ndjson" || ! grep -q '"passed":true' "$report/browser.ndjson"; then
   echo "Missing completion evidence in $report." >&2
   exit 1

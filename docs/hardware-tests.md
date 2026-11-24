@@ -2,6 +2,18 @@
 
 Compatibility is limited to the exact route, format, firmware, and host recorded below. Other model names remain test targets.
 
+## Physical iPad Safari Sample check, 2026-11-23
+
+An iPad Pro 10.5-inch on iPadOS 17.7.11 joined the build 43 Sample share
+over the local network. Safari WebDriver drove the test on the physical
+iPad. It populated and submitted the join form after the automated keyboard
+left the name empty. Safari decoded 1280 × 720 video, reported advancing
+playback, and fit the page without horizontal overflow. The Mac recorded
+one other-device viewer playing. Hold detached and muted playback, Resume
+returned video in the same tab, and Stop ended playback while the Mac kept
+monitoring. This check used muted browser playback. Physical keyboard
+entry, rotation, screen lock, and audible output remain open for this build.
+
 ## Physical phone sample check, 2026-10-20
 
 Austin scanned the sample session QR and followed the Safari viewing/sound workflow on a physical phone on the Mac's Ethernet LAN. He reported that sample video and the audible test tone both worked. The app independently recorded fresh playback from one other-device endpoint, distinct from the local Chromium browser. After a 30-second phone lock and return to the same Safari tab without reload, Austin reported automatic picture and tone recovery. He also confirmed a visible holding state with silence and automatic picture/tone return on the same page after Resume. Phone model and OS version were not supplied. These are sample-media browser results; real-feed viewing and power-cycle recovery are recorded in the build 7 section below. Native Mac speaker sound remains unverified. See [session safeguard verification](verification-safety-2026-10-20.md).
