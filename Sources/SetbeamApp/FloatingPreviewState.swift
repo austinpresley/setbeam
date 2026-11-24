@@ -50,6 +50,7 @@ struct AudienceControlState: Equatable {
             if failed?.holding == session.holding { failed = nil }
         }
         if !running, let target = pending, now >= deadline { pending = nil; failed = target }
+        if !session.audienceAvailable && pending != .resume { confirmedHolding = false }
     }
 }
 
@@ -63,23 +64,24 @@ struct FloatingPreviewState: Equatable {
     let enabled: Bool
     let label: String
 
-    init(session: SessionState, control: AudienceControlState, localReady: Bool, busy: Bool, starting: Bool = false, viewers: [ViewerActivity] = []) {
-        audience = FloatingAudienceSummary(sharing: session.sharing, viewers: viewers)
-        guard session.sharing else {
+    init(session: SessionState, control: AudienceControlState, localReady: Bool, busy: Bool, starting: Bool = false, stopping: Bool = false, viewers: [ViewerActivity] = []) {
+        audience = FloatingAudienceSummary(sharing: session.sharing && !stopping, viewers: viewers)
+        guard session.sharing, !stopping else {
             center = .hidden; washed = false; target = nil; enabled = false; label = "Private local preview"
             return
         }
         if let target = control.pending {
-            center = .pending; washed = control.confirmedHolding; self.target = target; enabled = false
+            center = .pending; self.target = target; enabled = false
+            washed = target == .resume ? control.confirmedHolding : session.holding && session.audienceAvailable
             label = target.holding ? "Applying Hold. Source picture and sound may still reach viewers." : "Resuming sharing"
         } else if let target = control.failed {
-            center = .failed; washed = control.confirmedHolding && session.holding
+            center = .failed; washed = session.audienceAvailable && session.holding
             self.target = target; enabled = !busy && (target.holding || localReady)
             label = target.holding ? "Hold did not finish. Retry Hold for viewers." : "Resume did not finish. Retry sharing."
-        } else if session.holding && control.confirmedHolding {
+        } else if session.holding && session.audienceAvailable {
             center = .resume; washed = true; target = .resume; enabled = !busy && localReady
             label = localReady ? "Resume sharing with viewers. Your local picture continues." : "On Hold. Waiting for a fresh local picture before resuming."
-        } else if !session.audienceAvailable {
+        } else if !session.audienceAvailable || !session.sourceAvailable {
             center = .recovery; washed = false; target = .hold; enabled = !busy
             label = starting ? "Sharing is starting. Hold source picture and sound for viewers." : "Outgoing picture reconnecting. Hold source picture and sound for viewers."
         } else {

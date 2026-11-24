@@ -70,11 +70,22 @@ final class FloatingPreviewStateTests: XCTestCase {
     }
     func testLostSourceKeepsConfirmedHoldButDisablesResume() throws {
         var control = AudienceControlState(); control.observe(try session(held: true), at: now)
-        let missing = try session(held: true, available: false, source: false)
+        let missing = try session(held: true, available: true, source: false)
         control.observe(missing, at: now.addingTimeInterval(2))
         let result = presentation(missing, control, local: false)
         XCTAssertTrue(result.washed); XCTAssertEqual(result.center, .resume); XCTAssertFalse(result.enabled)
     }
+    func testLostHoldingOutputClearsConfirmationAndResumeEvenWithLocalPicture() throws {
+        var control = AudienceControlState(); control.observe(try session(held: true), at: now)
+        let missing = try session(held: true, available: false)
+        control.observe(missing, at: now.addingTimeInterval(2))
+        let result = presentation(missing, control)
+        XCTAssertFalse(control.confirmedHolding)
+        XCTAssertFalse(result.washed)
+        XCTAssertEqual(result.center, .recovery)
+        XCTAssertEqual(result.target, .hold)
+    }
+
     func testStoppingClearsConfirmationPendingAndFailuresForTheNextLink() throws {
         var control = AudienceControlState(); control.observe(try session(held: true), at: now)
         control.begin(.resume)

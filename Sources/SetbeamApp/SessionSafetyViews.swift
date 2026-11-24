@@ -45,7 +45,7 @@ struct SetupCheckView: View {
             Label(model.setupCheck.passed ? "Current setup check passed" : "Setup check incomplete", systemImage: model.setupCheck.passed ? "checkmark.circle.fill" : "circle.dashed")
                 .foregroundStyle(model.setupCheck.passed ? Color.green : Color.secondary).font(.callout.weight(.medium))
             if model.setup?.kind == .sample { Text("This checks sample media. It does not verify your physical input.").font(.caption).foregroundStyle(.secondary) }
-            if model.state.sharing { Button("Stop sharing") { model.stopSharing() }.disabled(model.busy) }
+            if model.state.sharing { Button("Stop sharing") { model.stopSharing() }.disabled(!model.canStopSharing) }
         }.padding(28).frame(width: 540)
     }
     private func row(_ title: String, detail: String, passed: Bool) -> some View {

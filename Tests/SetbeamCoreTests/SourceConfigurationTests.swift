@@ -14,6 +14,69 @@ final class SourceConfigurationTests: XCTestCase {
         func allow() { lock.lock(); blocked = false; lock.unlock() }
     }
 
+    private actor PathPause {
+        private var continuation: CheckedContinuation<Void, Never>?
+        private var released = false
+        var waiting: Bool { continuation != nil }
+
+        func wait(_ stage: SourceConfigurationStep) async {
+            guard stage == .path, !released else { return }
+            await withCheckedContinuation { continuation = $0 }
+        }
+
+        func release() {
+            released = true
+            continuation?.resume()
+            continuation = nil
+        }
+    }
+
+    func testStopWhileSourceConfigurationIsParkedFinishesReplacementPrivately() async throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let tools = ProcessInfo.processInfo.environment["SETBEAM_TEST_TOOLS"].map { URL(fileURLWithPath: $0) } ?? root.appendingPathComponent("Vendor/bin")
+        let fixtures = ProcessInfo.processInfo.environment["SETBEAM_TEST_FIXTURES"].map { URL(fileURLWithPath: $0) } ?? root.appendingPathComponent("Fixtures")
+        guard FileManager.default.isExecutableFile(atPath: tools.appendingPathComponent("ffmpeg").path) else { throw XCTSkip("Bundled tools are required.") }
+        let pause = PathPause()
+        let runtime = MediaRuntime(paths: RuntimePaths(tools: tools, fixtures: fixtures), beforeSourceConfigurationStep: { await pause.wait($0) })
+        do {
+            _ = try await runtime.prepare(source: .sample, viewerAddress: "127.0.0.1")
+            _ = try await runtime.startSharing()
+            let before = await runtime.snapshot()
+            let originalProcesses = await runtime.processIDs()
+            let replacement = Task { try await runtime.replaceSource(.sample) }
+            let deadline = Date().addingTimeInterval(10)
+            while !(await pause.waiting), Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
+            let parked = await pause.waiting
+            XCTAssertTrue(parked)
+            let stoppedPromptly = expectation(description: "Stop completes before source configuration resumes")
+            let stop = Task { await runtime.stopSharing(); stoppedPromptly.fulfill() }
+            await fulfillment(of: [stoppedPromptly], timeout: 1)
+            let stopped = await runtime.snapshot()
+            XCTAssertFalse(stopped.session.sharing)
+            XCTAssertNotEqual(stopped.guestToken, before.guestToken)
+
+            await pause.release()
+            await stop.value
+            let replaced = try await replacement.value
+            XCTAssertTrue(replaced.session.monitoring)
+            XCTAssertFalse(replaced.session.sharing)
+            XCTAssertFalse(replaced.audienceAvailable)
+            let readyBy = Date().addingTimeInterval(10)
+            while !(await runtime.snapshot()).sourceAvailable, Date() < readyBy { try await Task.sleep(for: .milliseconds(100)) }
+            let ready = await runtime.snapshot()
+            let processes = await runtime.processIDs()
+            XCTAssertTrue(ready.sourceAvailable)
+            XCTAssertEqual(ready.guestToken, stopped.guestToken)
+            XCTAssertEqual(processes.count, 2)
+            XCTAssertEqual(processes.first, originalProcesses.first)
+            await runtime.shutdown()
+        } catch {
+            await pause.release()
+            await runtime.shutdown()
+            throw error
+        }
+    }
+
     func testFailedControllerUpdatesCannotShowThePreviousNetworkSourceUnderNewIdentity() async throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         let tools = ProcessInfo.processInfo.environment["SETBEAM_TEST_TOOLS"].map { URL(fileURLWithPath: $0) } ?? root.appendingPathComponent("Vendor/bin")

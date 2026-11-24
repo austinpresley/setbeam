@@ -4,13 +4,13 @@ import Darwin
 
 final class ViewerAuthorizationFailureTests: XCTestCase {
     private final class FailureGate: @unchecked Sendable {
-        private let lock = NSCondition()
+        private let lock = NSLock()
         private var step: ViewerAccessStep?
         private var audiencePID: Int32?
         private var observedAudienceRunning = false
         private var pauseCredentials = false
-        private var enteredPause = false
-        var waiting: Bool { lock.lock(); defer { lock.unlock() }; return enteredPause }
+        private var pause: CheckedContinuation<Void, Never>?
+        var waiting: Bool { lock.lock(); defer { lock.unlock() }; return pause != nil }
         var audienceRunningAtFailure: Bool {
             lock.lock(); defer { lock.unlock() }; return observedAudienceRunning
         }
@@ -20,17 +20,27 @@ final class ViewerAuthorizationFailureTests: XCTestCase {
             self.step = step; self.audiencePID = audiencePID
         }
         func allow() { lock.lock(); step = nil; lock.unlock() }
-        func pauseNextCredentials() { lock.lock(); pauseCredentials = true; enteredPause = false; lock.unlock() }
-        func resumeCredentials() { lock.lock(); pauseCredentials = false; lock.broadcast(); lock.unlock() }
-        func check(_ step: ViewerAccessStep) throws {
-            lock.lock(); defer { lock.unlock() }
-            if step == .credentials && pauseCredentials {
-                enteredPause = true
-                while pauseCredentials { lock.wait() }
+        func pauseNextCredentials() { lock.withLock { pauseCredentials = true } }
+        func resumeCredentials() {
+            lock.withLock {
+                pauseCredentials = false
+                pause?.resume(); pause = nil
             }
-            guard self.step == step else { return }
-            observedAudienceRunning = audiencePID.map { kill($0, 0) == 0 } ?? false
-            throw SetbeamError.runtime("Injected viewer authorization failure.")
+        }
+        func check(_ step: ViewerAccessStep) async throws {
+            if step == .credentials {
+                await withCheckedContinuation { continuation in
+                    lock.withLock {
+                        if pauseCredentials && pause == nil { pause = continuation }
+                        else { continuation.resume() }
+                    }
+                }
+            }
+            try lock.withLock {
+                guard self.step == step else { return }
+                observedAudienceRunning = audiencePID.map { kill($0, 0) == 0 } ?? false
+                throw SetbeamError.runtime("Injected viewer authorization failure.")
+            }
         }
     }
 
@@ -42,7 +52,7 @@ final class ViewerAuthorizationFailureTests: XCTestCase {
             throw XCTSkip("Bundled media tools are required.")
         }
         return MediaRuntime(paths: RuntimePaths(tools: tools, fixtures: fixtures), beforeSourceConfigurationStep: { _ in },
-            beforeViewerAccessStep: { try gate.check($0) })
+            beforeViewerAccessStep: { try await gate.check($0) })
     }
 
     private func waitForAudience(_ runtime: MediaRuntime) async throws -> RuntimeSnapshot {
@@ -131,6 +141,73 @@ final class ViewerAuthorizationFailureTests: XCTestCase {
             XCTAssertEqual(status, 401, "Start must apply its current approval choice instead of an older queued policy.")
             await runtime.shutdown()
         } catch { gate.resumeCredentials(); await runtime.shutdown(); throw error }
+    }
+
+    func testStopCutsDecodingWhileAuthorizationIsParkedAndDiscardsItsCompletion() async throws {
+        let gate = FailureGate(), runtime = try runtime(gate)
+        defer { gate.resumeCredentials() }
+        do {
+            _ = try await runtime.prepare(source: .sample, viewerAddress: "127.0.0.1")
+            _ = try await runtime.startSharing()
+            let live = try await waitForAudience(runtime), originalProcesses = await runtime.processIDs()
+            let reader = try await decodingReader(runtime, ViewerReader(user: "guest", password: live.guestToken))
+            defer { reader.stop() }
+
+            gate.pauseNextCredentials()
+            let auth = Task {
+                try await runtime.setViewerAccess(approval: false, readers: [
+                    ViewerReader(user: "viewerA", password: UUID().uuidString)
+                ])
+            }
+            let deadline = Date().addingTimeInterval(2)
+            while !gate.waiting && Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
+            XCTAssertTrue(gate.waiting)
+            let stoppedPromptly = expectation(description: "Stop completes before authorization is released")
+            let stop = Task { await runtime.stopSharing(); stoppedPromptly.fulfill() }
+            await fulfillment(of: [stoppedPromptly], timeout: 1)
+            let stopped = await runtime.snapshot()
+            let remaining = await runtime.processIDs()
+            XCTAssertFalse(stopped.session.sharing)
+            XCTAssertFalse(stopped.audienceAvailable)
+            XCTAssertTrue(stopped.sourceAvailable)
+            XCTAssertNotEqual(stopped.guestToken, live.guestToken)
+            XCTAssertEqual(remaining, Array(originalProcesses.prefix(2)))
+            try await assertPlaybackEnded(reader)
+
+            gate.resumeCredentials()
+            await stop.value
+            do { try await auth.value; XCTFail("The stopped authorization completed.") }
+            catch is CancellationError {}
+            let afterAuthorization = await runtime.snapshot()
+            XCTAssertFalse(afterAuthorization.session.sharing)
+            XCTAssertEqual(afterAuthorization.guestToken, stopped.guestToken)
+            _ = try await runtime.startSharing()
+            let restarted = try await waitForAudience(runtime)
+            let status = try await authorizationStatus(restarted.audience, user: "guest", password: live.guestToken)
+            XCTAssertEqual(status, 401)
+            await runtime.shutdown()
+        } catch {
+            gate.resumeCredentials()
+            await runtime.shutdown()
+            throw error
+        }
+    }
+
+    func testRevocationRequiresACompleteValidatedListing() throws {
+        let id = UUID()
+        let item = ["id": id.uuidString, "user": "viewerA"]
+        XCTAssertEqual(try MediaRuntime.validatedSessionUsers(["itemCount": 0, "pageCount": 0, "items": []]), [:])
+        XCTAssertEqual(try MediaRuntime.validatedSessionUsers(["itemCount": 1, "pageCount": 1, "items": [item]]), [id: "viewerA"])
+        for malformed: [String: Any] in [
+            [:],
+            ["itemCount": 2, "pageCount": 2, "items": [item]],
+            ["itemCount": true, "pageCount": 1, "items": [item]],
+            ["itemCount": 1, "pageCount": 1, "items": [["id": id.uuidString]]],
+            ["itemCount": 1, "pageCount": 1, "items": [["id": "bad", "user": "viewerA"]]],
+            ["itemCount": 2, "pageCount": 1, "items": [item, item]]
+        ] {
+            XCTAssertThrowsError(try MediaRuntime.validatedSessionUsers(malformed))
+        }
     }
 
     func testFailedApprovalEndsSharingBeforeUnsafeMediaCanRecover() async throws {

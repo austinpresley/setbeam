@@ -9,13 +9,16 @@ final class IncomingStreamRelay: @unchecked Sendable {
         let port: UInt16
         let targetPort: UInt16
     }
-    private final class Start {
+    // All mutable fields are confined to the relay queue.
+    private final class Start: @unchecked Sendable {
         let destination: Destination
         let keepTrying: Bool
+        let suspendSenders: Bool
         var completion: CheckedContinuation<Void, Error>?
         var listener: NWListener?
-        init(_ destination: Destination, keepTrying: Bool, completion: CheckedContinuation<Void, Error>?) {
-            self.destination = destination; self.keepTrying = keepTrying; self.completion = completion
+        var cancelled = false
+        init(_ destination: Destination, keepTrying: Bool, suspendSenders: Bool = false) {
+            self.destination = destination; self.keepTrying = keepTrying; self.suspendSenders = suspendSenders
         }
         func finish(_ result: Result<Void, Error>) { completion?.resume(with: result); completion = nil }
     }
@@ -31,24 +34,59 @@ final class IncomingStreamRelay: @unchecked Sendable {
     private var listener: NWListener?
     private var destination: Destination?
     private var startup: Start?
+    private var sendersSuspended = false
     private var connections: [UUID: Connection] = [:]
     private var timer: DispatchSourceTimer?
     init() { queue.setSpecific(key: queueKey, value: ()) }
 
     /// A failed new binding leaves the existing listener alone. Initial restoration
     /// can keep retrying an absent interface after its bounded startup result.
-    func start(address: String, port: UInt16, targetPort: UInt16, keepTrying: Bool = false) async throws {
-        try await withCheckedThrowingContinuation { completion in
-            queue.async { [self] in
-                let requested = Destination(address: address, port: port, targetPort: targetPort)
-                if destination == requested, listener?.state == .ready { completion.resume(); return }
-                startup?.listener?.cancel()
-                startup?.finish(.failure(SetbeamError.unavailable("The incoming destination changed.")))
-                let attempt = Start(requested, keepTrying: keepTrying, completion: completion)
-                startup = attempt
-                begin(attempt)
+    func start(address: String, port: UInt16, targetPort: UInt16, keepTrying: Bool = false,
+               suspendSenders: Bool = false) async throws {
+        let attempt = Start(Destination(address: address, port: port, targetPort: targetPort),
+                            keepTrying: keepTrying, suspendSenders: suspendSenders)
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (completion: CheckedContinuation<Void, Error>) in
+                queue.async { [self] in
+                    guard !attempt.cancelled else { completion.resume(throwing: CancellationError()); return }
+                    cancelStartup(SetbeamError.unavailable("The incoming destination changed."))
+                    if destination == attempt.destination, listener?.state == .ready {
+                        if attempt.suspendSenders { suspendForwarding() }
+                        completion.resume()
+                        return
+                    }
+                    attempt.completion = completion
+                    startup = attempt
+                    begin(attempt)
+                }
+            }
+        } onCancel: {
+            // Mark cancelled even when cancellation precedes queue registration.
+            onQueue {
+                attempt.cancelled = true
+                if startup === attempt {
+                    cancelStartup(CancellationError())
+                    retryActiveDestination()
+                }
             }
         }
+    }
+
+    private func cancelStartup(_ error: Error) {
+        let attempt = startup
+        startup = nil
+        attempt?.listener?.stateUpdateHandler = nil
+        attempt?.listener?.cancel()
+        attempt?.listener = nil
+        attempt?.finish(.failure(error))
+    }
+
+    private func retryActiveDestination() {
+        // A replacement owns startup until it succeeds, fails or is cancelled.
+        guard startup == nil, listener == nil, let destination else { return }
+        let retry = Start(destination, keepTrying: true)
+        startup = retry
+        queue.asyncAfter(deadline: .now() + 1) { [weak self] in self?.begin(retry) }
     }
 
     private func begin(_ attempt: Start) {
@@ -59,7 +97,7 @@ final class IncomingStreamRelay: @unchecked Sendable {
             let candidate = try NWListener(using: parameters, on: .init(rawValue: attempt.destination.port)!)
             attempt.listener = candidate
             candidate.newConnectionHandler = { [weak self, weak candidate] connection in
-                guard let self, let candidate, self.listener === candidate,
+                guard let self, let candidate, self.listener === candidate, !self.sendersSuspended,
                       Self.allows(connection.endpoint, network: NetworkAddress.subnet(for: attempt.destination.address)) else { connection.cancel(); return }
                 self.accept(connection, targetPort: attempt.destination.targetPort)
             }
@@ -67,22 +105,21 @@ final class IncomingStreamRelay: @unchecked Sendable {
                 guard let self, let candidate else { return }
                 switch state {
                 case .ready:
-                    guard self.startup === attempt else { return }
+                    guard self.startup === attempt, attempt.listener === candidate else { return }
                     let previous = self.listener
-                    self.closeConnections()
+                    if attempt.suspendSenders { self.suspendForwarding() }
+                    else { self.closeConnections() }
                     self.listener = candidate; self.destination = attempt.destination; self.startup = nil
                     attempt.listener = nil
                     previous?.cancel()
                     self.startIdleTimer()
                     attempt.finish(.success(()))
                 case .failed(let error), .waiting(let error):
-                    if self.startup === attempt { self.failed(attempt, error: error) }
+                    if self.startup === attempt, attempt.listener === candidate { self.failed(attempt, error: error) }
                     else if self.listener === candidate {
                         candidate.stateUpdateHandler = nil; candidate.cancel()
                         self.listener = nil; self.closeConnections()
-                        let retry = Start(attempt.destination, keepTrying: true, completion: nil)
-                        self.startup = retry
-                        self.queue.asyncAfter(deadline: .now() + 1) { [weak self] in self?.begin(retry) }
+                        self.retryActiveDestination()
                     }
                 default: break
                 }
@@ -123,7 +160,10 @@ final class IncomingStreamRelay: @unchecked Sendable {
         attempt.finish(.failure(SetbeamError.unavailable("The incoming destination could not open. Choose an available input address and port. \(error.localizedDescription)")))
         if attempt.keepTrying {
             queue.asyncAfter(deadline: .now() + 1) { [weak self] in self?.begin(attempt) }
-        } else { startup = nil }
+        } else {
+            startup = nil
+            retryActiveDestination()
+        }
     }
 
     private func accept(_ input: NWConnection, targetPort: UInt16) {
@@ -180,11 +220,13 @@ final class IncomingStreamRelay: @unchecked Sendable {
         if DispatchQueue.getSpecific(key: queueKey) != nil { action() }
         else { queue.sync(execute: action) }
     }
-    func disconnectSenders() { onQueue { closeConnections() } }
+    private func suspendForwarding() { sendersSuspended = true; closeConnections() }
+    func resumeSenders() { onQueue { sendersSuspended = false } }
     func stop() {
         onQueue {
-            startup?.listener?.cancel(); startup?.finish(.failure(SetbeamError.unavailable("The incoming destination stopped."))); startup = nil
+            cancelStartup(SetbeamError.unavailable("The incoming destination stopped."))
             listener?.cancel(); listener = nil; destination = nil
+            sendersSuspended = false
             timer?.cancel(); timer = nil; closeConnections()
         }
     }

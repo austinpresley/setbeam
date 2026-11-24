@@ -17,7 +17,7 @@ struct SharingTally: View {
             HStack(spacing: 8) {
                 tallySymbol
                 Text(title).font(.system(size: 12, weight: .bold)).tracking(hasTallyColor ? 0.7 : 0)
-                if model.state.sharing {
+                if model.canStopSharing {
                     Image(systemName: "chevron.down").font(.system(size: 8, weight: .semibold))
                 }
             }
@@ -96,8 +96,10 @@ struct SharingTally: View {
                         .disabled(model.busy)
                 }
                 Button { model.showSharing(.invite); expanded = false } label: { Label("Invite viewers", systemImage: "qrcode") }
+            }
+            if model.canStopSharing || model.stoppingSharing {
                 Button { model.stopSharing(); expanded = false } label: { Label("Stop Sharing", systemImage: "stop.fill") }
-                    .disabled(model.busy).help("End viewer access. Your local monitor continues.")
+                    .disabled(!model.canStopSharing).help("End viewer access. Your local monitor continues.")
             }
         }.padding(16).frame(minWidth: 244, alignment: .leading)
     }

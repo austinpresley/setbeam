@@ -50,6 +50,8 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
     @Published var viewers: [ViewerActivity] = [] { didSet { observeJoinRequests() } }
     @Published var busy = false
     @Published private(set) var stoppingSharing = false
+    @Published private var startingSharing = false
+    private var audienceCommandGeneration: UInt64 = 0
     @Published private var preparingConnection = false
     @Published var error: String? {
         didSet { if let error, error != oldValue { SessionLog.shared.record("operator.message", ["message": error]) } }
@@ -270,11 +272,12 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
     var localReady: Bool { state.sourceAvailable && nativePreviewPlaying }
     var floatingPresentation: FloatingPreviewState {
         FloatingPreviewState(session: state, control: audienceControl, localReady: localReady, busy: busy,
-                             starting: outgoingTransition.activeChange() == .startSharing, viewers: viewers)
+                             starting: startingSharing, stopping: stoppingSharing, viewers: viewers)
     }
     private var outgoingReady: Bool { state.audienceAvailable && (state.holding || state.sourceAvailable) }
     var audiencePresentation: AudiencePresentation {
-        AudiencePresentation(session: state, control: audienceControl, change: outgoingTransition.activeChange(),
+        AudiencePresentation(session: state, control: audienceControl,
+                             change: !state.sharing && startingSharing ? .startSharing : outgoingTransition.activeChange(),
                              localReady: localReady, busy: busy, stopping: stoppingSharing)
     }
     var outgoingIsChanging: Bool { state.sharing && audiencePresentation.isChanging }
@@ -325,7 +328,7 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
     private var appliedApproval = false
     /// Pointers describe the live shared picture, so they appear only while it is being shared,
     /// and on this Mac only after the operator chooses to see them.
-    var showsPointers: Bool { sharedPointers && pointersOnThisMac && state.sharing && !state.holding }
+    var showsPointers: Bool { sharedPointers && pointersOnThisMac && state.sharing && !state.holding && !stoppingSharing }
     func setPointersOnThisMac(_ visible: Bool) {
         guard visible != pointersOnThisMac else { return }
         pointersOnThisMac = visible
@@ -410,22 +413,31 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
     private func syncViewerAccess() {
         guard accessSync == nil else { accessSyncAgain = true; return }
         accessSync = Task { [weak self] in
-            while let self, !self.shuttingDown {
+            while let self, !self.shuttingDown, !self.stoppingSharing {
                 self.accessSyncAgain = false
                 let approval = self.viewerApproval, readers = self.gateway.desiredReaders, wasSharing = self.state.sharing
+                let generation = self.audienceCommandGeneration
+                let runtimeGeneration = wasSharing ? self.currentRuntime?.audienceGeneration : nil
                 do {
-                    try await self.runtime.setViewerAccess(approval: approval, readers: readers)
-                    self.appliedReaders = readers; self.appliedApproval = approval
-                    if approval == self.viewerApproval { self.applyingViewerApproval = false }
-                    self.gateway.confirm(readers: readers)
-                    if self.state.monitoring { self.apply(await self.runtime.snapshot()); self.publishGatewayState() }
+                    try await self.runtime.setViewerAccess(approval: approval, readers: readers, for: runtimeGeneration)
+                    if self.isCurrentAudienceCommand(generation) {
+                        self.appliedReaders = readers; self.appliedApproval = approval
+                        self.gateway.confirm(readers: readers)
+                        if approval == self.viewerApproval { self.applyingViewerApproval = false }
+                        self.apply(await self.runtime.snapshot())
+                        self.publishGatewayState()
+                    }
+                } catch is CancellationError {
+                    // Stop or a new runtime lifetime superseded this authorization.
                 } catch {
-                    self.lastRuntimeProblem = Redaction.text(error.localizedDescription)
-                    if wasSharing {
-                        await self.endSharing()
-                        self.error = "Sharing stopped because viewer access could not be confirmed. Your local monitor continues. Start sharing again to retry."
-                    } else {
-                        self.error = "Viewer access could not be confirmed. Setbeam will retry before sharing."
+                    if self.isCurrentAudienceCommand(generation) {
+                        self.lastRuntimeProblem = Redaction.text(error.localizedDescription)
+                        if wasSharing, self.beginStoppingSharing() {
+                            self.error = "Sharing stopped because viewer access could not be confirmed. Your local monitor continues. Start sharing again to retry."
+                            await self.finishStoppingSharing()
+                        } else if !wasSharing {
+                            self.error = "Viewer access could not be confirmed. Setbeam will retry before sharing."
+                        }
                     }
                 }
                 guard self.accessSyncAgain else { break }
@@ -447,7 +459,8 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
         if state.audience != .live { return "Audience audio: reconnecting" }
         return audienceHasAudio ? "Audience audio: included" : "Audience audio: no track"
     }
-    var canShare: Bool { localReady && !busy }
+    var canShare: Bool { localReady && !busy && !stoppingSharing }
+    var canStopSharing: Bool { !shuttingDown && !stoppingSharing && (state.sharing || startingSharing) }
     var restoreFloating: Bool { !integration && defaults.bool(forKey: "floatingVisible") }
     var audienceLabel: String {
         guard state.sharing else { return "Only you can see this" }
@@ -592,6 +605,8 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
         }
     }
     func apply(_ snapshot: RuntimeSnapshot) {
+        guard snapshot.audienceGeneration >= (currentRuntime?.audienceGeneration ?? 0),
+              !stoppingSharing || !snapshot.session.sharing else { return }
         if !snapshot.session.sharing || snapshot.source != .sample { integrationSessionFile?.clear() }
         if currentRuntime?.audienceRevision != snapshot.audienceRevision || snapshot.session.audience != .live { clearChatAttachment() }
         currentRuntime = snapshot; preview = snapshot.session.monitoring ? snapshot.preview : nil
@@ -731,102 +746,118 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
         let discovery = sourceBrowser.stop()
         rejoinAttempt?.revoke()
         Task {
+            defer { preparingConnection = false; busy = false }
             await discovery?.value
-            guard !shuttingDown else { busy = false; return }
-            if candidate.kind.isMacCapture && !MacScreenCapture.requestPermission() {
-                pendingScreenPermission = (candidate, remember)
-                screenPermissionDenied = true; permissionDenied = true; error = "Allow Setbeam in Screen Recording, then retry."
-                busy = false; setup = state.monitoring ? setup : candidate; return
+            guard !shuttingDown else { return }
+            if candidate.kind.isMacCapture {
+                let allowed = await Task.detached { MacScreenCapture.requestPermission() }.value
+                guard !shuttingDown else { return }
+                if !allowed {
+                    pendingScreenPermission = (candidate, remember)
+                    screenPermissionDenied = true; permissionDenied = true; error = "Allow Setbeam in Screen Recording, then retry."
+                    setup = state.monitoring ? setup : candidate
+                    return
+                }
             }
             if candidate.kind == .capture {
                 let videoAllowed = await Self.requestPermission(.video)
                 let audioAllowed = candidate.audioID == nil ? true : await Self.requestPermission(.audio)
-                guard videoAllowed && audioAllowed else { permissionDenied = true; error = "Allow access to the selected video or sound input in Privacy & Security, then retry."; busy = false; setup = state.monitoring ? setup : candidate; return }
+                guard !shuttingDown else { return }
+                if !videoAllowed || !audioAllowed {
+                    permissionDenied = true; error = "Allow access to the selected video or sound input in Privacy & Security, then retry."
+                    setup = state.monitoring ? setup : candidate
+                    return
+                }
             }
             guard !shuttingDown else { return }
             let changingSource = state.monitoring
-            let originalSelection = (setup: setup, source: source, address: activeNetworkURL, remember: rememberSetup, confirmed: setupConfirmed)
             if localReady, let setup {
                 previousSource = (setup, activeNetworkURL, rememberSetup)
             }
-            if state.sharing {
+            if state.sharing && !stoppingSharing && (!state.holding || !state.audienceAvailable) {
                 outgoingTransition.begin(.hold)
                 audienceControl.begin(.hold)
+                audiencePlayer.stop(); audiencePreviewPlaying = false
                 gateway.setChatFramePermission(false); clearChatAttachment(); updateSourceDisplayPointers()
             }
             preparingConnection = true
-            defer { preparingConnection = false }
-            localPlayer.stop(); audiencePlayer.stop(); audiencePreviewPlaying = false
             if !changingSource {
                 gateway.stop(); gatewayPort = nil; viewerURL = nil; viewers = []; sharingPower.hold(false)
                 retireLocalAddress()
                 currentRuntime = nil
             }
-            preview = nil; nativePreviewPlaying = false; sourceHasAudio = false; audienceHasAudio = false; testSoundConfirmed = false
-            readiness = SetupReadiness(); setupConfirmed = false; lastFrameAt = nil; connectedAt = Date()
-            rememberFailed = false
-            setup = candidate; activeNetworkURL = address; rememberSetup = remember
-            windowPresence = nil; windowTitle = nil
-            source = chosen
+
             do {
                 let inputAddress = candidate.kind == .incoming ? networks.first(where: \.wireless)?.address ?? "127.0.0.1" : nil
-                let snapshot: RuntimeSnapshot
-                if changingSource { snapshot = try await runtime.replaceSource(chosen, inputAddress: inputAddress) }
+                if changingSource { _ = try await runtime.replaceSource(chosen, inputAddress: inputAddress) }
                 else {
                     await runtime.setVideoSettings(quality: audienceQuality, frameRate: audienceFrameRate, screenFrameRate: screenFrameRate)
-                    snapshot = try await runtime.prepare(source: chosen, viewerAddress: viewerAddress, inputAddress: inputAddress)
+                    _ = try await runtime.prepare(source: chosen, viewerAddress: viewerAddress, inputAddress: inputAddress)
                 }
                 guard !shuttingDown else { return }
-                apply(snapshot)
-                if state.sharing { audienceControl.complete(snapshot.session) }
+                commitSourceSelection(candidate, source: chosen, address: address, remember: remember)
+                try await refreshSelectedSourcePlayback()
+                if state.sharing && !stoppingSharing, let pending = audienceControl.pending, pending == .hold {
+                    audienceControl.complete(state)
+                }
                 publishGatewayState()
-                if let destination = await runtime.incomingDestination() { incomingServer = destination.server; incomingStreamKey = destination.streamKey }
-                let localURL = await runtime.localRTSP()
-                let audienceURL = state.sharing ? await runtime.localRTSP("live") : nil
-                guard !shuttingDown else { busy = false; return }
-                try localPlayer.start(url: localURL)
-                if let audienceURL { try audiencePlayer.start(url: audienceURL) }
                 if restoreFloating { floating.show() }
-                busy = false
+                preparingConnection = false; busy = false
                 if candidate.kind == .incoming && candidate.confirmedAt == nil { present(.incoming) }
                 if integration && !changingSource { await startSharingNow(); writeIntegrationSession() }
             } catch {
-                guard !shuttingDown else { busy = false; return }
-                localPlayer.stop(); busy = false
-                if !changingSource { await runtime.shutdown(); apply(await runtime.snapshot()) }
-                else {
+                guard !shuttingDown else { return }
+                if !changingSource {
+                    await runtime.shutdown()
+                    guard !shuttingDown else { return }
+                    commitSourceSelection(candidate, source: chosen, address: address, remember: remember)
+                } else {
                     let actual = await runtime.snapshot()
-                    if actual.source != chosen {
-                        setup = originalSelection.setup; source = originalSelection.source
-                        activeNetworkURL = originalSelection.address; rememberSetup = originalSelection.remember
-                        setupConfirmed = originalSelection.confirmed
-                    }
-                    apply(actual)
-                    if actual.session.sharing {
-                        if actual.session.holding && actual.session.audienceAvailable { audienceControl.complete(actual.session) }
-                        else { audienceControl.fail(.hold, session: actual.session); outgoingTransition.reset() }
-                    }
-                    if actual.session.monitoring {
-                        let localURL = await runtime.localRTSP()
-                        guard !shuttingDown else { return }
-                        try? localPlayer.start(url: localURL)
+                    guard !shuttingDown else { return }
+                    if actual.source == chosen, source != chosen {
+                        commitSourceSelection(candidate, source: chosen, address: address, remember: remember)
                     }
                 }
-                self.error = state.sharing
+                try? await refreshSelectedSourcePlayback()
+                guard !shuttingDown else { return }
+                if state.sharing && !stoppingSharing && audienceControl.pending == .hold {
+                    if state.holding && state.audienceAvailable { audienceControl.complete(state) }
+                    else { audienceControl.fail(.hold, session: state); outgoingTransition.reset() }
+                }
+                self.error = state.sharing && !stoppingSharing
                     ? (audiencePresentation.confirmedHold ? "The new input could not start. Viewers remain on Hold. Retry or return to the previous source."
                        : "The new input could not start and holding output is not confirmed. Retry Hold or stop sharing.")
                     : "The connection could not start. Retry, or return to the previous source."
                 lastRuntimeProblem = Redaction.text(error.localizedDescription)
-                if !state.monitoring { preview = nil }
-                if state.sharing {
-                    let audienceURL = await runtime.localRTSP("live")
-                    guard !shuttingDown else { return }
-                    try? audiencePlayer.start(url: audienceURL)
-                }
                 publishGatewayState()
             }
         }
     }
+    private func commitSourceSelection(_ candidate: SourceSetup, source: VideoSource, address: String?, remember: Bool) {
+        localPlayer.stop()
+        nativePreviewPlaying = false; sourceHasAudio = false; testSoundConfirmed = false
+        readiness = SetupReadiness(); setupConfirmed = false; lastFrameAt = nil; connectedAt = Date()
+        rememberFailed = false
+        setup = candidate; activeNetworkURL = address; rememberSetup = remember
+        windowPresence = nil; windowTitle = nil
+        self.source = source
+        incomingServer = ""; incomingStreamKey = ""
+    }
+
+    private func refreshSelectedSourcePlayback() async throws {
+        let destination = await runtime.incomingDestination()
+        let localURL = await runtime.localRTSP()
+        let audienceURL = await runtime.localRTSP("live")
+        let snapshot = await runtime.snapshot()
+        guard !shuttingDown else { return }
+        if setup?.kind == .incoming, let destination {
+            incomingServer = destination.server; incomingStreamKey = destination.streamKey
+        }
+        apply(snapshot)
+        if state.monitoring, !nativePreviewPlaying { try localPlayer.start(url: localURL) }
+        if state.sharing && !stoppingSharing, !audiencePreviewPlaying { try? audiencePlayer.start(url: audienceURL) }
+    }
+
     func returnToPreviousSource() {
         guard !protectsSourceDraft else { monitorWindow?.makeKeyAndOrderFront(nil); return }
         guard !busy, let previousSource else { return }
@@ -840,7 +871,7 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
         }
     }
     private func confirmSetupIfReady() {
-        guard !setupConfirmed, !rememberFailed, readiness.observe(sourceFresh: state.sourceAvailable, previewFresh: nativePreviewPlaying), let setup else { return }
+        guard !preparingConnection, !setupConfirmed, !rememberFailed, readiness.observe(sourceFresh: state.sourceAvailable, previewFresh: nativePreviewPlaying), let setup else { return }
         guard rememberSetup, !integration else { setupConfirmed = true; return }
         do {
             if setup.kind == .network || setup.kind == .incoming {
@@ -902,41 +933,54 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
     }
     func startSharing() { guard !busy else { return }; Task { await startSharingNow() } }
     private func startSharingNow() async {
-        guard !shuttingDown, state.monitoring, !state.sharing, (localReady || integration) else { return }
+        guard !shuttingDown, !busy, !stoppingSharing, state.monitoring, !state.sharing, (localReady || integration) else { return }
         // Viewers may come to depend on this Mac's Wi-Fi; a pending rejoin must not switch it.
         if rejoinAttempt?.revoke() == true {
             error = "The transmitter is joining Wi-Fi. Try Go Live again when it finishes."
             return
         }
-        busy = true; error = nil
+        busy = true; startingSharing = true; error = nil
+        let generation = audienceCommandGeneration
+        defer { busy = false; startingSharing = false; writeIntegrationSession() }
         outgoingTransition.begin(.startSharing)
         do {
             await refreshNetworks()
-            guard !shuttingDown else { busy = false; return }
-            apply(try await runtime.startSharing(approval: viewerApproval))
+            guard isCurrentAudienceCommand(generation) else { return }
+            let snapshot = try await runtime.startSharing(approval: viewerApproval)
+            guard isCurrentAudienceCommand(generation) else { return }
+            apply(snapshot)
             appliedReaders = []; viewingLink += 1
-            guard !shuttingDown else { busy = false; return }
-            outgoingTransition.observeReady(outgoingReady)
             publishGatewayState()
-            if gatewayPort == nil { gatewayPort = try await gateway.start(address: viewerAddress) }
-            guard !shuttingDown else { busy = false; return }
+            if gatewayPort == nil {
+                let port = try await gateway.start(address: viewerAddress)
+                guard isCurrentAudienceCommand(generation) else { return }
+                gatewayPort = port
+            }
             if let port = gatewayPort, let snapshot = currentRuntime { viewerURL = URL(string: "http://\(viewerAddress):\(port)/s/\(snapshot.guestToken)/") }
             updateLocalAddress()
             observeJoinRequests()
             let audienceURL = await runtime.localRTSP("live")
-            guard !shuttingDown else { busy = false; return }
+            guard isCurrentAudienceCommand(generation) else { return }
             try audiencePlayer.start(url: audienceURL)
             networkChanged = false; sharingPower.hold(true)
         } catch {
-            guard !shuttingDown else { busy = false; return }
-            gateway.stop(); gatewayPort = nil; viewerURL = nil; retireLocalAddress(); await runtime.stopSharing(); apply(await runtime.snapshot()); outgoingTransition.reset(); audiencePlayer.stop(); self.error = "Sharing could not start. Check the viewing network and try again."; lastRuntimeProblem = Redaction.text(error.localizedDescription)
+            guard isCurrentAudienceCommand(generation), beginStoppingSharing() else { return }
+            gateway.stop(); gatewayPort = nil; viewerURL = nil
+            self.error = "Sharing could not start. Check the viewing network and try again."
+            lastRuntimeProblem = Redaction.text(error.localizedDescription)
+            await finishStoppingSharing()
         }
-        busy = false; writeIntegrationSession()
     }
+    private func isCurrentAudienceCommand(_ generation: UInt64) -> Bool {
+        generation == audienceCommandGeneration && !shuttingDown && !stoppingSharing
+    }
+
     func toggleHold() { performAudienceAction() }
     func setAudienceHold(_ value: Bool) {
-        guard state.sharing, !busy else { return }; busy = true
-        guard value || localReady else { busy = false; error = "Wait for a fresh local picture before resuming sharing."; return }
+        guard state.sharing, !busy, !stoppingSharing, !shuttingDown else { return }
+        guard value || localReady else { error = "Wait for a fresh local picture before resuming sharing."; return }
+        busy = true
+        let generation = audienceCommandGeneration
         audienceControl.begin(AudienceTarget(holding: value))
         gateway.setChatFramePermission(false); clearChatAttachment()
         updateSourceDisplayPointers()
@@ -944,49 +988,67 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
         testSoundConfirmed = false
         writeExperienceState()
         Task {
+            defer { busy = false; writeExperienceState() }
             do {
                 try await runtime.setHold(value)
-                let snapshot = await runtime.snapshot()
                 let audienceURL = await runtime.localRTSP("live")
-                guard !shuttingDown else { busy = false; return }
+                let snapshot = await runtime.snapshot()
+                guard isCurrentAudienceCommand(generation) else { return }
                 apply(snapshot)
-                audienceControl.complete(snapshot.session)
+                audienceControl.complete(state)
                 audiencePlayer.stop(); audiencePreviewPlaying = false
                 try? audiencePlayer.start(url: audienceURL)
-            }
-            catch {
-                guard !shuttingDown else { busy = false; return }
-                apply(await runtime.snapshot()); audienceControl.fail(AudienceTarget(holding: value), session: state); outgoingTransition.reset(); self.error = value ? "Hold did not finish. Retry Hold or stop sharing." : "Resume did not finish. Retry Resume, Hold, or stop sharing."; lastRuntimeProblem = Redaction.text(error.localizedDescription)
+            } catch {
+                let snapshot = await runtime.snapshot()
+                guard isCurrentAudienceCommand(generation) else { return }
+                apply(snapshot)
+                audienceControl.fail(AudienceTarget(holding: value), session: state)
+                outgoingTransition.reset()
+                self.error = value ? "Hold did not finish. Retry Hold or stop sharing." : "Resume did not finish. Retry Resume, Hold, or stop sharing."
+                lastRuntimeProblem = Redaction.text(error.localizedDescription)
             }
             publishGatewayState()
-            busy = false; writeExperienceState()
         }
     }
     func stopSharing() {
-        guard !busy else { return }; busy = true; stoppingSharing = true
-        gateway.setChatFramePermission(false); clearChatAttachment()
-        updateSourceDisplayPointers()
-        Task { await endSharing(); stoppingSharing = false; busy = false }
+        guard canStopSharing, beginStoppingSharing() else { return }
+        Task { await finishStoppingSharing() }
     }
-    private func endSharing() async {
+    private func beginStoppingSharing() -> Bool {
+        guard !stoppingSharing, !shuttingDown else { return false }
+        stoppingSharing = true
+        audienceCommandGeneration &+= 1
         integrationSessionFile?.clear()
+        if startingSharing && gatewayPort == nil { gateway.stop() }
         sharingPower.hold(false)
-        // The name and short address end with the viewing link. Stop rotates the link, so old links stay expired.
         retireLocalAddress()
         outgoingTransition.reset()
+        audienceControl = AudienceControlState()
         audiencePlayer.stop(); audiencePreviewPlaying = false; audienceHasAudio = false; testSoundConfirmed = false
+        clearChatAttachment()
+        pointerPresence.clear(); pointersOnThisMac = false
+        updateSourceDisplayPointers()
+        publishGatewayState()
+        return true
+    }
+    private func finishStoppingSharing() async {
         await runtime.stopSharing()
-        appliedReaders = []; pointerPresence.clear(); pointersOnThisMac = false
-        apply(await runtime.snapshot()); publishGatewayState()
+        let stopped = await runtime.snapshot()
+        appliedReaders = []
+        apply(stopped)
+        publishGatewayState()
         viewers = gateway.viewers
+        stoppingSharing = false
+        writeExperienceState()
     }
     private func publishGatewayState() {
         guard let snapshot = currentRuntime else { return }
-        gateway.update(ViewerSession(token: snapshot.guestToken, title: title, sample: source == .sample, state: state.audience,
+        gateway.update(ViewerSession(token: snapshot.guestToken, title: title, sample: snapshot.source == .sample,
+            state: stoppingSharing ? .stopped : state.audience,
             playback: snapshot.audience, revision: snapshot.audienceRevision, wifiSSID: wifiSSID))
         gateway.setChatFramePermission(canCaptureChatFrame)
     }
-    var canCaptureChatFrame: Bool { state.audience == .live && outgoingReady && audiencePreviewPlaying && audienceControl.pending == nil && !busy && !shuttingDown }
+    var canCaptureChatFrame: Bool { state.audience == .live && outgoingReady && audiencePreviewPlaying && audienceControl.pending == nil && !busy && !stoppingSharing && !shuttingDown }
     func refreshChat() {
         let messages = state.sharing ? gateway.chatMessages : []
         if messages != chatMessages {
@@ -1041,9 +1103,11 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
     func refreshNetworks() async {
         guard !shuttingDown else { return }
         let available = NetworkAddress.available(); networks = available
-        if setup?.kind == .incoming, state.monitoring {
-            try? await runtime.updateInputAddress(available.first(where: \.wireless)?.address ?? "127.0.0.1")
-            if let destination = await runtime.incomingDestination() { incomingServer = destination.server; incomingStreamKey = destination.streamKey }
+        if let selectedSetup = setup, selectedSetup.kind == .incoming, state.monitoring, !preparingConnection {
+            try? await runtime.updateInputAddress(available.first(where: \.wireless)?.address ?? "127.0.0.1", for: source)
+            if let destination = await runtime.incomingDestination(), setup == selectedSetup, !preparingConnection {
+                incomingServer = destination.server; incomingStreamKey = destination.streamKey
+            }
         }
         let selected: NetworkAddress?
         if state.sharing {
@@ -1061,7 +1125,7 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
             try await runtime.updateViewerAddress(address)
             guard !shuttingDown else { return }
             if state.monitoring { apply(await runtime.snapshot()) }
-            if state.sharing, let port = gatewayPort, let snapshot = currentRuntime {
+            if state.sharing, !stoppingSharing, let port = gatewayPort, let snapshot = currentRuntime {
                 // Preserve audience intent, Hold, credential, and port through network recovery.
                 publishGatewayState()
                 viewerURL = URL(string: "http://\(address):\(port)/s/\(snapshot.guestToken)/")
@@ -1092,7 +1156,11 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
         guard network != networkChoice else { return }
         networkChoice = network
         if !integration { defaults.set(network, forKey: "viewerInterface") }
-        Task { if state.sharing { await endSharing(); networkChanged = true }; await refreshNetworks() }
+        let endingShare = canStopSharing && beginStoppingSharing()
+        Task {
+            if endingShare { await finishStoppingSharing(); networkChanged = true }
+            await refreshNetworks()
+        }
     }
     func setAudienceQuality(_ quality: AudienceQuality) {
         setVideoSettings(quality: quality, frameRate: audienceFrameRate, screenRate: screenFrameRate)
@@ -1221,7 +1289,7 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
     /// Publishes only while sharing on a network viewers can join, on that viewing interface and address.
     private func updateLocalAddress() {
         defer { updateShortAddress() }
-        guard !shuttingDown, state.sharing, gatewayPort != nil, localAddressEnabled, canInviteOtherDevices, viewerInterface != "lo0" else {
+        guard !shuttingDown, !stoppingSharing, state.sharing, gatewayPort != nil, localAddressEnabled, canInviteOtherDevices, viewerInterface != "lo0" else {
             localAddressPublisher.stop(); return
         }
         localAddressPublisher.publish(label: localAddressLabel, scope: .interface(viewerInterface), address: viewerAddress)
@@ -1243,7 +1311,7 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
     /// local address is offered for a shared link on a network others can join.
     var shortAddressOpen: Bool {
         shortAddressEnabled && viewerApproval && localAddressEnabled && state.sharing && gatewayPort != nil
-            && canInviteOtherDevices && viewerInterface != "lo0" && !shuttingDown
+            && canInviteOtherDevices && viewerInterface != "lo0" && !shuttingDown && !stoppingSharing
     }
     /// The gateway accepts new short-address requests while it is open. Port 80 answers only once the
     /// name is active, and only connections to the viewing address.
@@ -1431,7 +1499,8 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
         await runtime.shutdown(); apply(await runtime.snapshot())
     }
     private func writeIntegrationSession() {
-        guard let integrationSessionFile, state.sharing, currentRuntime?.source == .sample, let viewerURL else { return }
+        guard let integrationSessionFile, state.sharing, !stoppingSharing, !shuttingDown,
+              currentRuntime?.source == .sample, let viewerURL else { return }
         do {
             let data = try JSONSerialization.data(withJSONObject: ["viewerURL": viewerURL.absoluteString,
                 "localURL": localViewerURL?.absoluteString ?? "", "pid": ProcessInfo.processInfo.processIdentifier])

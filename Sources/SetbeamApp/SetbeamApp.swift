@@ -76,7 +76,7 @@ private struct SetbeamCommands: Commands {
             Button("Go Live") { model.startSharing() }.keyboardShortcut(.return, modifiers: .command).disabled(model.state.sharing || !model.canShare || model.busy)
             Button(model.audiencePresentation.primaryTitle) { model.performAudienceAction() }
                 .keyboardShortcut("h", modifiers: [.command, .shift]).disabled(!model.state.sharing || !model.audiencePresentation.primaryEnabled)
-            Button("Stop Sharing") { model.stopSharing() }.disabled(!model.state.sharing || model.busy)
+            Button("Stop Sharing") { model.stopSharing() }.disabled(!model.canStopSharing)
             Divider()
             Button("Invite Viewers") { sharing(.invite) }.keyboardShortcut("1", modifiers: .command)
             Button("Show People") { sharing(.viewers) }.keyboardShortcut("2", modifiers: .command)
@@ -125,8 +125,10 @@ private struct SetbeamMenu: View {
         }
         if model.state.sharing {
             Button(model.audiencePresentation.primaryTitle) { model.performAudienceAction() }.disabled(!model.audiencePresentation.primaryEnabled)
-            Button("Stop Sharing") { model.stopSharing() }.disabled(model.busy)
-        } else { Button("Go Live") { model.startSharing() }.disabled(!model.canShare || model.busy) }
+        } else if !model.canStopSharing { Button("Go Live") { model.startSharing() }.disabled(!model.canShare) }
+        if model.canStopSharing || model.stoppingSharing {
+            Button("Stop Sharing") { model.stopSharing() }.disabled(!model.canStopSharing)
+        }
         Button(model.pipVisible ? "Hide Floating Preview" : "Show Floating Preview") { model.togglePiP() }.disabled(model.preview == nil)
         Menu("Sharing") {
             Button("Invite Viewers") { show(.invite) }
