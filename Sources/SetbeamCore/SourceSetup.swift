@@ -21,6 +21,7 @@ public struct SourceSetup: Codable, Equatable, Identifiable, Sendable {
     public var inputPort: UInt16 = 19350
     public var wirelessUID: UInt32?
     public var networkProfile: NetworkSourceProfile?
+    public var pyroHRoute: PyroHRoute?
     /// Valid only while the same owner process runs; relaunch restores it only on an exact match.
     public var window: MacWindowIdentity?
 

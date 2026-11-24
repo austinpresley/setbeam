@@ -1,15 +1,32 @@
 import Foundation
 import Darwin
 import SystemConfiguration
+import CoreWLAN
 import os
 
 /// Only the current Wi-Fi interface's directly attached IPv4 router is a discovery target.
-public struct PyroHNetwork: Equatable, Hashable, Sendable {
+public struct PyroHNetwork: Codable, Hashable, Sendable {
     public let interface: String
     public let address: String
     public let router: String
-    public init(interface: String, address: String, router: String) {
+    public let subnetMask: String?
+    public let bssid: String?
+
+    public init(interface: String, address: String, router: String, subnetMask: String? = nil, bssid: String? = nil) {
         self.interface = interface; self.address = address; self.router = router
+        self.subnetMask = subnetMask; self.bssid = bssid?.lowercased()
+    }
+
+    /// The fixture must be supplied explicitly to discovery and playback. The system reader only returns Wi-Fi.
+    public static let loopbackFixture = PyroHNetwork(interface: "lo0", address: "127.0.0.1", router: "127.0.0.1")
+
+    public var isVerifiable: Bool {
+        if self == Self.loopbackFixture { return true }
+        guard !interface.isEmpty, let bssid, let subnetMask,
+              Self.isLocalRouter(router, address: address, mask: subnetMask) else { return false }
+        let octets = bssid.split(separator: ":", omittingEmptySubsequences: false)
+        guard octets.count == 6, octets.allSatisfy({ $0.utf8.count == 2 && UInt8($0, radix: 16) != nil }) else { return false }
+        return bssid != "00:00:00:00:00:00" && bssid != "02:00:00:00:00:00" && bssid != "ff:ff:ff:ff:ff:ff"
     }
 
     public static func connected() -> [PyroHNetwork] {
@@ -29,7 +46,9 @@ public struct PyroHNetwork: Equatable, Hashable, Sendable {
                   let addresses = value[kSCPropNetIPv4Addresses as String] as? [String],
                   let masks = value[kSCPropNetIPv4SubnetMasks as String] as? [String] else { continue }
             for (address, mask) in zip(addresses, masks) where active.contains(where: { $0.interface == interface && $0.address == address }) {
-                if isLocalRouter(router, address: address, mask: mask) { result.insert(.init(interface: interface, address: address, router: router)) }
+                guard isLocalRouter(router, address: address, mask: mask) else { continue }
+                let bssid = CWWiFiClient.shared().interface(withName: interface)?.bssid()
+                result.insert(.init(interface: interface, address: address, router: router, subnetMask: mask, bssid: bssid))
             }
         }
         return result.sorted { $0.interface < $1.interface }.prefix(4).map { $0 }
@@ -52,16 +71,42 @@ public struct PyroHNetwork: Equatable, Hashable, Sendable {
     }
 }
 
+/// The network and endpoint that answered discovery on the scoped socket.
+public struct PyroHRoute: Codable, Hashable, Sendable {
+    public let network: PyroHNetwork
+    public let port: UInt16
+
+    public var address: String { "rtsp://\(network.router):\(port)/live" }
+
+    public static let rediscover = "Join your Pyro H's Wi-Fi and select its stream again in Choose a source → Wireless."
+    public static let verifyWiFi = "Rejoin the original Pyro H Wi-Fi. If Setbeam still can't verify it, allow Location access in Privacy & Security → Location Services."
+    public static let changedWiFi = "Rejoin the original Pyro H Wi-Fi to reconnect. To use a different route, switch inputs and choose the Pyro H again."
+
+    func validate() throws {
+        guard port != 0, network.isVerifiable else { throw SetbeamError.unavailable(Self.rediscover) }
+    }
+
+    func requireCurrent(_ networks: [PyroHNetwork]) throws {
+        try validate()
+        guard networks.contains(network) else {
+            let message = networks.contains(where: \.isVerifiable) ? Self.changedWiFi : Self.verifyWiFi
+            throw SetbeamError.unavailable(message)
+        }
+    }
+}
+
 /// A compatible /live description is a connection candidate, not proof of the device's model.
 public struct PyroHSource: Identifiable, Equatable, Sendable {
     public let network: PyroHNetwork
     public let port: UInt16
     public let hasAudio: Bool
-    public var id: String { "\(network.interface):\(network.router):\(port)" }
-    public var address: String { "rtsp://\(network.router):\(port)/live" }
+    public var id: PyroHRoute { route }
+    public var route: PyroHRoute { .init(network: network, port: port) }
+    public var address: String { route.address }
     public var setup: SourceSetup {
         var value = SourceSetup(kind: .network, name: "Hollyland Pyro H", deviceName: "Hollyland Pyro H", networkAddress: address)
         value.networkProfile = .pyroH
+        value.pyroHRoute = route
         return value
     }
 }
@@ -70,7 +115,8 @@ public enum PyroHDiscovery {
     public static let ports: [UInt16] = [5554, 554, 8554]
 
     /// No SETUP/PLAY, subnet scans, Wi-Fi changes, processes, or streaming connection.
-    public static func scan(networks: [PyroHNetwork], ports: [UInt16] = ports, timeout: TimeInterval = 1.2) async -> [PyroHSource] {
+    public static func scan(networks: [PyroHNetwork], ports: [UInt16] = ports, timeout: TimeInterval = 1.2,
+                            currentNetworks: @escaping @Sendable () -> [PyroHNetwork] = { PyroHNetwork.connected() }) async -> [PyroHSource] {
         let cancelled = OSAllocatedUnfairLock(initialState: false)
         return await withTaskCancellationHandler {
             // POSIX polling is bounded and stays off the main actor. Cancellation is checked at most 50 ms apart.
@@ -81,7 +127,11 @@ public enum PyroHDiscovery {
                 for network in Array(Set(networks)).sorted(by: { $0.interface < $1.interface }).prefix(4) {
                     for port in targets {
                         guard !cancelled.withLock({ $0 }) else { return [] }
-                        if let audio = probe(network: network, port: port, timeout: timeout.isFinite ? min(2, max(0.01, timeout)) : 1.2, cancelled: cancelled) {
+                        let route = PyroHRoute(network: network, port: port)
+                        guard (try? route.requireCurrent(currentNetworks())) != nil else { break }
+                        if let audio = probe(route: route, timeout: timeout.isFinite ? min(2, max(0.01, timeout)) : 1.2,
+                                             cancelled: { cancelled.withLock { $0 } }),
+                           (try? route.requireCurrent(currentNetworks())) != nil {
                             result.append(PyroHSource(network: network, port: port, hasAudio: audio)); break
                         }
                     }
@@ -91,38 +141,20 @@ public enum PyroHDiscovery {
         } onCancel: { cancelled.withLock { $0 = true } }
     }
 
-    private static func probe(network: PyroHNetwork, port: UInt16, timeout: TimeInterval,
-                              cancelled: OSAllocatedUnfairLock<Bool>) -> Bool? {
-        let fd = socket(AF_INET, SOCK_STREAM, 0)
-        guard fd >= 0 else { return nil }
-        defer { close(fd) }
-        var local = sockaddr_in(), remote = sockaddr_in()
-        local.sin_len = UInt8(MemoryLayout<sockaddr_in>.size); local.sin_family = sa_family_t(AF_INET)
-        remote.sin_len = local.sin_len; remote.sin_family = local.sin_family; remote.sin_port = port.bigEndian
-        guard network.address.withCString({ inet_pton(AF_INET, $0, &local.sin_addr) }) == 1,
-              network.router.withCString({ inet_pton(AF_INET, $0, &remote.sin_addr) }) == 1 else { return nil }
-        var index = if_nametoindex(network.interface), yes: Int32 = 1
-        guard index != 0, setsockopt(fd, IPPROTO_IP, IP_BOUND_IF, &index, socklen_t(MemoryLayout.size(ofValue: index))) == 0,
-              setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &yes, socklen_t(MemoryLayout.size(ofValue: yes))) == 0,
-              fcntl(fd, F_SETFL, O_NONBLOCK) == 0 else { return nil }
-        let bound = withUnsafePointer(to: &local) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) } }
-        guard bound == 0 else { return nil }
+    private static func probe(route: PyroHRoute, timeout: TimeInterval, cancelled: () -> Bool) -> Bool? {
         let deadline = DispatchTime.now().uptimeNanoseconds + UInt64(timeout * 1_000_000_000)
-        let connected = withUnsafePointer(to: &remote) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) } }
-        guard connected == 0 || errno == EINPROGRESS else { return nil }
-        guard wait(fd, events: Int16(POLLOUT), deadline: deadline, cancelled: cancelled) else { return nil }
-        var error: Int32 = 0, length = socklen_t(MemoryLayout<Int32>.size)
-        guard getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &length) == 0, error == 0 else { return nil }
-        let request = Data("DESCRIBE rtsp://\(network.router):\(port)/live RTSP/1.0\r\nCSeq: 1\r\nAccept: application/sdp\r\nUser-Agent: Setbeam\r\n\r\n".utf8)
+        guard let fd = PyroHSocket.connect(route, deadline: deadline, cancelled: cancelled) else { return nil }
+        defer { close(fd) }
+        let request = Data("DESCRIBE \(route.address) RTSP/1.0\r\nCSeq: 1\r\nAccept: application/sdp\r\nUser-Agent: Setbeam\r\n\r\n".utf8)
         var sent = 0
         while sent < request.count {
-            guard wait(fd, events: Int16(POLLOUT), deadline: deadline, cancelled: cancelled) else { return nil }
+            guard PyroHSocket.wait(fd, events: Int16(POLLOUT), deadline: deadline, cancelled: cancelled) else { return nil }
             let count = request.withUnsafeBytes { Darwin.send(fd, $0.baseAddress!.advanced(by: sent), request.count - sent, 0) }
             if count < 0 && (errno == EAGAIN || errno == EINTR) { continue }
             guard count > 0 else { return nil }; sent += count
         }
         var bytes = Data(), buffer = [UInt8](repeating: 0, count: 4096)
-        while wait(fd, events: Int16(POLLIN), deadline: deadline, cancelled: cancelled) {
+        while PyroHSocket.wait(fd, events: Int16(POLLIN), deadline: deadline, cancelled: cancelled) {
             let count = recv(fd, &buffer, buffer.count, 0)
             if count < 0 && (errno == EAGAIN || errno == EINTR) { continue }
             guard count > 0 else { return nil }
@@ -136,17 +168,6 @@ public enum PyroHDiscovery {
         return nil
     }
 
-    private static func wait(_ fd: Int32, events: Int16, deadline: UInt64, cancelled: OSAllocatedUnfairLock<Bool>) -> Bool {
-        while !cancelled.withLock({ $0 }) {
-            let now = DispatchTime.now().uptimeNanoseconds
-            guard now < deadline else { return false }
-            var value = pollfd(fd: fd, events: events, revents: 0)
-            let count = poll(&value, 1, Int32(min(50, max(1, (deadline - now) / 1_000_000))))
-            if count > 0 { return value.revents & (events | Int16(POLLHUP)) != 0 && value.revents & Int16(POLLERR | POLLNVAL) == 0 }
-            if count < 0 && errno != EINTR { return false }
-        }
-        return false
-    }
 }
 
 enum PyroHDescription: Equatable {
