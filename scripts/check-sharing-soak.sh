@@ -1,5 +1,5 @@
 #!/bin/bash
-# Run locally with Playwright and the bundled helpers under Vendor/bin.
+# Run locally with Playwright and the bundled media helpers.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 seconds="${1:-7200}"
@@ -7,9 +7,14 @@ if [[ $# -gt 1 || ! "$seconds" =~ ^[1-9][0-9]{1,4}$ ]] || (( seconds < 30 || sec
   echo 'Usage: scripts/check-sharing-soak.sh [live-seconds, 30 through 14400]' >&2
   exit 2
 fi
+tools="${SETBEAM_TEST_TOOLS:-$PWD/Vendor/bin}"
+packaged="$PWD/build/Setbeam.app/Contents/Helpers"
+if [[ -z "${SETBEAM_TEST_TOOLS:-}" && ! -x "$tools/setbeam-supervisor" && -x "$packaged/setbeam-supervisor" ]]; then
+  tools="$packaged"
+fi
 for helper in ffmpeg ffprobe mediamtx setbeam-preview setbeam-supervisor; do
-  if [[ ! -x "Vendor/bin/$helper" ]]; then
-    echo "Missing Vendor/bin/$helper. Supply the packaged runtime helpers or build them locally." >&2
+  if [[ ! -x "$tools/$helper" ]]; then
+    echo "Missing $tools/$helper. Build Setbeam or set SETBEAM_TEST_TOOLS to the packaged helpers." >&2
     exit 2
   fi
 done
@@ -35,7 +40,7 @@ mkdir -p build/logs
 umask 077
 report="$(mktemp -d "$PWD/build/logs/sharing-soak.XXXXXX")"
 echo "Evidence directory: $report"
-SETBEAM_REAL_MEDIA_SECONDS="$seconds" SETBEAM_REAL_MEDIA_REPORT_DIR="$report" SETBEAM_REAL_MEDIA_NODE="$node" \
+SETBEAM_TEST_TOOLS="$tools" SETBEAM_REAL_MEDIA_SECONDS="$seconds" SETBEAM_REAL_MEDIA_REPORT_DIR="$report" SETBEAM_REAL_MEDIA_NODE="$node" \
   /usr/bin/caffeinate -i swift test --scratch-path "$PWD/.build/sharing-soak" -c release \
     --filter SharingMediaSoakTests 2>&1 | tee "$report/run.log"
 if ! grep -q '"event":"passed"' "$report/mac.ndjson" || ! grep -q '"passed":true' "$report/browser.ndjson"; then

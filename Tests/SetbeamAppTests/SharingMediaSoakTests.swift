@@ -16,13 +16,16 @@ final class SharingMediaSoakTests: XCTestCase {
         }
 
         let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
-        let tools = AppAssets.runtimePaths.tools
+        let tools = env["SETBEAM_TEST_TOOLS"].map { URL(fileURLWithPath: $0, isDirectory: true) }
+            ?? AppAssets.runtimePaths.tools
+        let fixtures = env["SETBEAM_TEST_FIXTURES"].map { URL(fileURLWithPath: $0, isDirectory: true) }
+            ?? AppAssets.runtimePaths.fixtures
         let report = URL(fileURLWithPath: output, isDirectory: true)
         let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("Setbeam-soak-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
         defer { try? FileManager.default.removeItem(at: scratch) }
         let sample = scratch.appendingPathComponent("Demo.mp4")
-        try FileManager.default.copyItem(at: AppAssets.runtimePaths.fixtures.appendingPathComponent("Hold.mp4"),
+        try FileManager.default.copyItem(at: fixtures.appendingPathComponent("Hold.mp4"),
                                          to: scratch.appendingPathComponent("Hold.mp4"))
         let log = SessionLog()
         log.configure(directory: report.appendingPathComponent("runtime-log"))
