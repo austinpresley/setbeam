@@ -158,7 +158,6 @@ enum PresenterCursorSource: Sendable {
         // alone also include cursor sprites and fullscreen utilities over the picture.
         let captured = CGPoint(x: unflipped.x + frame.cursor.x - current.x,
                                y: unflipped.y - (frame.cursor.y - current.y))
-        let window = Int(identity.windowID)
         let hit = NSWindow.windowNumber(at: unflipped, belowWindowWithWindowNumber: 0)
         let captureHit = NSWindow.windowNumber(at: captured, belowWindowWithWindowNumber: 0)
         guard ownsWindowCursor(identity, frame: frame, at: current, in: target, hits: (hit, captureHit),

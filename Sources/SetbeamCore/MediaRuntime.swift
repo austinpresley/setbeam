@@ -944,7 +944,7 @@ public actor MediaRuntime {
     }
 
     public func diagnosticStatus() async -> [String: Any] {
-        let value = await snapshot()
+        let value = snapshot()
         return ["source": source.label, "sourceAvailable": value.sourceAvailable, "connectionStage": value.connectionStage.rawValue, "sharing": sharing, "holding": holding,
                 "viewerQuality": audienceQuality.rawValue, "viewerFPS": audienceFrameRate.rawValue, "screenFPS": screenFrameRate.rawValue,
                 "audienceError": Redaction.text(audiencePublisher?.recentError ?? ""),

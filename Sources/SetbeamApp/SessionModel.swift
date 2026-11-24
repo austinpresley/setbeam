@@ -1688,7 +1688,7 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
     }
 
     var canScanViewingWiFi: Bool {
-        guard !busy, !shuttingDown, !state.sharing, viewingWiFiScan == nil, !rejoinInFlight else { return false }
+        guard !busy, !shuttingDown, !state.sharing, viewingWiFiScan == nil, rejoinAttempt == nil else { return false }
         return !state.monitoring || setup?.kind.isMacCapture == true || setup?.kind == .sample || setup?.kind == .capture
     }
 

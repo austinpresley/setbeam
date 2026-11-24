@@ -127,7 +127,7 @@ struct SetupCheckView: View {
                 ? "\(count) reporting fresh video for this output."
                 : "Open the viewing link on a phone, tablet, or another computer and wait for playback.",
                 confirmed: count > 0)
-            if model.setupViewingLinkReady, let url = model.viewerURL {
+            if model.setupViewingLinkReady, let url = model.viewingInvitation?.ipURL {
                 HStack(spacing: 16) {
                     QRView(payload: url.absoluteString, size: 112)
                         .accessibilityLabel("Test QR code. Use Copy Test Link for the viewing link.")
