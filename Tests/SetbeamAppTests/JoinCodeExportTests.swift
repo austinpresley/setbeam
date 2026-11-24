@@ -2,6 +2,7 @@ import XCTest
 import SwiftUI
 import PDFKit
 import Vision
+import SetbeamCore
 @testable import SetbeamApp
 
 final class JoinCodeExportTests: XCTestCase {
@@ -33,5 +34,51 @@ final class JoinCodeExportTests: XCTestCase {
         XCTAssertEqual(model.wifiPassword, "")
         XCTAssertTrue(ViewingWiFiBrowser.passwordFormat("12345678").contains("not been tested"))
         XCTAssertTrue(ViewingWiFiBrowser.passwordFormat("short").contains("Check the password"))
+    }
+
+    @MainActor func testExportRechecksWiFiAfterTheSnapshot() throws {
+        let suite = "app.setbeam.tests.wifi-export.\(UUID().uuidString)"
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let ssid = UUID().uuidString.prefix(20).description
+        preferences.set(ssid, forKey: "wifiSSID")
+        preferences.set(false, forKey: "viewingWiFiProtected-\(ssid)")
+        let model = SessionModel(preferences: preferences)
+        model.loadViewingWiFi()
+        model.wifiPassword = "fixture-password"
+        let snapshot = try JoinCodeExporter.snapshot(model: model, includeFeed: false)
+        try JoinCodeExporter.validate(snapshot, model: model)
+        model.wifiPassword = "changed-password"
+        XCTAssertThrowsError(try JoinCodeExporter.validate(snapshot, model: model))
+        model.wifiSSID = ""
+        XCTAssertThrowsError(try JoinCodeExporter.validate(snapshot, model: model))
+    }
+
+    @MainActor func testBothExportWaitsForTheCurrentFeed() throws {
+        var state = SessionState()
+        state.beginMonitoring(); state.updateSource(available: true); try state.startSharing()
+        let suite = "app.setbeam.tests.waiting-export.\(UUID().uuidString)"
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let ssid = UUID().uuidString.prefix(20).description
+        preferences.set(ssid, forKey: "wifiSSID")
+        preferences.set(false, forKey: "viewingWiFiProtected-\(ssid)")
+        let model = SessionModel(initialState: state, preferences: preferences)
+        model.loadViewingWiFi()
+        XCTAssertNil(model.viewingInvitation)
+        XCTAssertFalse(JoinCodeExporter.canExport(model: model))
+        XCTAssertThrowsError(try JoinCodeExporter.snapshot(model: model))
+        XCTAssertNoThrow(try JoinCodeExporter.snapshot(model: model, includeFeed: false))
+    }
+
+    func testTypingNewSSIDResetsSavedPasswordAndOpenNetworkChoice() {
+        var draft = ViewingWiFiDraft(ssid: "Protected", password: "old-password")
+        draft.ssid = "New"
+        XCTAssertEqual(draft.password, "")
+        XCTAssertFalse(draft.canSave)
+        draft = .init(ssid: "Open", password: "", openNetwork: true)
+        draft.ssid = "New"
+        XCTAssertFalse(draft.openNetwork)
+        XCTAssertFalse(draft.canSave)
     }
 }

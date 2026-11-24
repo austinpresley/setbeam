@@ -26,8 +26,8 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
     }
     @Published var provenSetup: SourceSetup?
     @Published var preview: PlaybackDescriptor?
-    /// The IP address link. Join codes always use it, and it remains the fallback for every invitation.
-    @Published var viewerURL: URL?
+    @Published private var viewingBinding: ViewingGatewayBinding?
+    @Published private var viewingGatewayReady = false
     /// Whether to publish a readable `.local` name for the viewing address while sharing.
     @Published private(set) var localAddressEnabled: Bool
     /// The operator's chosen label. The effective name can differ after a conflict.
@@ -104,6 +104,7 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
     @Published var settingsSection: SettingsSection = .permissions
     @Published var sharingDraft: SharingOptionsDraft?
     @Published var viewingWiFiDraft: ViewingWiFiDraft?
+    @Published private var viewingWiFiScan: Task<Void, Never>?
     @Published private(set) var chatMessages: [ChatMessage] = []
     @Published private(set) var chatImages: [Int: NSImage] = [:]
     @Published private(set) var chatCapturing = false
@@ -184,7 +185,9 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
     private var currentRuntime: RuntimeSnapshot?
     private var gatewayPort: UInt16?
     private var viewerInterface: String
+    private var viewingNetwork: NetworkAddress?
     private var viewerNetworkNeedsUpdate = false
+    private var networkOperation = UUID()
     private var pollTask: Task<Void, Never>?
     private var runtimeUpdates: Task<Void, Never>?
     private var launched = false, shuttingDown = false
@@ -234,6 +237,7 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
         let choice = integration ? "lo0" : defaults.string(forKey: "viewerInterface") ?? "automatic"
         networkChoice = choice
         let selected = choice == "automatic" ? NetworkAddress.preferred(in: available) : available.first { $0.interface == choice }
+        viewingNetwork = selected
         viewerInterface = integration ? "lo0" : selected?.interface ?? "lo0"
         viewerAddress = integration ? "127.0.0.1" : selected?.address ?? "127.0.0.1"
         wifiSSID = defaults.string(forKey: "wifiSSID") ?? ""
@@ -257,7 +261,10 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
         }
         localAddressPublisher.onChange = { [weak self] state in
             // Deliver in order; the publisher reports each change once on its own queue.
-            DispatchQueue.main.async { MainActor.assumeIsolated { self?.localAddressChanged(state) } }
+            DispatchQueue.main.async { MainActor.assumeIsolated {
+                guard let self, self.localAddressPublisher.state == state else { return }
+                self.localAddressChanged(state)
+            } }
         }
         shortAddressListener.onChange = { [weak self] state in
             DispatchQueue.main.async { MainActor.assumeIsolated { self?.shortAddressChanged(state) } }
@@ -275,12 +282,17 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
         return setup?.name ?? "Choose a source"
     }
     var hardwareLabel: String { setup?.deviceName ?? (setup?.kind == .sample ? "Sample video and test tone" : setup?.kind == .network ? "Network video" : "No input selected") }
-    var viewerNetworkLabel: String { networks.first(where: { $0.address == viewerAddress })?.name ?? "This Mac only" }
-    var canInviteOtherDevices: Bool { viewerAddress != "127.0.0.1" }
+    var viewerNetworkLabel: String { viewingNetwork?.name ?? "This Mac only" }
+    var canInviteOtherDevices: Bool { viewingNetwork?.isLoopback == false }
+    var viewingCodeStatus: String {
+        if stoppingSharing || !state.sharing { return "Sharing is off" }
+        if !canInviteOtherDevices { return "Choose a viewing network to invite other devices." }
+        return "Waiting for the viewing network…"
+    }
     var viewingInstructions: String {
-        if viewerAddress == "127.0.0.1" { return "This viewing link works on this Mac only." }
+        if !canInviteOtherDevices { return "Choose a viewing network to invite other devices." }
         if !wifiSSID.isEmpty { return "Join \(wifiSSID), then scan to watch." }
-        if networks.first(where: { $0.address == viewerAddress })?.wireless == false {
+        if viewingNetwork?.wireless == false {
             return "Join the Wi-Fi on this Mac's Ethernet network, then scan."
         }
         if setup?.kind == .accsoon, let ssid = setup?.sourceWiFi, !ssid.isEmpty { return "Join \(ssid), then scan to watch." }
@@ -469,7 +481,7 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
         }
     }
     var setupCheck: SetupCheck {
-        SetupCheck(picture: localReady, viewingAddress: state.sharing && gateway.isRunning && canInviteOtherDevices,
+        SetupCheck(picture: localReady, viewingAddress: viewingInvitation != nil,
             otherDevicePlaying: otherDeviceViewers > 0, expectsAudio: expectsAudio,
             outgoingAudio: state.audience == .live && audienceHasAudio, soundConfirmed: testSoundConfirmed)
     }
@@ -620,6 +632,7 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
                     self.refreshCaptureDevices(); await self.refreshNetworks()
                     if self.sheet == .connection || self.setup?.kind == .accsoon { await self.refreshWireless() }
                 }
+                self.refreshViewingGatewayReadiness()
                 guard self.state.monitoring, !self.busy else { self.writeExperienceState(); continue }
                 self.viewers = self.gateway.viewers
                 if self.gateway.desiredReaders != self.appliedReaders || self.viewerApproval != self.appliedApproval { self.syncViewerAccess() }
@@ -1180,41 +1193,114 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
     }
     func refreshNetworks() async {
         guard !shuttingDown else { return }
-        let available = NetworkAddress.available(); networks = available
+        let available = NetworkAddress.available()
+        networks = available
+        await refreshViewingNetwork(available)
+        guard !shuttingDown else { return }
         if let selectedSetup = setup, selectedSetup.kind == .incoming, state.monitoring, !preparingConnection {
             try? await runtime.updateInputAddress(available.first(where: \.wireless)?.address ?? "127.0.0.1", for: source)
             if let destination = await runtime.incomingDestination(), setup == selectedSetup, !preparingConnection {
                 incomingServer = destination.server; incomingStreamKey = destination.streamKey
             }
         }
+    }
+
+    private func refreshViewingNetwork(_ available: [NetworkAddress]) async {
+        guard !stoppingSharing else { return }
         let selected: NetworkAddress?
-        if state.sharing {
-            selected = NetworkAddress.restoring(NetworkAddress(interface: viewerInterface, address: viewerAddress), in: available)
+        if state.sharing, let current = viewingNetwork {
+            guard let observed = current.observation(in: available) else {
+                clearViewingInvitation()
+                return
+            }
+            switch current.trust(in: observed) {
+            case .same:
+                selected = observed
+            case .unresolved:
+                clearViewingInvitation()
+                return
+            case .changed:
+                clearViewingInvitation()
+                gateway.stop(); gatewayPort = nil
+                if beginStoppingSharing() { await finishStoppingSharing() }
+                networkChanged = true
+                return
+            }
+        } else if state.sharing {
+            return
         } else {
             selected = networkChoice == "automatic" ? NetworkAddress.preferred(in: available) : available.first { $0.interface == networkChoice }
         }
         let address = selected?.address ?? "127.0.0.1"
+        let changed = viewingNetwork != selected
+        let rebind = state.sharing && (changed || viewingBinding == nil)
+        guard changed || viewerNetworkNeedsUpdate || rebind else { return }
+        let operation = UUID()
+        networkOperation = operation
+        clearViewingInvitation(invalidateOperation: false)
+        viewingNetwork = selected
         viewerInterface = selected?.interface ?? "lo0"
-        guard address != viewerAddress || viewerNetworkNeedsUpdate else { return }
         viewerNetworkNeedsUpdate = true
         SessionLog.shared.record("network.viewing", ["interface": viewerInterface, "sharing": state.sharing])
         viewerAddress = address
         do {
             try await runtime.updateViewerAddress(address)
-            guard !shuttingDown else { return }
-            if state.monitoring { apply(await runtime.snapshot()) }
-            if state.sharing, !stoppingSharing, let port = gatewayPort, let snapshot = currentRuntime {
-                // Preserve audience intent, Hold, credential, and port through network recovery.
-                publishGatewayState()
-                viewerURL = URL(string: "http://\(address):\(port)/s/\(snapshot.guestToken)/")
-                networkChanged = true
-                updateLocalAddress()
-                guard !shuttingDown else { return }
-                _ = try await gateway.start(address: address, port: port)
-            } else { gateway.stop(); gatewayPort = nil; viewerURL = nil; viewers = []; retireLocalAddress() }
+            let snapshot = await runtime.snapshot()
+            guard !shuttingDown, !stoppingSharing, operation == networkOperation else { return }
             viewerNetworkNeedsUpdate = false
+            if state.monitoring { apply(snapshot) }
+            if state.sharing, let port = gatewayPort {
+                // Keep the port and token while the same network recovers or renews its address.
+                publishGatewayState()
+                try await bindViewingGateway(port: port)
+                if operation == networkOperation && changed { networkChanged = true }
+            } else {
+                gateway.stop(); gatewayPort = nil
+            }
         }
-        catch { lastRuntimeProblem = Redaction.text(error.localizedDescription) }
+        catch {
+            if operation == networkOperation { lastRuntimeProblem = Redaction.text(error.localizedDescription) }
+        }
+    }
+
+    private func bindViewingGateway(port: UInt16 = 0) async throws {
+        guard state.sharing, let token = currentRuntime?.guestToken else { return }
+        let binding = ViewingGatewayBinding(address: viewerAddress, token: token)
+        viewingBinding = binding
+        do {
+            let boundPort = try await gateway.start(address: binding.address, port: port)
+            guard viewingBinding?.confirm(id: binding.id, port: boundPort, currentToken: activeViewingToken) == true else { return }
+            gatewayPort = boundPort
+            refreshViewingGatewayReadiness()
+        } catch {
+            guard viewingBinding?.id == binding.id, token == activeViewingToken else { return }
+            // A same-network rebind keeps retrying the requested port inside ViewerGateway.
+            if port != 0 { _ = viewingBinding?.confirm(id: binding.id, port: port, currentToken: activeViewingToken) }
+            throw error
+        }
+    }
+
+    private func clearViewingInvitation(invalidateOperation: Bool = true) {
+        if invalidateOperation { networkOperation = UUID() }
+        guard viewingBinding != nil || viewingGatewayReady else { return }
+        viewingBinding = nil
+        viewingGatewayReady = false
+        copiedLink = false; copiedIPLink = false
+        retireLocalAddress()
+    }
+
+    private func refreshViewingGatewayReadiness() {
+        let ready = viewingBinding?.url(currentToken: activeViewingToken, listenerReady: gateway.isRunning) != nil
+            && viewingNetworkIsCurrent(in: networks)
+        guard ready != viewingGatewayReady else { return }
+        if ready && !viewingNetworkIsCurrent(in: NetworkAddress.available()) { return }
+        viewingGatewayReady = ready
+        if ready {
+            updateLocalAddress()
+            writeIntegrationSession()
+        } else {
+            retireLocalAddress()
+        }
     }
     @discardableResult func saveViewingSettings(network: String, ssid: String, password: String) -> Bool {
         let secret = ssid.isEmpty ? "" : password
@@ -1231,13 +1317,17 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
         return true
     }
     func changeViewingNetwork(_ network: String) {
-        guard network != networkChoice else { return }
+        guard network != networkChoice, !busy else { return }
         networkChoice = network
         if !integration { defaults.set(network, forKey: "viewerInterface") }
+        clearViewingInvitation()
+        gateway.stop(); gatewayPort = nil
         let endingShare = canStopSharing && beginStoppingSharing()
+        busy = true
         Task {
             if endingShare { await finishStoppingSharing(); networkChanged = true }
             await refreshNetworks()
+            busy = false
         }
     }
     func setAudienceQuality(_ quality: AudienceQuality) {
@@ -1302,7 +1392,7 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
         guard let setup, let identity = TransmitterWiFiIdentity(setup), !shuttingDown else { return }
         let visible = wirelessDevices.contains { $0.id == setup.wirelessUID }
         guard rejoinPolicy.observe(enabled: transmitterRejoin, transmitterVisible: visible, pictureLive: localReady,
-                                   blocked: busy || rejoinAttempt != nil || sharingOverWiFi, now: Date()) else { return }
+                                   blocked: busy || rejoinAttempt != nil || viewingWiFiScan != nil || sharingOverWiFi, now: Date()) else { return }
         let ssid = identity.ssid
         guard transmitterWiFi.locationAllowed else {
             rejoinProblem = TransmitterWiFiResult.needsLocation.message
@@ -1337,21 +1427,38 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
     }
     /// Copies the local-address link when that name is active, otherwise the IP address link.
     func copyLink() {
-        guard let url = invitationURL else { return }; NSPasteboard.general.clearContents(); NSPasteboard.general.setString(url.absoluteString, forType: .string)
+        guard let url = currentViewingInvitation()?.preferredURL else { return }; NSPasteboard.general.clearContents(); NSPasteboard.general.setString(url.absoluteString, forType: .string)
         copiedLink = true; Task { try? await Task.sleep(nanoseconds: 2_000_000_000); copiedLink = false }
     }
     func copyIPLink() {
-        guard let viewerURL else { return }; NSPasteboard.general.clearContents(); NSPasteboard.general.setString(viewerURL.absoluteString, forType: .string)
+        guard let url = currentViewingInvitation()?.ipURL else { return }; NSPasteboard.general.clearContents(); NSPasteboard.general.setString(url.absoluteString, forType: .string)
         copiedIPLink = true; Task { try? await Task.sleep(nanoseconds: 2_000_000_000); copiedIPLink = false }
     }
-    /// The same link at the active `.local` name. The private path and port are unchanged.
-    var localViewerURL: URL? {
-        guard state.sharing, let label = localAddress.activeLabel, let viewerURL,
-              var parts = URLComponents(url: viewerURL, resolvingAgainstBaseURL: false) else { return nil }
-        parts.host = LocalAddressName.host(label)
-        return parts.url
+    private var activeViewingToken: String? {
+        guard state.sharing, !stoppingSharing, !shuttingDown else { return nil }
+        return currentRuntime?.guestToken
     }
-    var invitationURL: URL? { localViewerURL ?? viewerURL }
+
+    private func viewingNetworkIsCurrent(in available: [NetworkAddress]) -> Bool {
+        guard let viewingNetwork else { return viewerInterface == "lo0" }
+        return available.contains(viewingNetwork)
+    }
+
+    var viewingInvitation: ViewingInvitation? {
+        guard viewingGatewayReady, viewingNetworkIsCurrent(in: networks) else { return nil }
+        return viewingBinding?.invitation(currentToken: activeViewingToken, listenerReady: gateway.isRunning,
+                                          localLabel: localAddressEnabled ? localAddress.activeLabel : nil)
+    }
+
+    /// Actions may run between polls or after a native modal panel has yielded the main run loop.
+    func currentViewingInvitation() -> ViewingInvitation? {
+        guard let invitation = viewingInvitation, viewingNetworkIsCurrent(in: NetworkAddress.available()) else { return nil }
+        return invitation
+    }
+
+    var viewerURL: URL? { viewingInvitation?.ipURL }
+    var localViewerURL: URL? { viewingInvitation?.localURL }
+    var invitationURL: URL? { viewingInvitation?.preferredURL }
     var copyLinkHelp: String {
         guard let host = localViewerURL?.host else { return "Copy the viewing link. \(viewingInstructions)" }
         return "Copy the \(host) viewing link. Join codes use the IP address."
@@ -1367,15 +1474,15 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
     /// Publishes only while sharing on a network viewers can join, on that viewing interface and address.
     private func updateLocalAddress() {
         defer { updateShortAddress() }
-        guard !shuttingDown, !stoppingSharing, state.sharing, gatewayPort != nil, localAddressEnabled, canInviteOtherDevices, viewerInterface != "lo0" else {
+        guard !shuttingDown, !stoppingSharing, viewingInvitation != nil, localAddressEnabled else {
             localAddressPublisher.stop(); return
         }
         localAddressPublisher.publish(label: localAddressLabel, scope: .interface(viewerInterface), address: viewerAddress)
     }
-    /// Removes the name and stops answering the short address at once. Every caller also ends or rotates
-    /// the viewing link, which retires the short-address path, so waiting pages see sharing end, not a refusal.
+    /// Withdraw the advertised entry points before the next asynchronous listener operation.
     private func retireLocalAddress() {
         receiverDiscovery.stop(); localAddressPublisher.stop(); shortAddressListener.stop()
+        localAddress = .stopped
     }
     func setShortAddress(enabled: Bool) {
         guard enabled != shortAddressEnabled else { return }
@@ -1388,15 +1495,17 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
     /// Viewers may ask from the short address only while the operator allows it, approval is on, and the
     /// local address is offered for a shared link on a network others can join.
     var shortAddressOpen: Bool {
-        shortAddressEnabled && viewerApproval && localAddressEnabled && state.sharing && gatewayPort != nil
-            && canInviteOtherDevices && viewerInterface != "lo0" && !shuttingDown && !stoppingSharing
+        shortAddressEnabled && viewerApproval && localAddressEnabled && viewingInvitation != nil && !shuttingDown && !stoppingSharing
     }
     /// The gateway accepts new short-address requests while it is open. Port 80 answers only once the
     /// name is active, and only connections to the viewing address.
     private func updateShortAddress() {
         defer { updateReceiverDiscovery() }
         let open = shortAddressOpen
-        gateway.setShortAddress(open: open)
+        // Keep issued short-address passes valid during a same-network outage.
+        if activeViewingToken == nil || !shortAddressEnabled || !viewerApproval || !localAddressEnabled || open {
+            gateway.setShortAddress(open: open)
+        }
         guard open, let label = localAddress.activeLabel, let port = gatewayPort, let path = gateway.shortAddressPath else {
             shortAddressListener.stop(); return
         }
@@ -1446,7 +1555,8 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
         if !localAddressEnabled { return ("Turn on Offer a local address to use this.", true) }
         if !viewerApproval { return ("Turn on Ask before viewers join. Until then, typing \(host) doesn't open anything.", true) }
         if !canInviteOtherDevices || viewerInterface == "lo0" { return ("Choose a viewing network to use \(host).", false) }
-        if !state.sharing || gatewayPort == nil { return ("Viewers can type \(host) and ask to join while you share.", false) }
+        if !state.sharing { return ("Viewers can type \(host) and ask to join while you share.", false) }
+        if viewingInvitation == nil { return (viewingCodeStatus, false) }
         guard localAddress.activeLabel != nil else { return ("Waiting for the local address. Send the link or QR code for now.", false) }
         switch shortAddress {
         case .active: return ("Viewers on this network can type \(host) and ask to join.", false)
@@ -1474,6 +1584,7 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
         let requested = LocalAddressName.host(localAddressLabel)
         if !localAddressEnabled { return ("Off. Invitations use the IP address.", false) }
         if !canInviteOtherDevices { return ("Choose a viewing network to use \(requested).", false) }
+        if state.sharing && viewingInvitation == nil { return (viewingCodeStatus, false) }
         switch localAddress {
         case .stopped where state.sharing: return ("Starting \(requested)…", false)
         case .stopped: return ("Viewers can use \(requested) while you share.", false)
@@ -1497,6 +1608,19 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
             }
         } else { viewingWiFiPasswordAvailable = true }
         loadedWiFiSSID = wifiSSID
+    }
+
+    var canScanViewingWiFi: Bool {
+        guard !busy, !shuttingDown, !state.sharing, viewingWiFiScan == nil, !rejoinInFlight else { return false }
+        return !state.monitoring || setup?.kind.isMacCapture == true || setup?.kind == .sample || setup?.kind == .capture
+    }
+
+    func scanViewingWiFi(_ browser: ViewingWiFiBrowser) {
+        guard canScanViewingWiFi else { return }
+        viewingWiFiScan = Task { [weak self] in
+            await browser.scan()
+            self?.viewingWiFiScan = nil
+        }
     }
     /// A hidden Wi-Fi name is inconclusive. An inactive Wi-Fi interface is a known miss.
     var isOnSourceWiFi: Bool? {
@@ -1578,7 +1702,8 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
     }
     private func writeIntegrationSession() {
         guard let integrationSessionFile, state.sharing, !stoppingSharing, !shuttingDown,
-              currentRuntime?.source == .sample, let viewerURL else { return }
+              currentRuntime?.source == .sample, viewingGatewayReady,
+              let viewerURL = viewingBinding?.url(currentToken: activeViewingToken, listenerReady: gateway.isRunning) else { return }
         do {
             let data = try JSONSerialization.data(withJSONObject: ["viewerURL": viewerURL.absoluteString,
                 "localURL": localViewerURL?.absoluteString ?? "", "pid": ProcessInfo.processInfo.processIdentifier])

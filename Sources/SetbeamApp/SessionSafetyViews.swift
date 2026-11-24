@@ -17,7 +17,7 @@ struct SetupCheckView: View {
             row("Playback on another device", detail: model.otherDeviceViewers > 0 ? "\(model.otherDeviceViewers) other-device browser(s) reporting fresh video." : "Scan the code on a phone or another computer. A browser on this Mac does not complete this check.", passed: model.setupCheck.otherDevicePlaying)
             if model.state.sharing && !model.canInviteOtherDevices {
                 ViewingNetworkRequiredView(model: model)
-            } else if model.state.sharing, let url = model.viewerURL {
+            } else if let url = model.viewingInvitation?.ipURL {
                 HStack(spacing: 18) {
                     QRView(payload: url.absoluteString, size: 144)
                     VStack(alignment: .leading, spacing: 9) {
@@ -30,6 +30,9 @@ struct SetupCheckView: View {
                         }
                     }
                 }
+            } else if model.state.sharing {
+                Text(model.viewingCodeStatus).foregroundStyle(.secondary)
+                Button("Choose Viewing Network…") { model.showViewingNetwork() }
             } else {
                 Button("Start sharing for test") { model.startSharing() }.buttonStyle(.borderedProminent).disabled(!model.canShare)
             }

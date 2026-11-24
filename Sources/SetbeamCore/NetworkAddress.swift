@@ -1,15 +1,43 @@
 import Foundation
 import Darwin
 import SystemConfiguration
+import CoreWLAN
 
 public struct NetworkAddress: Hashable, Identifiable, Sendable {
+    public enum Trust: Equatable { case same, unresolved, changed }
+
     public let interface: String
     public let address: String
+    public let subnet: String
+    public let router: String?
+    public let wirelessNetwork: String?
+    public var isLoopback: Bool { interface == "lo0" || address.hasPrefix("127.") }
     public var id: String { "\(interface):\(address)" }
     public var label: String { interface == "lo0" ? "This Mac only · \(address)" : "\(Self.details(interface).0) · \(address)" }
     public var name: String { interface == "lo0" ? "This Mac only" : Self.details(interface).0 }
     public var wireless: Bool { Self.details(interface).1 }
-    public init(interface: String, address: String) { self.interface = interface; self.address = address }
+    public init(interface: String, address: String, subnet: String? = nil, router: String? = nil, wirelessNetwork: String? = nil) {
+        self.interface = interface
+        self.address = address
+        self.subnet = subnet ?? address + "/32"
+        self.router = router
+        self.wirelessNetwork = wirelessNetwork
+    }
+
+    public func trust(in other: NetworkAddress) -> Trust {
+        guard interface == other.interface, subnet == other.subnet else { return .changed }
+        let identities = [(router, other.router), (wirelessNetwork, other.wirelessNetwork)]
+        if identities.contains(where: { expected, observed in observed != nil && expected != observed }) { return .changed }
+        if identities.contains(where: { expected, observed in expected != nil && observed == nil }) { return .unresolved }
+        return .same
+    }
+
+    /// Prefer the exact address when an interface has multiple IPv4 addresses.
+    public func observation(in networks: [NetworkAddress]) -> NetworkAddress? {
+        networks.first { $0.interface == interface && $0.address == address }
+            ?? networks.first { trust(in: $0) == .same }
+            ?? networks.first { $0.interface == interface }
+    }
     public static func preferred(in networks: [NetworkAddress], interface: String? = nil) -> NetworkAddress? {
         if let interface, let saved = networks.first(where: { $0.interface == interface }) { return saved }
         if let store = SCDynamicStoreCreate(nil, "Setbeam" as CFString, nil, nil),
@@ -19,28 +47,33 @@ public struct NetworkAddress: Hashable, Identifiable, Sendable {
         return networks.first
     }
 
-    /// Wait for the chosen interface through an outage instead of moving viewers to another network.
-    public static func restoring(_ current: NetworkAddress, in networks: [NetworkAddress]) -> NetworkAddress {
-        networks.first(where: { $0.interface == current.interface }) ?? current
-    }
-
     public static func available() -> [NetworkAddress] {
         var interfaces: UnsafeMutablePointer<ifaddrs>?
         guard getifaddrs(&interfaces) == 0 else { return [] }
         defer { freeifaddrs(interfaces) }
+        let routers = serviceRouters()
+        let wifi = Dictionary(uniqueKeysWithValues: (CWWiFiClient.shared().interfaces() ?? []).compactMap { interface -> (String, String)? in
+            guard let name = interface.interfaceName,
+                  let network = interface.ssid().map({ "SSID:" + $0 }) ?? interface.bssid().map({ "BSSID:" + $0 }) else { return nil }
+            return (name, network)
+        })
         var result: [NetworkAddress] = []
         var cursor = interfaces
         while let current = cursor {
             defer { cursor = current.pointee.ifa_next }
             guard let address = current.pointee.ifa_addr, address.pointee.sa_family == UInt8(AF_INET) else { continue }
             let flags = Int32(current.pointee.ifa_flags)
-            guard flags & IFF_UP != 0, flags & IFF_LOOPBACK == 0 else { continue }
+            guard flags & IFF_UP != 0, flags & IFF_RUNNING != 0, flags & IFF_LOOPBACK == 0 else { continue }
             let name = String(cString: current.pointee.ifa_name)
             guard !["utun", "awdl", "llw", "bridge", "vmenet"].contains(where: { name.hasPrefix($0) }) else { continue }
             var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
             if getnameinfo(address, socklen_t(address.pointee.sa_len), &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST) == 0 {
                 let ip = String(cString: host)
-                if !ip.hasPrefix("169.254.") { result.append(NetworkAddress(interface: name, address: ip)) }
+                if !ip.hasPrefix("169.254.") {
+                    let subnet = current.pointee.ifa_netmask.map { Self.subnet(address, mask: $0) }
+                    result.append(NetworkAddress(interface: name, address: ip, subnet: subnet,
+                                                 router: routers[name]?[ip], wirelessNetwork: wifi[name]))
+                }
             }
         }
         return result.sorted { a, b in
@@ -48,6 +81,20 @@ public struct NetworkAddress: Hashable, Identifiable, Sendable {
             if aWireless != bWireless { return !aWireless }
             return a.interface < b.interface
         }
+    }
+
+    private static func serviceRouters() -> [String: [String: String]] {
+        guard let store = SCDynamicStoreCreate(nil, "Setbeam viewing network" as CFString, nil, nil),
+              let values = SCDynamicStoreCopyMultiple(store, nil, ["^State:/Network/Service/[^/]+/IPv4$"] as CFArray) as? [String: [String: Any]] else { return [:] }
+        var routers: [String: [String: String]] = [:]
+        for key in values.keys.sorted() {
+            guard let value = values[key],
+                  let interface = value[kSCPropInterfaceName as String] as? String,
+                  let addresses = value[kSCPropNetIPv4Addresses as String] as? [String],
+                  let router = value[kSCPropNetIPv4Router as String] as? String else { continue }
+            for address in addresses { routers[interface, default: [:]][address] = router }
+        }
+        return routers
     }
 
     private static func details(_ bsd: String) -> (String, Bool) {
@@ -70,12 +117,17 @@ public struct NetworkAddress: Hashable, Identifiable, Sendable {
             guard let raw = item.pointee.ifa_addr, raw.pointee.sa_family == UInt8(AF_INET), let mask = item.pointee.ifa_netmask else { continue }
             let value = raw.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee.sin_addr.s_addr }
             guard value == inet_addr(address) else { continue }
-            let bits = mask.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { UInt32(bigEndian: $0.pointee.sin_addr.s_addr) }
-            let network = UInt32(bigEndian: value) & bits
-            let ip = [24, 16, 8, 0].map { String((network >> $0) & 255) }.joined(separator: ".")
-            return "\(ip)/\(bits.nonzeroBitCount)"
+            return subnet(raw, mask: mask)
         }
         return address + "/32"
+    }
+
+    private static func subnet(_ address: UnsafePointer<sockaddr>, mask: UnsafePointer<sockaddr>) -> String {
+        let value = address.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { UInt32(bigEndian: $0.pointee.sin_addr.s_addr) }
+        let bits = mask.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { UInt32(bigEndian: $0.pointee.sin_addr.s_addr) }
+        let network = value & bits
+        let ip = [24, 16, 8, 0].map { String((network >> $0) & 255) }.joined(separator: ".")
+        return "\(ip)/\(bits.nonzeroBitCount)"
     }
 
     public static func freeTCPPort() throws -> UInt16 {

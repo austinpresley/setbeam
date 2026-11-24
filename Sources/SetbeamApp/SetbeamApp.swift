@@ -89,7 +89,7 @@ private struct SetbeamCommands: Commands {
             Divider()
             Button("Show Large Join Codes…") { main(); model.showJoinCodes() }.disabled(!model.state.sharing && model.wifiSSID.isEmpty || model.protectsSourceDraft)
             Button("Open Join Codes in Window") { model.showJoinCodeWindow() }.disabled(!model.state.sharing && model.wifiSSID.isEmpty)
-            Button("Copy Viewing Link") { model.copyLink() }.disabled(!model.state.sharing || !model.canInviteOtherDevices)
+            Button("Copy Viewing Link") { model.copyLink() }.disabled(model.viewingInvitation == nil)
             Button("Show Join Requests") { model.joinRequests.show() }.disabled(model.pendingViewers.isEmpty)
         }
         CommandGroup(replacing: .help) {
@@ -134,7 +134,7 @@ private struct SetbeamMenu: View {
             Button("Invite Viewers") { show(.invite) }
             Button("Show People") { show(.viewers) }
             Button(model.chatUnreadCount > 0 ? "Show Chat (\(model.chatUnreadCount) Unread)" : "Show Chat") { show(.chat) }
-            Button("Copy Viewing Link") { model.copyLink() }.disabled(!model.state.sharing || !model.canInviteOtherDevices)
+            Button("Copy Viewing Link") { model.copyLink() }.disabled(model.viewingInvitation == nil)
             Button("Show Join Codes") { model.showJoinCodeWindow() }.disabled(!model.state.sharing && model.wifiSSID.isEmpty)
         }
         if let version = updater.waitingVersion {

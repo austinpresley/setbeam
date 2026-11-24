@@ -32,23 +32,21 @@ struct ViewingWiFiNetwork: Identifiable, Equatable, Sendable {
         networks = Self.entries(interface.cachedScanResults() ?? [], current: interface.ssid())
         message = networks.isEmpty ? "No cached networks. Refresh the list when the feed is idle, or type a name." : "Cached Wi-Fi list. Selecting a name does not join it."
     }
-    func scan() {
+    func scan() async {
         guard !scanning, allowed else { allowNames(); return }
         scanning = true; message = "Looking for Wi-Fi networks…"
-        Task {
-            let result: Result<[ViewingWiFiNetwork], Error> = await withCheckedContinuation { continuation in
-                DispatchQueue.global(qos: .userInitiated).async {
-                    do {
-                        guard let interface = CWWiFiClient.shared().interface(), interface.powerOn() else { throw CocoaError(.featureUnsupported) }
-                        continuation.resume(returning: .success(Self.entries(try interface.scanForNetworks(withSSID: nil), current: interface.ssid())))
-                    } catch { continuation.resume(returning: .failure(error)) }
-                }
+        let result: Result<[ViewingWiFiNetwork], Error> = await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    guard let interface = CWWiFiClient.shared().interface(), interface.powerOn() else { throw CocoaError(.featureUnsupported) }
+                    continuation.resume(returning: .success(Self.entries(try interface.scanForNetworks(withSSID: nil), current: interface.ssid())))
+                } catch { continuation.resume(returning: .failure(error)) }
             }
-            scanning = false
-            switch result {
-            case .success(let values): networks = values; message = values.isEmpty ? "No named networks found. Enter a name manually." : "Select a name. This Mac stays on its current network."
-            case .failure: message = "The Wi-Fi list could not refresh. Use a cached name or enter one manually."
-            }
+        }
+        scanning = false
+        switch result {
+        case .success(let values): networks = values; message = values.isEmpty ? "No named networks found. Enter a name manually." : "Select a name. This Mac stays on its current network."
+        case .failure: message = "The Wi-Fi list could not refresh. Use a cached name or enter one manually."
         }
     }
     nonisolated private static func entries(_ found: Set<CWNetwork>, current: String?) -> [ViewingWiFiNetwork] {

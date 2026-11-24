@@ -53,7 +53,13 @@ struct SharingOptionsDraft: Equatable {
 }
 
 struct ViewingWiFiDraft: Equatable {
-    var ssid: String
+    var ssid: String {
+        didSet {
+            guard ssid != oldValue else { return }
+            password = ""
+            openNetwork = false
+        }
+    }
     var password: String
     var openNetwork = false
     var canSave: Bool { ssid.utf8.count <= 32 && (ssid.isEmpty || openNetwork || !password.isEmpty) }

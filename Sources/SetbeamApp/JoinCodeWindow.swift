@@ -63,8 +63,8 @@ private struct FloatingJoinCodes: View {
                     } else {
                         VStack(spacing: 12) {
                             Text(model.title).font(.headline)
-                            if model.state.sharing, let url = model.viewerURL { QRView(payload: url.absoluteString, size: codeSize) }
-                            else { Label("Sharing is off", systemImage: "lock").foregroundStyle(.secondary) }
+                            if let url = model.viewingInvitation?.ipURL { QRView(payload: url.absoluteString, size: codeSize) }
+                            else { Text(model.viewingCodeStatus).foregroundStyle(.secondary) }
                         }
                     }
                 }.padding(20).frame(maxWidth: .infinity)
@@ -78,26 +78,17 @@ private struct FloatingJoinCodes: View {
                     Button("Save PDF…") { export(printing: false) }
                     Button("Print…") { export(printing: true) }
                     Spacer()
-                }.disabled(!model.state.sharing && model.wifiSSID.isEmpty)
+                }.disabled(!JoinCodeExporter.canExport(model: model, includeWiFi: selection != "Feed", includeFeed: selection != "Wi-Fi"))
             }.padding(16)
         }.background(Color(nsColor: .windowBackgroundColor))
     }
     private func export(printing: Bool) {
-        let snapshot: JoinCodeExporter.Snapshot
         do {
-            snapshot = try JoinCodeExporter.snapshot(model: model, includeWiFi: selection != "Feed", includeFeed: selection != "Wi-Fi")
-        } catch { problem = error.localizedDescription; return }
-        let view = snapshot.document
-        let snapshotURL = snapshot.url
-        if printing {
-            JoinCodeExporter.print(view)
-        } else {
-            let panel = NSSavePanel(); panel.allowedContentTypes = [.pdf]; panel.nameFieldStringValue = "Setbeam-join-codes.pdf"
-            guard panel.runModal() == .OK, let url = panel.url else { return }
-            guard snapshotURL == nil || model.state.sharing && model.viewerURL == snapshotURL else { problem = "Sharing changed while Save was open. Save the current codes again."; return }
-            do { try view.dataWithPDF(inside: view.bounds).write(to: url, options: .atomic); problem = nil }
-            catch { problem = "The codes could not be saved. Choose another location and try again." }
-        }
+            let snapshot = try JoinCodeExporter.snapshot(model: model, includeWiFi: selection != "Feed", includeFeed: selection != "Wi-Fi")
+            problem = nil
+            if printing { try JoinCodeExporter.print(snapshot, model: model) }
+            else { try JoinCodeExporter.save(snapshot, model: model) }
+        } catch { problem = error.localizedDescription }
     }
 }
 
@@ -105,34 +96,87 @@ private struct FloatingJoinCodes: View {
 @MainActor enum JoinCodeExporter {
     struct Snapshot {
         let document: JoinCodeDocumentView
-        let url: URL?
+        let endorsement: Endorsement
+        let includeWiFi: Bool
+        let includeFeed: Bool
+    }
+
+    struct Endorsement: Equatable {
+        struct Feed: Equatable {
+            let binding: UUID
+            let url: URL
+            let approval: Bool
+        }
+        let feed: Feed?
+        let wifiPayload: String?
+    }
+
+    static func canExport(model: SessionModel, includeWiFi: Bool = true, includeFeed: Bool = true) -> Bool {
+        let hasWiFi = includeWiFi && !model.wifiSSID.isEmpty
+        let hasFeed = includeFeed && model.viewingInvitation != nil
+        if hasWiFi && !model.viewingWiFiPasswordAvailable { return false }
+        if includeFeed && model.state.sharing && !hasFeed { return false }
+        return hasWiFi || hasFeed
     }
 
     static func snapshot(model: SessionModel, includeWiFi: Bool = true, includeFeed: Bool = true) throws -> Snapshot {
+        let endorsement = try endorsement(model: model, includeWiFi: includeWiFi, includeFeed: includeFeed)
+        let document = JoinCodeDocumentView(title: model.title, ssid: endorsement.wifiPayload == nil ? "" : model.wifiSSID,
+            password: endorsement.wifiPayload == nil ? "" : model.wifiPassword,
+            url: endorsement.feed?.url, date: Date(), approval: endorsement.feed?.approval ?? false)
+        return Snapshot(document: document, endorsement: endorsement, includeWiFi: includeWiFi, includeFeed: includeFeed)
+    }
+
+    private static func endorsement(model: SessionModel, includeWiFi: Bool, includeFeed: Bool) throws -> Endorsement {
         model.loadViewingWiFi()
         let hasWiFi = includeWiFi && !model.wifiSSID.isEmpty
         guard !hasWiFi || model.viewingWiFiPasswordAvailable else { throw ExportProblem.passwordUnavailable }
-        let url = includeFeed && model.state.sharing ? model.viewerURL : nil
-        guard hasWiFi || url != nil else { throw ExportProblem.codeUnavailable }
-        let document = JoinCodeDocumentView(title: model.title, ssid: hasWiFi ? model.wifiSSID : "",
-            password: hasWiFi ? model.wifiPassword : "", url: url, date: Date(), approval: model.viewerApproval)
-        return Snapshot(document: document, url: url)
+        let invitation = includeFeed ? model.currentViewingInvitation() : nil
+        if includeFeed && model.state.sharing && invitation == nil { throw ExportProblem.codeUnavailable }
+        guard hasWiFi || invitation != nil else { throw ExportProblem.codeUnavailable }
+        return Endorsement(feed: invitation.map { .init(binding: $0.binding, url: $0.ipURL, approval: model.viewerApproval) },
+                           wifiPayload: hasWiFi ? QRCode.wifi(ssid: model.wifiSSID, password: model.wifiPassword) : nil)
     }
 
-    static func print(_ document: JoinCodeDocumentView) {
+    static func validate(_ snapshot: Snapshot, model: SessionModel) throws {
+        guard let current = try? endorsement(model: model, includeWiFi: snapshot.includeWiFi, includeFeed: snapshot.includeFeed),
+              current == snapshot.endorsement else { throw ExportProblem.codesChanged }
+    }
+
+    static func save(_ snapshot: Snapshot, model: SessionModel) throws {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.pdf]
+        panel.nameFieldStringValue = "Setbeam-join-codes.pdf"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        try validate(snapshot, model: model)
+        let document = snapshot.document
+        do { try document.dataWithPDF(inside: document.bounds).write(to: url, options: .atomic) }
+        catch { throw ExportProblem.saveFailed }
+    }
+
+    static func print(_ snapshot: Snapshot, model: SessionModel) throws {
         let info = NSPrintInfo.shared.copy() as! NSPrintInfo
         info.horizontalPagination = .fit; info.verticalPagination = .fit
         info.isHorizontallyCentered = true; info.isVerticallyCentered = true
-        NSPrintOperation(view: document, printInfo: info).run()
+        // Resolve the print choices before handing the endorsed document to AppKit.
+        guard NSPrintPanel().runModal(with: info) == NSPrintPanel.Result.printed.rawValue else { return }
+        try validate(snapshot, model: model)
+        let operation = NSPrintOperation(view: snapshot.document, printInfo: info)
+        operation.showsPrintPanel = false
+        operation.showsProgressPanel = false
+        guard operation.run() else { throw ExportProblem.printFailed }
     }
 
     private enum ExportProblem: LocalizedError {
-        case passwordUnavailable, codeUnavailable
+        case passwordUnavailable, codeUnavailable, codesChanged, saveFailed, printFailed
 
         var errorDescription: String? {
             switch self {
             case .passwordUnavailable: return "The Wi-Fi password is unavailable. Re-enter it in Invite before exporting."
-            case .codeUnavailable: return "The selected code is unavailable. Choose another code or start sharing."
+            case .codeUnavailable: return "The selected code is unavailable. Check the viewing network or choose another code."
+            case .codesChanged: return "The join codes changed while the dialog was open. Try again with the current codes."
+            case .saveFailed: return "The codes could not be saved. Choose another location and try again."
+            case .printFailed: return "The codes could not be printed."
             }
         }
     }

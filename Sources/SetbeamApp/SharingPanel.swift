@@ -163,9 +163,12 @@ struct SharingInviteView: View {
                 actions
                 if !model.state.sharing {
                     Text("The viewing code appears when you go live.").font(.caption).foregroundStyle(.secondary)
-                } else if model.wifiSSID.isEmpty {
+                } else if model.wifiSSID.isEmpty && model.viewingInvitation != nil {
                     Text(model.viewingInstructions).font(.caption).foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
+                }
+                if model.state.sharing && model.viewingInvitation == nil {
+                    Button("Choose Viewing Network…") { model.showViewingNetwork() }.buttonStyle(.link)
                 }
                 if model.state.sharing && model.localAddressEnabled { localAddress }
             } else {
@@ -187,12 +190,12 @@ struct SharingInviteView: View {
             inviteButton("Enlarge codes", symbol: "arrow.up.left.and.arrow.down.right") { model.showJoinCodes() }
                 .disabled(model.protectsSourceDraft || !canShowCodes)
             inviteButton("Print codes", symbol: "printer") { printCodes() }
-                .disabled(!canShowCodes)
+                .disabled(!JoinCodeExporter.canExport(model: model))
             inviteButton("Edit viewing Wi-Fi", symbol: "wifi", selected: editingWiFi) { editingWiFi.toggle() }
         }
     }
 
-    private var canShowCodes: Bool { model.viewerURL != nil || !model.wifiSSID.isEmpty }
+    private var canShowCodes: Bool { model.viewingInvitation != nil || !model.wifiSSID.isEmpty }
 
     private func inviteButton(_ title: String, symbol: String, selected: Bool = false, hint: String? = nil,
                               action: @escaping () -> Void) -> some View {
@@ -205,7 +208,7 @@ struct SharingInviteView: View {
         do {
             let snapshot = try JoinCodeExporter.snapshot(model: model)
             printProblem = nil
-            JoinCodeExporter.print(snapshot.document)
+            try JoinCodeExporter.print(snapshot, model: model)
         } catch { printProblem = error.localizedDescription }
     }
 
@@ -298,11 +301,12 @@ struct InvitationCodesView: View {
         }
     }
     @ViewBuilder private var feedCode: some View {
-        if model.state.sharing, let url = model.viewerURL {
+        if let url = model.viewingInvitation?.ipURL {
             code(QRView(payload: url.absoluteString, size: codeSize, inset: presentation ? 16 : 8), label: "Viewing QR code")
         } else {
-            Image(systemName: "lock").foregroundStyle(.secondary).frame(width: codeSize, height: codeSize)
-                .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 8)).accessibilityLabel("Sharing is off")
+            Text(model.viewingCodeStatus).font(.caption).foregroundStyle(.secondary)
+                .multilineTextAlignment(.center).padding(6).frame(width: codeSize, height: codeSize)
+                .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 8))
         }
     }
     @ViewBuilder private func code<Content: View>(_ content: Content, label: String) -> some View {
@@ -336,8 +340,10 @@ struct ViewingWiFiEditor: View {
                         }.disabled(!network.supportsJoinCode)
                     }
                 }
-                Button(wifi.allowed ? "Refresh" : "Allow Wi-Fi Names…") { wifi.allowed ? wifi.scan() : wifi.allowNames() }
-                    .disabled(wifi.scanning || wifi.allowed && (model.state.sharing || model.state.monitoring && model.setup?.kind.isMacCapture != true && model.setup?.kind != .sample && model.setup?.kind != .capture))
+                Button(wifi.allowed ? "Refresh" : "Allow Wi-Fi Names…") {
+                    if wifi.allowed { model.scanViewingWiFi(wifi) }
+                    else { wifi.allowNames() }
+                }.disabled(wifi.allowed && !model.canScanViewingWiFi)
             }
             Text(wifi.message).font(.caption).foregroundStyle(.secondary)
             TextField("Wi-Fi name", text: draft.ssid).textFieldStyle(.roundedBorder).accessibilityLabel("Wi-Fi name")

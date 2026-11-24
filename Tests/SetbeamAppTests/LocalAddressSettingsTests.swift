@@ -27,27 +27,37 @@ final class LocalAddressSettingsTests: XCTestCase {
     }
 
     @MainActor func testInvitationUsesActiveNameAndKeepsIPAddressFallback() throws {
-        var state = SessionState()
-        state.beginMonitoring(); state.updateSource(available: true)
-        try state.startSharing(); state.updateAudience(available: true)
-        let model = SessionModel(initialState: state)
         let token = String(repeating: "a", count: 64)
-        model.viewerURL = URL(string: "http://192.168.1.20:51234/s/\(token)/")
-        XCTAssertNil(model.localViewerURL)
-        XCTAssertEqual(model.invitationURL, model.viewerURL, "The IP address link until the name is active")
+        var binding = ViewingGatewayBinding(address: "192.168.1.20", token: token)
+        XCTAssertTrue(binding.confirm(id: binding.id, port: 51234, currentToken: token))
+        let ip = try XCTUnwrap(binding.invitation(currentToken: token, listenerReady: true, localLabel: nil))
+        XCTAssertNil(ip.localURL)
+        XCTAssertEqual(ip.preferredURL, ip.ipURL)
 
-        model.localAddressChanged(.checking("setbeam"))
-        XCTAssertNil(model.localViewerURL, "A name still being checked may belong to another host")
-        model.localAddressChanged(.active("setbeam-2"))
-        XCTAssertEqual(model.localViewerURL?.absoluteString, "http://setbeam-2.local:51234/s/\(token)/",
+        let named = try XCTUnwrap(binding.invitation(currentToken: token, listenerReady: true, localLabel: "setbeam-2"))
+        XCTAssertEqual(named.localURL?.absoluteString, "http://setbeam-2.local:51234/s/\(token)/",
                        "Only the host changes; the port and private code stay")
-        XCTAssertEqual(model.invitationURL, model.localViewerURL)
-        XCTAssertEqual(model.viewerURL?.host, "192.168.1.20", "Join codes keep the IP address")
-        if model.canInviteOtherDevices {
-            XCTAssertEqual(model.localAddressStatus.text, "setbeam.local is in use on this network, so viewers use setbeam-2.local.")
-            XCTAssertTrue(model.localAddressStatus.attention)
-        }
-        model.localAddressChanged(.unavailable(.inUse))
-        XCTAssertEqual(model.invitationURL, model.viewerURL)
+        XCTAssertEqual(named.preferredURL, named.localURL)
+        XCTAssertEqual(named.ipURL, ip.ipURL, "Join codes keep the IP address")
+    }
+
+    func testStaleBindCannotConfirmCurrentInvitation() {
+        let old = ViewingGatewayBinding(address: "192.0.2.10", token: "share")
+        var current = ViewingGatewayBinding(address: "192.0.2.11", token: "share")
+        XCTAssertFalse(current.confirm(id: old.id, port: 9000, currentToken: "share"))
+        XCTAssertNil(current.invitation(currentToken: "share", listenerReady: true, localLabel: nil))
+        XCTAssertFalse(current.confirm(id: current.id, port: 9000, currentToken: nil))
+        XCTAssertTrue(current.confirm(id: current.id, port: 9000, currentToken: "share"))
+        XCTAssertNil(current.invitation(currentToken: "share", listenerReady: false, localLabel: nil))
+        XCTAssertNotNil(current.invitation(currentToken: "share", listenerReady: true, localLabel: nil))
+        XCTAssertNil(current.invitation(currentToken: nil, listenerReady: true, localLabel: nil))
+        XCTAssertNil(current.invitation(currentToken: "next-share", listenerReady: true, localLabel: nil))
+    }
+
+    func testLoopbackBindingOffersNoInvitation() {
+        var binding = ViewingGatewayBinding(address: "127.0.0.2", token: "share")
+        XCTAssertTrue(binding.confirm(id: binding.id, port: 9000, currentToken: "share"))
+        XCTAssertNotNil(binding.url(currentToken: "share", listenerReady: true))
+        XCTAssertNil(binding.invitation(currentToken: "share", listenerReady: true, localLabel: "setbeam"))
     }
 }
