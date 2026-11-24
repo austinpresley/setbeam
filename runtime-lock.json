@@ -34,8 +34,8 @@
   "reader": {
     "url": "https://raw.githubusercontent.com/bluenviron/mediamtx/v1.21.2/internal/servers/webrtc/reader.js",
     "sha256": "a802f229b803c33713d4c69c4cc0d480108a5bf384947aeee4aaf04268bf85c1",
-    "bundledSHA256": "84526eb4c3dc999b6a4f93364fda8e578960ed1406bf5dcbe289a30cd887afcd",
-    "changes": "Setbeam adds getStats() on the existing peer connection for viewer diagnostics (b3491dc)."
+    "bundledSHA256": "3540d88f1999f76bc8acf6baf21b682a139c1da2e20fc8bc144308f23f6e5842",
+    "changes": "Setbeam adds getStats() to the existing peer for diagnostics (b3491dc) and bounds negotiation attempts and WHEP cleanup (8ae404b)."
   },
   "sourceMaterials": [
     {
