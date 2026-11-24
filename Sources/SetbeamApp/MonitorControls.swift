@@ -6,13 +6,30 @@ enum MonitorStyle {
 
 struct SharingTally: View {
     @ObservedObject var model: SessionModel
-    @State private var expanded = false
     private var sharing: AudiencePresentation { model.audiencePresentation }
+    private var expanded: Binding<Bool> {
+        Binding(get: { model.audienceControlsShown }, set: { model.audienceControlsShown = $0 })
+    }
 
     var body: some View {
+        HStack(spacing: 2) {
+            tally
+            if sharing.phase == .privateMonitoring && !model.canStopSharing {
+                // Before going live, the same options are one click away without starting anything.
+                Button { model.showAudienceControls() } label: {
+                    Image(systemName: "slider.horizontal.3").font(.system(size: 13))
+                        .foregroundStyle(.secondary).frame(width: 26, height: 28).contentShape(Rectangle())
+                }.buttonStyle(ChromeButtonStyle()).help("Audience options").accessibilityLabel("Audience options")
+            }
+        }.popover(isPresented: expanded, arrowEdge: .bottom) {
+            AudienceControlsView(model: model) { model.audienceControlsShown = false }
+        }
+    }
+
+    private var tally: some View {
         Button {
             if sharing.phase == .privateMonitoring { model.startSharing() }
-            else { expanded.toggle() }
+            else { model.audienceControlsShown.toggle() }
         } label: {
             HStack(spacing: 8) {
                 tallySymbol
@@ -32,8 +49,7 @@ struct SharingTally: View {
             .help(sharing.phase == .privateMonitoring ? "Go Live · Start sharing this picture with viewers" : "\(sharing.title) · \(outputStatus)")
             .accessibilityLabel(title)
             .accessibilityValue(sharing.phase == .privateMonitoring ? "Private" : outputStatus)
-            .popover(isPresented: $expanded, arrowEdge: .bottom) { sharingActions }
-            .onChange(of: model.state.sharing) { _, active in if !active { expanded = false } }
+            .accessibilityHint(sharing.phase == .privateMonitoring ? "" : "Opens Hold, Stop Sharing and audience options")
     }
 
     private var title: String {
@@ -80,29 +96,6 @@ struct SharingTally: View {
         }
     }
 
-    private var sharingActions: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(sharing.title).font(.headline)
-                Text(outputStatus).font(.caption).foregroundStyle(.secondary)
-            }
-            Divider()
-            if model.state.sharing {
-                Button { model.performAudienceAction(); expanded = false } label: {
-                    Label(sharing.primaryTitle, systemImage: sharing.primarySymbol)
-                }.disabled(!sharing.primaryEnabled).help(sharing.primaryHelp)
-                if sharing.phase == .failedResume {
-                    Button { model.setAudienceHold(true); expanded = false } label: { Label("Hold", systemImage: "pause.fill") }
-                        .disabled(model.busy)
-                }
-                Button { model.showSharing(.invite); expanded = false } label: { Label("Invite viewers", systemImage: "qrcode") }
-            }
-            if model.canStopSharing || model.stoppingSharing {
-                Button { model.stopSharing(); expanded = false } label: { Label("Stop Sharing", systemImage: "stop.fill") }
-                    .disabled(!model.canStopSharing).help("End viewer access. Your local monitor continues.")
-            }
-        }.padding(16).frame(minWidth: 244, alignment: .leading)
-    }
 }
 
 struct ToolbarPeople: View {
@@ -116,7 +109,7 @@ struct ToolbarPeople: View {
             Button { model.showSharing(.viewers) } label: {
                 HStack(spacing: -5) {
                     if model.admittedViewers.isEmpty {
-                        Image(systemName: "person.2").font(.system(size: 16)).foregroundStyle(.secondary)
+                        Image(systemName: "qrcode").font(.system(size: 16)).foregroundStyle(.secondary)
                             .frame(width: 32, height: 28)
                     } else {
                         ForEach(model.admittedViewers.prefix(maxAvatars)) { viewer in
@@ -129,7 +122,7 @@ struct ToolbarPeople: View {
                     }
                 }.frame(height: 28).contentShape(Rectangle())
             }.buttonStyle(ChromeButtonStyle())
-                .help("\(model.admittedViewers.count) joined · \(model.verifiedViewers) playing · Show people")
+                .help(model.admittedViewers.isEmpty ? "Invite viewers" : "\(model.admittedViewers.count) joined · \(model.verifiedViewers) playing · Show people")
                 .accessibilityLabel("People").accessibilityFocused($peopleFocused).accessibilityValue("\(model.admittedViewers.count) joined, \(model.verifiedViewers) playing")
             if let first = model.pendingViewers.first {
                 Button { requestsExpanded.toggle() } label: {

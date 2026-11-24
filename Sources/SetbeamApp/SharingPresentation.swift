@@ -1,19 +1,19 @@
 import Foundation
 
+/// People holds the invitation codes, requests and viewers; Chat is the session conversation.
+/// Audience options live in the LIVE menu and network setup lives in Settings.
 enum SharingSection: String, CaseIterable, Identifiable {
-    case invite = "Invite", viewers = "People", chat = "Chat", options = "Options"
+    case viewers = "People", chat = "Chat"
     var id: String { rawValue }
     var symbol: String {
         switch self {
-        case .invite: return "qrcode"
         case .viewers: return "person.2"
         case .chat: return "bubble.left"
-        case .options: return "slider.horizontal.3"
         }
     }
 }
 
-enum SettingsSection: String { case permissions, diagnostics, updates }
+enum SettingsSection: String { case permissions, network, diagnostics, updates }
 
 enum SharingDestination: Equatable {
     case hidden, inline, window

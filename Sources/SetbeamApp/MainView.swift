@@ -7,9 +7,9 @@ struct MainView: View {
     @State private var popover: MonitorPopover?
     @State private var sharingExpanded = false
     @State private var pictureHovered = false
-    @State private var lastSharingSection = SharingSection.invite
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismissWindow) private var dismissWindow
+    @Environment(\.openSettings) private var openSettings
     @StateObject private var windowPresentation = MainWindowPresentation()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -53,7 +53,6 @@ struct MainView: View {
             case .networkSource: NetworkSourceView(model: model)
             case .incoming: IncomingSetupView(model: model)
             case .join: JoinCodesView(model: model)
-            case .setupCheck: SetupCheckView(model: model)
             case .rename: SessionNameView(model: model)
             case .about: AboutView(model: model)
             case .permissions: PermissionsView(model: model)
@@ -68,10 +67,8 @@ struct MainView: View {
                 AccessibilityNotification.Announcement(request.instructions).post()
             }
         }
-        .onChange(of: model.sharingSection) { _, section in
-            if let section { lastSharingSection = section }
-            updateSharingPresentation()
-        }
+        .onChange(of: model.sharingSection) { _, _ in updateSharingPresentation() }
+        .onChange(of: model.settingsRequest) { _, _ in openSettings() }
         .onChange(of: model.sharingFocusRequest) { _, _ in updateSharingPresentation() }
         .onChange(of: model.sharingInWindow) { _, _ in updateSharingPresentation() }
         .onAppear {
@@ -117,10 +114,6 @@ struct MainView: View {
             ChromeIconButton(model.pipVisible ? "Hide floating preview" : "Show floating preview",
                              symbol: model.pipVisible ? "pip.exit" : "pip.enter") { model.togglePiP() }
                 .disabled(model.preview == nil).foregroundStyle(.secondary)
-            ChromeIconButton(model.sharingSection == nil ? "Show Sharing panel" : "Hide Sharing panel",
-                             symbol: "sidebar.trailing", selected: model.sharingSection != nil) {
-                if model.sharingSection == nil { model.showSharing(lastSharingSection) } else { model.closeSharing() }
-            }.foregroundStyle(.secondary)
             SharingTally(model: model).padding(.leading, 8)
         }.padding(.leading, 96).padding(.trailing, 12)
             .frame(height: 52).background(SetbeamChrome.toolbar)

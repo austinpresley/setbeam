@@ -485,34 +485,37 @@ async function sample(b, stats) {
   b.stats = stats; b.frame(); await b.tick(3000);
 }
 
-test('a new tab chooses one name and color before it plays, with approval off', async () => {
+test('with approval off a new tab plays first and names itself only when it wants to', async () => {
   const b = browser({storage: {}}); await b.settle(); await b.tick();
-  assert.equal(joinVisible(b), true, 'The join card comes first');
-  assert.equal(b.el('join-title').textContent, 'Join this feed'); assert.equal(b.el('join-submit').textContent, 'Join');
-  assert.equal(b.el('state').textContent, 'Joining');
-  assert.equal(b.count('join'), 0, 'Nothing is sent before the viewer chooses');
-  assert.equal(b.count('config.json'), 0); assert.equal(b.readers.length, 0);
-  assert.equal(b.swatches().length, 3, 'Every palette color is offered');
+  assert.equal(joinVisible(b), false, 'The picture comes first');
+  assert.equal(b.count('join'), 1, 'The tab joins without a name');
+  assert.equal(b.joins[0].name, undefined); assert.equal(b.joins[0].ask, undefined);
+  assert.equal(b.readers.length, 1, 'The picture plays without a name');
+  await b.track(); await b.tick(3000);
+  assert.ok(!b.heartbeats.at(-1).name, 'No placeholder name is invented');
+  assert.equal(b.el('identity-button').hidden, false);
+  assert.equal(b.el('identity-button').getAttribute('aria-label'), 'Add your name');
+  b.listeners['identity-button:click'](); await b.settle();
+  assert.equal(joinVisible(b), true); assert.equal(b.el('join-title').textContent, 'Your name and color');
+  assert.equal(b.el('player').className.includes('join-open'), false, 'Naming keeps the picture visible');
   assert.match(b.el('join-hint').textContent, /The operator sees your name\. Other viewers see it on your chat messages\./);
   b.pick('teal');
   await b.submit('  Alex\n\u202e  ' + 'x'.repeat(70));
-  const sent = b.joins.at(-1);
-  assert.equal(sent.name.length, 40); assert.ok(!sent.name.includes('\u202e')); assert.ok(!sent.name.includes('\n'));
-  assert.equal(sent.color, 'teal'); assert.equal(sent.ask, true);
-  assert.equal(b.storage.get('setbeam-viewer-name'), sent.name); assert.equal(b.storage.get('setbeam-pointer-color'), 'teal');
-  assert.equal(joinVisible(b), false); assert.equal(b.readers.length, 1, 'The picture plays after joining');
-  await b.track(); await b.tick(3000);
-  assert.deepEqual({name: b.heartbeats.at(-1).name, color: b.heartbeats.at(-1).color}, {name: sent.name, color: 'teal'});
-  assert.equal(b.el('identity-avatar').textContent, 'A', 'The corner avatar shows the same identity');
-  assert.equal(b.el('identity-avatar').style['--c'], '#0b7480');
+  assert.equal(joinVisible(b), false);
+  const named = b.heartbeats.at(-1);
+  assert.equal(named.name.length, 40); assert.ok(!named.name.includes('\u202e')); assert.ok(!named.name.includes('\n'));
+  assert.equal(named.color, 'teal');
+  assert.equal(b.storage.get('setbeam-viewer-name'), named.name); assert.equal(b.storage.get('setbeam-pointer-color'), 'teal');
+  assert.equal(b.el('identity-avatar').textContent, 'A', 'The corner avatar shows the chosen identity');
   assert.match(b.el('identity-button').getAttribute('aria-label'), /^Alex x+\. Change name or color$/);
+  assert.equal(b.count('join'), 1, 'Naming never sends a new join request'); assert.equal(b.readers.length, 1);
   const reload = browser({storage: Object.fromEntries(b.storage)}); await reload.settle();
-  assert.equal(joinVisible(reload), false, 'A reload keeps the identity without asking again');
-  assert.deepEqual({name: reload.joins[0].name, color: reload.joins[0].color}, {name: sent.name, color: 'teal'});
+  assert.equal(joinVisible(reload), false, 'A reload keeps the identity without asking');
+  assert.deepEqual({name: reload.joins[0].name, color: reload.joins[0].color}, {name: named.name, color: 'teal'});
 });
 
 test('an empty name is not sent, and shared pointers are named in the hint', async () => {
-  const b = browser({storage: {}}); await b.settle();
+  const b = browser({storage: {}}); b.state.approval = true; await b.settle();
   b.state.pointers = true; await b.tick();
   assert.match(b.el('join-hint').textContent, /Other viewers see it on your chat messages and when you point/);
   await b.submit('   ');
@@ -1299,7 +1302,7 @@ test('admission starts the state stream before reader credentials are ready', as
 });
 
 test('plain HTTP joins still generate a UUID when randomUUID is unavailable', async () => {
-  const b = browser({plainHTTP: true, storage: {}}); await b.settle(); await b.submit('Ana');
+  const b = browser({plainHTTP: true, storage: {}}); b.state.approval = true; await b.settle(); await b.submit('Ana');
   assert.equal(b.joins[0].requestID, 'ffffffff-ffff-4fff-bfff-ffffffffffff');
 });
 

@@ -28,7 +28,11 @@ h1{margin:0;min-width:0;font-size:16px;line-height:1.25;font-weight:600;white-sp
 .avatar{display:grid;place-items:center;border-radius:50%;background:var(--c,#3a3a40);color:var(--t,#fff);font-weight:600;line-height:1;flex-shrink:0;user-select:none}
 .avatar:empty:before{content:"";width:55%;height:55%;background:currentColor;-webkit-mask:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round'><circle cx='12' cy='8' r='4'/><path d='M4 21a8 8 0 0 1 16 0'/></svg>") center/contain no-repeat;mask:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round'><circle cx='12' cy='8' r='4'/><path d='M4 21a8 8 0 0 1 16 0'/></svg>") center/contain no-repeat}
 .avatar-button{display:grid;place-items:center;width:44px;height:44px;margin:-6px -6px -6px 0;padding:0;border:0;border-radius:50%;background:none;transition:opacity .25s}
-.avatar-button .avatar{width:32px;height:32px;font-size:14px;box-shadow:0 0 0 2px #0007}.avatar-button[aria-expanded=true] .avatar{box-shadow:0 0 0 2px #000,0 0 0 4px #f5f5f7}
+.avatar-button .avatar{width:32px;height:32px;font-size:14px;box-shadow:0 0 0 2px #0007}
+.avatar.anonymous .icon{width:18px;height:18px}.avatar-button.anonymous .avatar{box-shadow:0 0 0 2px #0007,0 0 0 4px #0a84ff99}
+.identity-tip{position:absolute;right:var(--edge-r);top:calc(var(--top) + 46px);margin:0;padding:7px 11px;border-radius:10px;background:#f5f5f7;color:#111;font-size:13px;font-weight:600;pointer-events:none;box-shadow:0 6px 20px #0006}
+.identity-tip::before{content:"";position:absolute;top:-5px;right:16px;width:10px;height:10px;background:#f5f5f7;transform:rotate(45deg)}
+.player.join-open .identity-tip{display:none}.avatar-button[aria-expanded=true] .avatar{box-shadow:0 0 0 2px #000,0 0 0 4px #f5f5f7}
 
 /* One dock holds every action. Shortcuts are in each tooltip. */
 .controls{position:absolute;z-index:3;left:50%;bottom:var(--bottom);transform:translateX(-50%);display:flex;align-items:center;gap:2px;padding:6px;border:1px solid var(--line);border-radius:30px;box-shadow:0 6px 24px #0006;transition:opacity .25s,background .25s,border-color .25s}

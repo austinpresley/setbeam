@@ -66,12 +66,16 @@ struct ViewerRequestRow: View {
 private struct ViewerSessionLabel: View {
     let request: JoinRequest
     let status: String
+    /// Requests show their session and route so the operator can tell two "Sam"s apart before admitting.
+    var showsSession = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(request.name).font(.callout.weight(.semibold)).lineLimit(1)
-            Text(request.sessionLabel).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                .fixedSize(horizontal: false, vertical: true)
+            if showsSession {
+                Text(request.sessionLabel).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .layoutPriority(1)
         .help("\(request.name) · \(request.sessionLabel) · \(status)")
@@ -87,6 +91,7 @@ struct ViewerActivityRow: View {
     let returnAccessibilityFocus: () -> Void
     let toggleDetails: () -> Void
     @State private var hover = false
+    @FocusState private var detailsFocused: Bool
     @FocusState private var removeFocused: Bool
     @AccessibilityFocusState private var removeAccessibilityFocused: Bool
 
@@ -107,7 +112,7 @@ struct ViewerActivityRow: View {
         let reference = JoinRequest(viewer, link: model.viewingLink)
         return HStack(spacing: 8) {
             ViewerAvatar(viewer: viewer, holding: model.audiencePresentation.confirmedHold)
-            ViewerSessionLabel(request: reference, status: status.title)
+            ViewerSessionLabel(request: reference, status: status.title, showsSession: false)
             Spacer(minLength: 0)
             if viewer.pointing {
                 Image(systemName: "cursorarrow").font(.caption).foregroundStyle(.secondary)
@@ -117,7 +122,8 @@ struct ViewerActivityRow: View {
             ChromeIconButton("Details for \(viewer.displayName), session \(viewer.number)", symbol: "info.circle", size: 28,
                              selected: showingDetails, hint: showingDetails ? "Hide viewer details" : "Show viewer details",
                              action: toggleDetails)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.secondary).focused($detailsFocused)
+                .opacity(hover || detailsFocused || showingDetails ? 1 : 0.001)
             ZStack {
                 Image(systemName: status.symbol, variableValue: status.variableValue).font(.system(size: 14)).foregroundStyle(status.tint)
                     .help(status.title).accessibilityHidden(true)
@@ -251,7 +257,7 @@ private struct ViewerStatus {
         case .paused: return "pause.circle"
         case .background: return "rectangle.on.rectangle"
         case .ready: return "play.circle"
-        case .connecting: return "circle.dashed"
+        case .connecting: return "clock"
         }
     }
 }

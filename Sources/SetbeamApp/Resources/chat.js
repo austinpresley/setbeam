@@ -487,6 +487,8 @@
     form.addEventListener('submit', async event => {
       event.preventDefault();
       if (send.disabled || posting || pendingSend?.checking) return;
+      // Messages carry the sender's name, so an unnamed viewer chooses one first. The draft is kept.
+      if (!pendingSend && options.needsName?.()) { options.askName?.(); return; }
       if (attachment && !pendingSend && !frameReady()) { attachment.stale = true; draftState(); return; }
       pendingSend ??= {body: {action:'post', text:input.value, replyTo, requestID:uuid(),
         ...(attachment ? {frame:attachment.data.split(',')[1], revision:attachment.revision} : {})}};

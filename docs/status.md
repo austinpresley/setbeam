@@ -1,5 +1,56 @@
 # Setbeam status
 
+## Simpler v2 implementation, 2026-11-24
+
+Austin approved all six Simpler v2 changes ("Do all"). Three open questions
+took these defaults: the Sound check reports the outgoing audio track instead
+of an Expected Sound choice, frame rate stays under the LIVE menu's ellipsis,
+and unnamed viewers keep the gateway's existing device-and-session name
+(such as "iPhone 2") rather than a new "Guest N" label.
+
+- The empty monitor lists this Mac's displays (thumbnails only with Screen
+  Recording already allowed), cameras and capture devices (device art, no
+  camera opened), and the last working source with a clock. Category icons,
+  Stream address and Sample follow as one row.
+- Go Live opens People while nobody has joined. People holds the codes, the
+  Picture, Sound, Wi-Fi and Scan readiness checks, requests and viewers. The
+  codes shrink to a card once someone joins. Test My Setup and its sheet are
+  removed; `SetupCheck` passes when another device plays the current output.
+- The Sharing panel has People and Chat. The panel toolbar button is gone.
+  The LIVE menu holds Hold or Resume, Stop, the Ask first, Pointers, On my Mac
+  and On display tiles, and quality with frame rate under the ellipsis. A
+  sliders button beside Go Live opens it before sharing. Viewing network,
+  local address and short address moved to Settings → Network.
+- Permissions are tiles with a status badge or one Allow or Settings action;
+  reasons are behind ⓘ.
+- With Ask first off, the viewer page joins without a name once it knows the
+  session state, and plays at once. The avatar shows a person glyph and a
+  6-second "Add your name" hint. Chat and pointing ask for a name first.
+- Viewer rows show the name, device and one status icon; session detail is
+  in help and accessibility, and ⓘ appears on hover or focus.
+
+The first `scripts/check.sh` run passed 380 XCTest cases with two opt-in
+skips, 73 viewer and 14 pointer Node checks, and the Pyro H probe, then
+stopped at the media probe with `The video service could not start.`
+Austin's installed Setbeam was running its own MediaMTX. The remaining nine
+probes then passed individually: media, recovery, viewer access, local
+address, short address, source switching, formats, frame rates and keyframe
+bursts. See `build/logs/simpler-v2-check.log` and `build/logs/v2-probes.out`.
+Three viewer checks were rewritten for watch-first; the name card checks now
+run under approval.
+
+A QA copy of the developer build ran native UI checks in light and dark with
+sample media and an isolated preferences suite. It captured the empty stage,
+Go Live opening People, People with an admitted fixture viewer, Chat, the LIVE
+menu, and Settings Permissions and Network. Stop retired the QA link and
+private monitoring continued in both runs. The first run showed a truncated
+network sentence in the compact card and a cut-off region capture; the card
+now reads "This Mac only" and the capture uses the owned window. Integration
+mode serves loopback only, so the readiness strip, QR card and Go Live codes
+on a real network were not exercised. No physical phone, camera or
+transmitter was tested, and the browser watch-first flow ran only in the
+Node harness.
+
 ## Simpler v2 proposal, 2026-11-24
 
 Austin asked for another ease-of-use rethink with before/after mockups,
@@ -10,8 +61,7 @@ the panel cut from four tabs to two, audience options in the LIVE menu,
 permission tiles, and viewers watching before naming themselves when Ask
 first is off. Befores are captures from the current build and the viewer
 redesign. Afters are HTML mockups under ignored `design/mockups/simpler-v2/`.
-Design only: no app source changed, and no build, check or physical test ran.
-Austin has not chosen what to build. The [gallery, PNGs and proposal](https://drive.google.com/drive/folders/1p0o9iaqaVQad1HfLfZRyKepVawfE2HWK)
+Design only at that point. Austin then approved all six; see the implementation entry above. The [gallery, PNGs and proposal](https://drive.google.com/drive/folders/1p0o9iaqaVQad1HfLfZRyKepVawfE2HWK)
 are delivered with remote verification, delivery `20261124T201432Z--07f3e81cf660`.
 
 ## Audit remediation, 2026-11-24

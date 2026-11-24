@@ -7,6 +7,8 @@ struct AppSettingsView: View {
         TabView(selection: Binding(get: { model.settingsSection }, set: { model.selectSettings($0) })) {
             PermissionsView(model: model, inSettings: true)
                 .tabItem { Label("Permissions", systemImage: "hand.raised") }.tag(SettingsSection.permissions)
+            NetworkSettingsView(model: model)
+                .tabItem { Label("Network", systemImage: "network") }.tag(SettingsSection.network)
             DiagnosticsView(model: model, inSettings: true)
                 .tabItem { Label("Diagnostics", systemImage: "stethoscope") }.tag(SettingsSection.diagnostics)
             UpdatesView(updater: updater)

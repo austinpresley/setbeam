@@ -134,3 +134,24 @@ Phone chat uses the space below the complete picture. Its empty composer is
 one approximately 54 px row with 44 px capture and Send targets. Drafts grow
 when needed; replies, images and reactions remain contextual. The lifetime
 notice reads "Clears when sharing stops." Mac controls retain native sizes.
+
+## Simpler v2, 2026-11-24
+
+Austin approved all six [Simpler v2](simpler-v2-proposal.md) changes. Each
+task starts from what the operator wants to see, takes one click, and confirms
+itself.
+
+The empty monitor shows the sources this Mac already sees: displays with
+thumbnails when Screen Recording is allowed, cameras and capture devices with
+device art, and the last working source marked with a clock. Category icons,
+Stream address and Sample sit below as one quiet row.
+
+Go Live opens People while nobody has joined. People holds the codes, the four
+readiness checks, requests and viewers; the codes shrink to a card once someone
+joins. The Sharing panel has two tabs, People and Chat, and the toolbar has no
+panel button. The LIVE menu holds Hold, Stop, the Ask first and pointer tiles,
+and quality bars with frame rate under the ellipsis. Network and local address
+live in Settings → Network. There is no separate setup test.
+
+Permissions are tiles with a status badge or one Allow action; reasons are
+behind ⓘ. With Ask first off, viewers watch before naming themselves.

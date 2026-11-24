@@ -166,15 +166,32 @@
   }
   // The avatar in the corner is the one identity; it opens the editor and has no name field of its own.
   function renderIdentity() {
-    const locked = nameLocked();
-    paintAvatar(document.getElementById('identity-avatar'), viewerName, viewerColor);
+    const locked = nameLocked(), avatar = document.getElementById('identity-avatar');
+    paintAvatar(avatar, viewerName, viewerColor);
+    const anonymous = !viewerName;
+    avatar.classList?.toggle('anonymous', anonymous);
+    if (anonymous && avatar.classList && !avatar.firstElementChild) avatar.innerHTML = '<svg class="icon" aria-hidden="true"><use href="#i-user"/></svg>';
     const direct = document.getElementById('identity-button');
     direct.hidden = !canEdit();
+    direct.classList?.toggle('anonymous', anonymous);
     direct.setAttribute('aria-expanded', String(editing));
-    action(direct, (viewerName || 'Your identity') + '. ' + (locked ? 'Change color' : 'Change name or color'));
+    action(direct, anonymous ? 'Add your name' : viewerName + '. ' + (locked ? 'Change color' : 'Change name or color'));
+    // A one-time hint points at the avatar while the viewer is still unnamed.
+    const tip = document.getElementById('identity-tip');
+    if (tip) {
+      const showTip = anonymous && canEdit() && !editing && !identityTipDone;
+      if (showTip && !identityTipTimer) identityTipTimer = setTimeout(() => { identityTipDone = true; renderIdentity(); }, 6000);
+      tip.hidden = !showTip;
+    }
+  }
+  let identityTipDone = false, identityTipTimer;
+  function askForName() {
+    identityTipDone = true;
+    if (!editing) openEditor();
   }
   const canEdit = () => access === 'admitted' && admissionConfirmed && running();
   function openEditor() {
+    identityTipDone = true;
     if (!canEdit() || chatLayerOpen()) return;
     if (editing) { closeEditor(); return; }
     editing = true; joinDirty = false; joinNote = ''; update();
@@ -623,7 +640,10 @@
   function join() {
     if (!running() || requests.has('join') || (access === 'admitted' && admissionConfirmed && mediaReady) ||
         (access === 'full' && !asking)) return;
-    if (!pass && !asking && (access === 'name' || !viewerName)) {
+    // With approval off the picture plays first; a name is asked for only to chat or point.
+    // An unnamed tab waits for the session state so it never guesses whether approval is on.
+    if (!pass && !asking && !viewerName && !stateKnown) return;
+    if (!pass && !asking && (access === 'name' || approval && !viewerName)) {
       if (access === 'joining') { access = 'name'; update(); }
       return;
     }
@@ -918,7 +938,8 @@
   }
   // Collaboration uses the displayed publisher. A state announcement alone cannot make video ready.
   const chat = globalThis.SetbeamChat?.attach({
-    pass: () => pass, live: playing, displayedRevision: () => displayedRevision, identityOpen: () => editing
+    pass: () => pass, live: playing, displayedRevision: () => displayedRevision, identityOpen: () => editing,
+    needsName: () => !viewerName, askName: () => askForName()
   });
 
   function rememberTabKey(key) {

@@ -2,22 +2,16 @@ import XCTest
 @testable import SetbeamCore
 
 final class SetupCheckTests: XCTestCase {
-    func testRequiresOtherDeviceAndAudibleConfirmationWhenSoundIsExpected() {
-        let localOnly = SetupCheck(picture: true, viewingAddress: true, otherDevicePlaying: false, expectsAudio: false, outgoingAudio: true, soundConfirmed: false)
+    func testPassesWhenAnotherDevicePlaysTheCurrentOutput() {
+        let localOnly = SetupCheck(picture: true, viewingAddress: true, otherDevicePlaying: false, outgoingAudio: true)
         XCTAssertFalse(localOnly.passed)
-        let trackOnly = SetupCheck(picture: true, viewingAddress: true, otherDevicePlaying: true, expectsAudio: true, outgoingAudio: true, soundConfirmed: false)
-        XCTAssertFalse(trackOnly.passed)
-        let noTrack = SetupCheck(picture: true, viewingAddress: true, otherDevicePlaying: true, expectsAudio: true, outgoingAudio: false, soundConfirmed: true)
-        XCTAssertFalse(noTrack.passed)
-        let audible = SetupCheck(picture: true, viewingAddress: true, otherDevicePlaying: true, expectsAudio: true, outgoingAudio: true, soundConfirmed: true)
-        XCTAssertTrue(audible.passed)
-        let silentByChoice = SetupCheck(picture: true, viewingAddress: true, otherDevicePlaying: true, expectsAudio: false, outgoingAudio: false, soundConfirmed: false)
-        XCTAssertTrue(silentByChoice.passed)
-    }
-    func testSetupRequiresAnExplicitSoundExpectation() {
-        let undecided = SetupCheck(picture: true, viewingAddress: true, otherDevicePlaying: true,
-                                   expectsAudio: nil, outgoingAudio: false, soundConfirmed: false)
-        XCTAssertFalse(undecided.passed)
+        let noNetwork = SetupCheck(picture: true, viewingAddress: false, otherDevicePlaying: true, outgoingAudio: true)
+        XCTAssertFalse(noNetwork.passed)
+        let noPicture = SetupCheck(picture: false, viewingAddress: true, otherDevicePlaying: true, outgoingAudio: true)
+        XCTAssertFalse(noPicture.passed)
+        let silent = SetupCheck(picture: true, viewingAddress: true, otherDevicePlaying: true, outgoingAudio: false)
+        XCTAssertTrue(silent.passed)
+        XCTAssertFalse(silent.outgoingAudio)
     }
 
     func testSoundEvidenceMatchesTheSameLinkRevisionRouteAndRemoteSessions() {

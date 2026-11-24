@@ -78,13 +78,13 @@ private struct SetbeamCommands: Commands {
                 .keyboardShortcut("h", modifiers: [.command, .shift]).disabled(!model.state.sharing || !model.audiencePresentation.primaryEnabled)
             Button("Stop Sharing") { model.stopSharing() }.disabled(!model.canStopSharing)
             Divider()
-            Button("Invite Viewers") { sharing(.invite) }.keyboardShortcut("1", modifiers: .command)
-            Button("Show People") { sharing(.viewers) }.keyboardShortcut("2", modifiers: .command)
-            Button("Sharing Options…") { sharing(.options) }.keyboardShortcut("3", modifiers: .command)
-            Button("Show Chat") { sharing(.chat) }.keyboardShortcut("4", modifiers: .command)
+            Button("Invite and People") { sharing(.viewers) }.keyboardShortcut("1", modifiers: .command)
+            Button("Show Chat") { sharing(.chat) }.keyboardShortcut("2", modifiers: .command)
+            Button("Audience Options…") { main(); model.showAudienceControls() }.keyboardShortcut("3", modifiers: .command)
+            Button("Network Settings…") { model.selectSettings(.network); openSettings() }
             Button(model.sharingInWindow ? "Show Sharing Beside Monitor" : "Open Sharing in Window") {
                 if model.sharingInWindow { model.dockSharing() }
-                else { sharing(model.sharingSection ?? .invite); model.showSharingInWindow() }
+                else { sharing(model.sharingSection ?? .viewers); model.showSharingInWindow() }
             }.disabled(model.sharingInWindow && !model.sharingCanDock)
             Divider()
             Button("Show Large Join Codes…") { main(); model.showJoinCodes() }.disabled(!model.state.sharing && model.wifiSSID.isEmpty || model.protectsSourceDraft)
@@ -93,7 +93,6 @@ private struct SetbeamCommands: Commands {
             Button("Show Join Requests") { model.joinRequests.show() }.disabled(model.pendingViewers.isEmpty)
         }
         CommandGroup(replacing: .help) {
-            Button("Test My Setup…") { show(.setupCheck) }.disabled(model.protectsSourceDraft)
             Button("Permissions…") { model.selectSettings(.permissions); openSettings() }
             Button("Diagnostics…") { model.selectSettings(.diagnostics); openSettings() }
         }
@@ -131,8 +130,7 @@ private struct SetbeamMenu: View {
         }
         Button(model.pipVisible ? "Hide Floating Preview" : "Show Floating Preview") { model.togglePiP() }.disabled(model.preview == nil)
         Menu("Sharing") {
-            Button("Invite Viewers") { show(.invite) }
-            Button("Show People") { show(.viewers) }
+            Button("Invite and People") { show(.viewers) }
             Button(model.chatUnreadCount > 0 ? "Show Chat (\(model.chatUnreadCount) Unread)" : "Show Chat") { show(.chat) }
             Button("Copy Viewing Link") { model.copyLink() }.disabled(model.viewingInvitation == nil)
             Button("Show Join Codes") { model.showJoinCodeWindow() }.disabled(!model.state.sharing && model.wifiSSID.isEmpty)

@@ -3,15 +3,35 @@ import SetbeamCore
 @testable import SetbeamApp
 
 final class SharingNavigationTests: XCTestCase {
-    @MainActor func testViewingNetworkDeepLinkOpensItsDisclosureWithoutChangingTheNetwork() {
-        let model = SessionModel()
+    @MainActor func testViewingNetworkDeepLinkOpensNetworkSettingsWithoutChangingTheNetwork() {
+        let suite = "app.setbeam.tests.network-settings.\(UUID().uuidString)"
+        let preferences = UserDefaults(suiteName: suite)!
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let model = SessionModel(preferences: preferences)
         let network = model.networkChoice
+        let request = model.settingsRequest
         model.showViewingNetwork()
-        XCTAssertEqual(model.sharingSection, .options)
-        XCTAssertTrue(model.sharingOptionsNetworkRequested)
+        XCTAssertEqual(model.settingsSection, .network)
+        XCTAssertGreaterThan(model.settingsRequest, request)
+        XCTAssertNil(model.sharingSection, "Network settings never open or close the Sharing panel")
         XCTAssertEqual(model.networkChoice, network)
-        model.showSharing(.options)
-        XCTAssertFalse(model.sharingOptionsNetworkRequested)
+        XCTAssertNotNil(model.sharingDraft)
+    }
+
+    @MainActor func testAudienceControlsOpenWithoutChangingSharingOrHold() throws {
+        var state = SessionState()
+        state.beginMonitoring(); state.updateSource(available: true)
+        try state.startSharing(); try state.setHold(true)
+        let suite = "app.setbeam.tests.audience-controls.\(UUID().uuidString)"
+        let preferences = UserDefaults(suiteName: suite)!
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let model = SessionModel(initialState: state, preferences: preferences)
+        model.showAudienceControls()
+        XCTAssertTrue(model.audienceControlsShown)
+        XCTAssertNotNil(model.sharingDraft)
+        XCTAssertTrue(model.state.sharing)
+        XCTAssertTrue(model.state.holding)
+        XCTAssertNil(model.sharingSection)
     }
     @MainActor func testOpeningAndSwitchingPanelsNeverChangesSharingOrHold() throws {
         let suite = "app.setbeam.tests.sharing-navigation.\(UUID().uuidString)"
@@ -63,7 +83,7 @@ final class SharingNavigationTests: XCTestCase {
         XCTAssertEqual(model.sheet, .sourceDetails)
         model.openNetworkSource()
         XCTAssertEqual(model.sheet, .networkSource)
-        model.showSharing(.options)
+        model.showSharing(.viewers)
         XCTAssertEqual(model.sheet, .networkSource, "A request review preserves the source form")
         XCTAssertTrue(model.sharingInWindow, "Use the separate window while a modal source task is open")
         XCTAssertEqual(model.setup?.id, setup.id)
@@ -86,21 +106,21 @@ final class SharingNavigationTests: XCTestCase {
     }
     func testPresentationDecisionsProtectThePictureAndModalDrafts() {
         XCTAssertEqual(SharingDestination.resolve(section: nil, preferWindow: true, hasSheet: false, screenWidth: 1600), .hidden)
-        XCTAssertEqual(SharingDestination.resolve(section: .invite, preferWindow: false, hasSheet: false, screenWidth: 1600), .inline)
+        XCTAssertEqual(SharingDestination.resolve(section: .viewers, preferWindow: false, hasSheet: false, screenWidth: 1600), .inline)
         XCTAssertEqual(SharingDestination.resolve(section: .viewers, preferWindow: false, hasSheet: false, screenWidth: 900), .window)
         XCTAssertEqual(SharingDestination.resolve(section: .viewers, preferWindow: false, hasSheet: true, screenWidth: 1600), .window)
-        XCTAssertEqual(SharingDestination.resolve(section: .options, preferWindow: true, hasSheet: false, screenWidth: 1600), .window)
+        XCTAssertEqual(SharingDestination.resolve(section: .chat, preferWindow: true, hasSheet: false, screenWidth: 1600), .window)
     }
     @MainActor func testRepeatedViewerRequestsRaiseTheSameDestinationAndKeepDrafts() {
         let suite = "app.setbeam.tests.sharing-focus.\(UUID().uuidString)"
         let preferences = UserDefaults(suiteName: suite)!
         defer { preferences.removePersistentDomain(forName: suite) }
         let model = SessionModel(preferences: preferences)
-        model.showSharing(.options)
+        model.showAudienceControls()
         model.sharingDraft?.address = "draft-address"
         model.sharingDraft?.quality = .light
-        model.closeSharing()
-        model.showSharing(.options)
+        model.audienceControlsShown = false
+        model.showAudienceControls()
         XCTAssertEqual(model.sharingDraft?.address, "draft-address")
         XCTAssertEqual(model.sharingDraft?.quality, .light)
         model.showSharing(.viewers); model.showSharingInWindow()
@@ -118,7 +138,7 @@ final class SharingNavigationTests: XCTestCase {
         XCTAssertFalse(ViewerRequestPresentation.isVisible(appActive: true, section: .viewers, detached: false, keyIsMonitor: true, keyIsSharing: false, hasSheet: true))
         XCTAssertTrue(ViewerRequestPresentation.isVisible(appActive: true, section: .viewers, detached: true, keyIsMonitor: false, keyIsSharing: true, hasSheet: true))
         XCTAssertFalse(ViewerRequestPresentation.isVisible(appActive: false, section: .viewers, detached: true, keyIsMonitor: false, keyIsSharing: true, hasSheet: false))
-        XCTAssertFalse(ViewerRequestPresentation.isVisible(appActive: true, section: .invite, detached: true, keyIsMonitor: false, keyIsSharing: true, hasSheet: false))
+        XCTAssertFalse(ViewerRequestPresentation.isVisible(appActive: true, section: .chat, detached: true, keyIsMonitor: false, keyIsSharing: true, hasSheet: false))
     }
 
     @MainActor func testDirtySourceSheetCannotBeReplacedByOtherPresentations() {
@@ -127,7 +147,7 @@ final class SharingNavigationTests: XCTestCase {
         defer { preferences.removePersistentDomain(forName: suite) }
         let model = SessionModel(preferences: preferences)
         model.sheet = .sourceDetails; model.sourceDetailsDirty = true
-        for next in [AppSheet.connection, .networkSource, .rename, .join, .setupCheck, .about] {
+        for next in [AppSheet.connection, .networkSource, .rename, .join, .about] {
             var prepared = false
             XCTAssertFalse(model.present(next) { prepared = true })
             XCTAssertFalse(prepared, "Blocked presentations must not read private settings either")
@@ -135,7 +155,7 @@ final class SharingNavigationTests: XCTestCase {
         }
         model.openSources(); model.openNetworkSource(); model.showJoinCodes(); model.returnToPreviousSource()
         XCTAssertEqual(model.sheet, .sourceDetails)
-        model.showSharing(.invite)
+        model.showSharing(.viewers)
         XCTAssertEqual(model.sheet, .sourceDetails)
         XCTAssertTrue(model.sharingInWindow)
         model.sourceDetailsDirty = false

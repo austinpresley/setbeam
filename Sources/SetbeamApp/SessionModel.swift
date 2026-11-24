@@ -6,14 +6,12 @@ import CoreImage
 import IOKit.pwr_mgt
 import SetbeamCore
 
-enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSource, incoming, join, setupCheck, rename, about, permissions; var id: String { rawValue } }
+enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSource, incoming, join, rename, about, permissions; var id: String { rawValue } }
 
 @MainActor final class SessionModel: ObservableObject {
     @Published var title: String { didSet { if !integration { defaults.set(title, forKey: "sessionTitle") }; publishGatewayState() } }
     @Published private(set) var state: SessionState
-    @Published var source: VideoSource = .sample {
-        didSet { if source != oldValue { expectsAudio = nil } }
-    }
+    @Published var source: VideoSource = .sample
     @Published var setup: SourceSetup? {
         didSet {
             let identity = TransmitterWiFiIdentity(setup)
@@ -50,7 +48,7 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
     /// Requests to join, announced once each with a card that keeps this Mac's other apps in front.
     let joinRequests = JoinRequestCenter()
     @Published var viewers: [ViewerActivity] = [] {
-        didSet { observeJoinRequests(); revalidateSetupSound() }
+        didSet { observeJoinRequests() }
     }
     @Published var busy = false
     @Published private(set) var stoppingSharing = false
@@ -82,8 +80,6 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
     @Published private(set) var audienceControl = AudienceControlState()
     @Published var sourceHasAudio = false
     @Published var audienceHasAudio = false
-    @Published var expectsAudio: Bool? { didSet { if expectsAudio != oldValue { confirmedSetupSound = nil } } }
-    @Published private var confirmedSetupSound: SetupCheckOutput?
     let sourceBrowser: SourceBrowser
     @Published var pipVisible = false
     @Published var sheet: AppSheet?
@@ -91,7 +87,7 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
     @Published var sourceDetailsDirty = false
     var protectsSourceDraft: Bool { sheet == .sourceDetails && sourceDetailsDirty }
     @Published var sharingSection: SharingSection?
-    private var lastSharingSection = SharingSection.invite
+    private var lastSharingSection = SharingSection.viewers
     @Published var sharingInWindow = false
     @Published private(set) var sharingFocusRequest = 0
     @Published var sharingCanDock = true
@@ -124,8 +120,10 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
     private var chatAttachmentRevision: Int?
     private var chatAttachmentLink: Int?
     private var chatCaptureGeneration = UUID()
-    @Published private(set) var sharingOptionsTarget = 0
-    @Published private(set) var sharingOptionsNetworkRequested = false
+    /// The LIVE menu holds Hold, Stop and audience options; menus and Go Live can ask it to open.
+    @Published var audienceControlsShown = false
+    /// Incremented to ask the main window to open Settings at `settingsSection`.
+    @Published private(set) var settingsRequest = 0
     private var loadedWiFiSSID: String?
     @Published var networks: [NetworkAddress]
     @Published var viewerAddress: String
@@ -389,7 +387,6 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
         guard !busy, !applyingViewerApproval, enabled != viewerApproval else { return }
         applyingViewerApproval = true
         viewerApproval = enabled
-        confirmedSetupSound = nil
         if !integration { defaults.set(enabled, forKey: "viewerApproval") }
         SessionLog.shared.record("viewers.approval", ["enabled": enabled])
         gateway.setAccess(approval: enabled, pointers: sharedPointers)
@@ -490,30 +487,12 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
         return SetupCheckOutput(link: viewingLink, revision: revision, route: network.id, reports: gateway.viewers)
     }
     var setupCheckPlayingCount: Int { setupCheckOutput?.viewerCount ?? 0 }
-    var canConfirmSetupSound: Bool { setupCheckPlayingCount > 0 && audienceHasAudio && expectsAudio == true }
-
-    var testSoundConfirmed: Bool {
-        get {
-            guard let output = setupCheckOutput, output.viewerCount > 0 else { return false }
-            return audienceHasAudio && expectsAudio == true && confirmedSetupSound == output
-        }
-        set {
-            let output = newValue ? setupCheckOutput : nil
-            confirmedSetupSound = audienceHasAudio && expectsAudio == true && (output?.viewerCount ?? 0) > 0 ? output : nil
-        }
-    }
-
-    private func revalidateSetupSound() {
-        if let confirmedSetupSound, setupCheckOutput != confirmedSetupSound {
-            self.confirmedSetupSound = nil
-        }
-    }
 
     var setupCheck: SetupCheck {
         let output = setupCheckOutput
         return SetupCheck(picture: localReady && !permissionDenied, viewingAddress: setupViewingLinkReady,
-            otherDevicePlaying: (output?.viewerCount ?? 0) > 0, expectsAudio: expectsAudio,
-            outgoingAudio: audienceHasAudio, soundConfirmed: output != nil && output == confirmedSetupSound)
+            otherDevicePlaying: (output?.viewerCount ?? 0) > 0,
+            outgoingAudio: state.sharing && audiencePresentation.phase == .sharing && audienceHasAudio)
     }
     var incomingAudioLabel: String { !state.sourceAvailable ? "Input audio: waiting" : sourceHasAudio ? "Input audio: track received" : "Input audio: no track" }
     var audienceAudioLabel: String {
@@ -677,9 +656,6 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
               !stoppingSharing || !snapshot.session.sharing else { return }
         if !snapshot.session.sharing || snapshot.source != .sample { integrationSessionFile?.clear() }
         if currentRuntime?.audienceRevision != snapshot.audienceRevision || snapshot.session.audience != .live { clearChatAttachment() }
-        if currentRuntime?.audienceRevision != snapshot.audienceRevision || snapshot.session.audience != .live || !snapshot.audienceHasAudio {
-            confirmedSetupSound = nil
-        }
         currentRuntime = snapshot; preview = snapshot.session.monitoring ? snapshot.preview : nil
         sourceHasAudio = snapshot.sourceHasAudio; audienceHasAudio = snapshot.audienceHasAudio
         state = snapshot.session
@@ -818,15 +794,15 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
     }
     func showSharing(_ section: SharingSection) {
         if sheet != nil || monitorWindow?.isVisible == false { sharingInWindow = true }
-        if section == .invite { loadViewingWiFi() }
-        if section == .options { prepareSharingDraft(); sharingOptionsNetworkRequested = false }
+        if section == .viewers { loadViewingWiFi() }
         lastSharingSection = section
         sharingSection = section
         sharingFocusRequest &+= 1
         if sharingInWindow { sharingWindow?.makeKeyAndOrderFront(nil) }
     }
     func showSharingStatus() { showSharing(sharingSection ?? lastSharingSection) }
-    func showViewingNetwork() { showSharing(.options); sharingOptionsNetworkRequested = true; sharingOptionsTarget &+= 1 }
+    func showViewingNetwork() { prepareSharingDraft(); selectSettings(.network); settingsRequest &+= 1 }
+    func showAudienceControls() { prepareSharingDraft(); audienceControlsShown = true }
     func prepareSharingDraft() {
         if sharingDraft == nil { sharingDraft = SharingOptionsDraft(address: localAddressLabel, network: networkChoice, quality: audienceQuality, frameRate: audienceFrameRate) }
     }
@@ -951,7 +927,7 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
     }
     private func commitSourceSelection(_ candidate: SourceSetup, source: VideoSource, address: String?, remember: Bool) {
         localPlayer.stop()
-        nativePreviewPlaying = false; sourceHasAudio = false; testSoundConfirmed = false
+        nativePreviewPlaying = false; sourceHasAudio = false
         readiness = SetupReadiness(); setupConfirmed = false; lastFrameAt = nil; connectedAt = Date()
         rememberFailed = false
         setup = candidate; activeNetworkURL = address; rememberSetup = remember
@@ -1088,6 +1064,8 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
             guard isCurrentAudienceCommand(generation) else { return }
             observeJoinRequests()
             networkChanged = false; sharingPower.hold(true)
+            // Going live shows the codes while nobody is watching yet. Presentation only.
+            if admittedViewers.isEmpty && sharingSection == nil { showSharing(.viewers) }
         } catch {
             guard isCurrentAudienceCommand(generation), beginStoppingSharing() else { return }
             gateway.stop(); gatewayPort = nil
@@ -1111,7 +1089,6 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
         gateway.setChatFramePermission(false); clearChatAttachment()
         updateSourceDisplayPointers()
         outgoingTransition.begin(value ? .hold : .resume)
-        testSoundConfirmed = false
         writeExperienceState()
         Task {
             defer { busy = false; writeExperienceState() }
@@ -1149,7 +1126,7 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
         retireLocalAddress()
         outgoingTransition.reset()
         audienceControl = AudienceControlState()
-        stopAudiencePreview(); audienceHasAudio = false; testSoundConfirmed = false
+        stopAudiencePreview(); audienceHasAudio = false
         clearChatAttachment()
         pointerPresence.clear(); pointersOnThisMac = false
         updateSourceDisplayPointers()
@@ -1300,7 +1277,6 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
         viewingNetwork = selected
         viewerInterface = selected?.interface ?? "lo0"
         viewerNetworkNeedsUpdate = true
-        confirmedSetupSound = nil
         SessionLog.shared.record("network.viewing", ["interface": viewerInterface, "sharing": state.sharing])
         viewerAddress = address
         do {

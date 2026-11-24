@@ -63,13 +63,21 @@ The corner card Setbeam shows when a viewer asks to join, with Admit and Decline
 _Avoid_: Notification, for this card; macOS notifications are not used.
 
 **Sharing panel**:
-The optional Invite, People, Chat, and Options panel beside the local monitor. It can open as a separate window on a small screen. Opening, switching, or closing it does not start or stop sharing.
+The optional People and Chat panel beside the local monitor. People holds the invitation codes, the readiness checks, join requests and viewers. It can open as a separate window on a small screen. Opening, switching, or closing it does not start or stop sharing.
 
 **Sharing tally**:
-The main toolbar control labeled Go Live before sharing, LIVE when the outgoing feed is available, and HOLD when the holding picture and silence are confirmed. While sharing, it opens the audience commands, including Stop Sharing.
+The main toolbar control labeled Go Live before sharing, LIVE when the outgoing feed is available, and HOLD when the holding picture and silence are confirmed. While sharing, it opens the LIVE menu, including Stop Sharing. Go Live opens People while nobody has joined.
+
+**LIVE menu**:
+The popover from the sharing tally. It holds Hold or Resume, Stop Sharing, the Ask first and pointer switches, and viewer quality and frame rate. Before sharing, the same options open from the button beside Go Live.
+_Avoid_: Sharing Options, Options tab.
+
+**Readiness checks**:
+The Picture, Sound, Wi-Fi and Scan steps in People while sharing. They read the outgoing picture, the outgoing audio track, the viewing invitation, and another device playing the current output. Another device playing completes the check; sound is reported, not required.
+_Avoid_: Test My Setup, setup test.
 
 **Source Details**:
-Settings for the selected input, including capture frame rate, explicit capture sound, saved setup, and transmitter rejoin. Viewer output settings belong to Sharing Options.
+Settings for the selected input, including capture frame rate, explicit capture sound, saved setup, and transmitter rejoin. Viewer output settings belong to the LIVE menu.
 
 **Session name**:
 The title shown on this Mac and the viewer page. It is separate from a source name.

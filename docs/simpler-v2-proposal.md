@@ -1,6 +1,6 @@
 # Simpler v2 proposal, 2026-11-24
 
-Status: proposal only. No app source changed. Austin has not chosen what to build.
+Status: Austin approved all six changes on 2026-11-24 and they are implemented on this branch. See [status](status.md).
 
 Austin asked for an ease-of-use rethink with before/after mockups, keeping text
 minimal and using clear icons. Simpler v1 (implemented 2026-11-21) cleaned up

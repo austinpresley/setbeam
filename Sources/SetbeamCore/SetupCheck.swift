@@ -10,21 +10,22 @@ public enum MediaTracks {
     }
 }
 
+/// Readiness that fills in by itself while sharing. Another device playing the current
+/// output completes the check; outgoing sound is reported, not required.
 public struct SetupCheck: Equatable, Sendable {
     public let picture: Bool
     public let viewingAddress: Bool
     public let otherDevicePlaying: Bool
-    public let audio: Bool
-    public var passed: Bool { picture && viewingAddress && otherDevicePlaying && audio }
-    public init(picture: Bool, viewingAddress: Bool, otherDevicePlaying: Bool,
-                expectsAudio: Bool?, outgoingAudio: Bool, soundConfirmed: Bool) {
-        self.picture = picture; self.viewingAddress = viewingAddress; self.otherDevicePlaying = otherDevicePlaying
-        audio = expectsAudio == false || expectsAudio == true && outgoingAudio && soundConfirmed
+    public let outgoingAudio: Bool
+    public var passed: Bool { picture && viewingAddress && otherDevicePlaying }
+    public init(picture: Bool, viewingAddress: Bool, otherDevicePlaying: Bool, outgoingAudio: Bool) {
+        self.picture = picture; self.viewingAddress = viewingAddress
+        self.otherDevicePlaying = otherDevicePlaying; self.outgoingAudio = outgoingAudio
     }
 }
 
 
-/// A sound check applies only to the live output and the other-device sessions being tested.
+/// Playback evidence applies only to the live output and the other-device sessions being tested.
 public struct SetupCheckOutput: Equatable, Sendable {
     private let link: Int
     private let revision: Int

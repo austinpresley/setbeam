@@ -77,49 +77,60 @@ Setbeam, and click **Retry Now** to reopen the requested device and sound input.
 
 Native audible output remains unverified. On the development Mac, the audio device stalled during startup; Setbeam returned to mute with an explanation. The outgoing stream contains audio, and silent Hold is verified. See [current limits](status.md#remaining-evidence-and-release-work).
 
-## Test before inviting viewers
+## Test while you invite
 
-Open **Help → Test My Setup…**. Check the source and the viewing network,
-choose whether to ask before viewers join, and say whether the feed needs sound.
-**Start Sharing for Test** opens a live share with those access settings. Use the
-test link or QR code on a separate device. If viewer approval is on, admit that
-device in **People**. Match its name, session number and route to its request.
+There is no separate test. Click **Go Live**: while nobody has joined, People
+opens with the Wi-Fi and Watch codes and a row of four checks. Picture and Sound
+read the actual outgoing feed. Wi-Fi shows the viewing network. Scan turns into
+Playing when another device plays this output. Scan the Watch code with your own
+phone to finish the check. If Ask first is on, admit that phone in **People**
+and match its name and session to its request.
 
-Setbeam checks current playback from another device. If you expect sound,
-enable it there, listen, then confirm what you heard. The audio track shown on
-the Mac alone cannot establish audible playback. A changed output or a lost test
-viewer requires another confirmation. **Stop Sharing** ends the test link and
-leaves the monitor running. For on-set checks, follow the [Capture One and camera rehearsals](hardware-tests.md#current-manual-rehearsals).
+The Sound check reports whether the outgoing feed carries an audio track. It
+does not prove audible playback; listen on the test device. **Stop Sharing** in
+the LIVE menu ends the link and leaves the monitor running. For on-set checks,
+follow the [Capture One and camera rehearsals](hardware-tests.md#current-manual-rehearsals).
 
 ## Invite viewers
 
-Click **Go Live** in the toolbar. Open the **Sharing** toolbar control,
-then choose **Invite**, or use **Sharing → Invite Viewers**. When a Wi-Fi code
+Click **Go Live** in the toolbar. People opens with the codes while nobody has
+joined. Later, click the faces or the QR icon in the toolbar, or use
+**Sharing → Invite and People**. When a Wi-Fi code
 is configured, scan it first, then scan the Watch code. Viewers can also open
 the copied link. Click either QR code or the Enlarge icon for larger codes.
 **Done** or Escape closes them. **Sharing → Show Large Join Codes…** opens the
 same view. The Print icon opens a dated print preview.
 
-**People** lists join requests above the admitted viewers. Each row shows the
-session number and whether it came through the viewing link or short address.
+Once someone joins, the codes shrink to a card at the top of **People**. Join
+requests come next. Each request shows the session number and whether it came
+through the viewing link or short address. Viewer rows show a name, device and
+one playback icon; hover for details.
 Use the check and cross to admit or decline a request. You can also answer directly from the
 waiting avatar in the toolbar. Avatar rings reflect reported playback health.
 Hover a row to reveal Remove when viewer approval is on. Names and colors are
 chosen by viewers. An admitted browser session stays listed until you remove
 it or stop sharing, including if its playback becomes unconfirmed.
 
-The main window has one local picture. Sharing tabs are Invite, People, Chat,
-and Options. The Sharing toolbar button remembers the last selected tab.
+The main window has one local picture. Sharing has two tabs, People and Chat.
 Sharing can sit beside the monitor or in its own window. The independent window
 keeps its own audience controls; opening or closing it never changes media.
 
-If the viewing network is **This Mac only**, invitations show **Choose viewing network** instead of a QR code. Select a network your viewers can reach, then start sharing again.
+The **LIVE** button opens Hold, Stop, the Ask first, Pointers and On my Mac
+switches, and viewer picture quality. Before you go live, the sliders button
+beside **Go Live** opens the same options. The viewing network and local
+address are in **Settings → Network**.
+
+If the viewing network is **This Mac only**, invitations show **Choose viewing network** instead of a QR code. It opens Settings → Network. Select a network your viewers can reach, then start sharing again.
+
+With **Ask first** off, a viewer's picture plays as soon as the page opens.
+The viewer adds a name the first time they chat or point. Until then the Mac
+lists them by device and session, such as "iPhone 2".
 
 Viewers need network access to the Mac. Ethernet can serve viewers while Wi-Fi receives a transmitter. Optional viewing Wi-Fi details add a join code without changing the Mac's Wi-Fi connection.
 
-Each viewer receives a separate copy of the picture. With several phones on one Wi-Fi network, open **Sharing → Sharing Options** and choose a lighter **Picture quality** (12, 6, or 3 Mbps per viewer). Your local monitor is unaffected. Open viewer pages reconnect at the new rate.
+Each viewer receives a separate copy of the picture. With several phones on one Wi-Fi network, open the **LIVE** menu and choose a lighter **Picture quality** (12, 6, or 3 Mbps per viewer). Your local monitor is unaffected. Open viewer pages reconnect at the new rate.
 
-For Capture One or other still-image review, set the viewers' **Frame rate** to **1 fps** from the ellipsis in Sharing Options. Keep **Picture quality** at Best when image detail matters more than motion. FPS changes keep the same image dimensions and bitrate allowance, and external-source local monitoring keeps its original cadence. **Auto** restores the incoming rate, up to 30 fps.
+For Capture One or other still-image review, set the viewers' **Frame rate** to **1 fps** from the ellipsis in the LIVE menu. Keep **Picture quality** at Best when image detail matters more than motion. FPS changes keep the same image dimensions and bitrate allowance, and external-source local monitoring keeps its original cadence. **Auto** restores the incoming rate, up to 30 fps.
 
 When using **This Mac's screen** or an application window, **Capture frame rate** in Source Details independently controls the local capture rate. Choose **1 fps** there as well to reduce capture work, or leave **Match display** for the display's rate, up to 30 fps. Both FPS choices are remembered; relaunch still starts privately.
 
@@ -198,8 +209,8 @@ same source revision; the Mac uses its outgoing preview, never the private local
 picture. Sample images keep their label. Unread messages appear in Sharing and
 the viewer header.
 
-For a **This Mac's screen** source, turn on **Show pointers on shared display**
-in Sharing Options or the Monitor menu. Pointers pass clicks and typing through
+For a **This Mac's screen** source, turn on **On display** in the LIVE menu or
+**Show Pointers on Shared Display** in the Monitor menu. Pointers pass clicks and typing through
 to the source app and stay outside Setbeam's captured video. This choice starts
 off and resets at Stop, a source/display change, sleep or session deactivation.
 Hold hides the overlay. External transmitting computers and application-window
@@ -208,7 +219,7 @@ choice.
 
 ## Viewing Wi-Fi and portable join codes
 
-In Invite, edit viewing Wi-Fi and choose a cached network or type its name. macOS
+In People, edit viewing Wi-Fi and choose a cached network or type its name. macOS
 asks for Location only after **Allow Wi-Fi Names…**. Refresh is explicit and is
 unavailable during sharing or network-source reception. Selecting a name never
 joins it. Secured networks require a password; select **Open network** only when

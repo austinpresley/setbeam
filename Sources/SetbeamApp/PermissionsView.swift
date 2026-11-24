@@ -34,6 +34,14 @@ enum PermissionKind: String, CaseIterable, Identifiable {
         case .location: return "Location"
         }
     }
+    /// Tile name. `title` stays the name macOS uses in Privacy & Security.
+    var shortTitle: String {
+        switch self {
+        case .screenRecording: return "Screen"
+        case .location: return "Wi-Fi Name"
+        default: return title
+        }
+    }
     var symbol: String {
         switch self {
         case .screenRecording: return "rectangle.dashed.badge.record"
@@ -147,25 +155,28 @@ struct PermissionsView: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Permissions").font(.title2.weight(.semibold))
                     .accessibilityAddTraits(.isHeader).accessibilityFocused($headingFocused)
-                Text(inSettings ? "Access for monitoring and sharing on this Mac. Allow only what you need; optional access is explained below." : "macOS asks once for each kind of access. Choose what you'll use, and Setbeam asks only for what that needs, when you press Allow.")
-                    .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                if !inSettings {
+                    Text("Choose what you'll use. Setbeam asks only for what that needs.")
+                        .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
             }
-            Form {
-                if !inSettings { Section("What you'll use") {
+            if !inSettings { Form {
+                Section("What you'll use") {
                     Toggle("This Mac's screen or an app window", isOn: $uses.screen).accessibilityLabel("This Mac's screen or an app window")
                     Toggle("A camera or capture device", isOn: $uses.camera).accessibilityLabel("A camera or capture device")
                     Toggle("A wireless transmitter", isOn: $uses.transmitter).accessibilityLabel("A wireless transmitter")
                     if PermissionKind.localNetwork.isAvailable {
                         Toggle("Sharing with viewers on this network", isOn: $uses.sharing)
                     }
-                    Text("The sample feed needs no access. Turn on each kind of source you use.")
+                    Text("The sample feed needs no access.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
-                }
-                Section("Access") {
-                    ForEach(PermissionKind.allCases.filter(\.isAvailable)) { kind in row(kind) }
-                }
-            }.formStyle(.grouped).frame(height: 400)
+            }.formStyle(.grouped).frame(height: 210) }
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 14), count: 3), spacing: 14) {
+                ForEach(PermissionKind.allCases.filter(\.isAvailable)) { kind in tile(kind) }
+            }
+            Label("Asked only when a source needs it", systemImage: "lock").font(.caption).foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity)
             if !inSettings { HStack {
                 Text("Reopen any time from Setbeam > Settings…").font(.caption).foregroundStyle(.secondary)
                 Spacer()
@@ -180,25 +191,38 @@ struct PermissionsView: View {
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in guide.refresh() }
     }
 
-    private func row(_ kind: PermissionKind) -> some View {
+    private func tile(_ kind: PermissionKind) -> some View {
         let state = guide.state(kind, needed: inSettings || uses.needs.contains(kind))
-        return HStack(alignment: .top, spacing: 12) {
-            Image(systemName: kind.symbol).font(.title3).foregroundStyle(.secondary).frame(width: 24)
+        let details = [kind.purpose, note(kind, state)].compactMap { $0 }.joined(separator: " ")
+        return VStack(spacing: 9) {
+            Image(systemName: kind.symbol).font(.system(size: 20)).foregroundStyle(.primary.opacity(0.8))
+                .frame(width: 46, height: 46).background(.primary.opacity(0.06), in: Circle())
+                .overlay(alignment: .bottomTrailing) { badge(kind, state) }
                 .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(kind.title).font(.callout.weight(.medium))
-                    Spacer(minLength: 8)
-                    Label(label(kind, state), systemImage: symbol(state)).font(.caption).foregroundStyle(color(kind, state))
-                }
-                Text(kind.purpose).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                if let note = note(kind, state) {
-                    Text(note).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                }
-                actions(kind, state)
-            }
-        }.padding(.vertical, 4).opacity(state == .notNeeded ? 0.6 : 1)
+            Text(kind.shortTitle).font(.callout.weight(.medium)).lineLimit(1)
+            actions(kind, state)
+        }.frame(maxWidth: .infinity, minHeight: 132)
+            .background(.background.opacity(state == .notNeeded || kind == .location && state != .allowed ? 0.5 : 1),
+                        in: RoundedRectangle(cornerRadius: 14))
+            .overlay { RoundedRectangle(cornerRadius: 14).strokeBorder(.primary.opacity(0.1), lineWidth: 1) }
+            .overlay(alignment: .topTrailing) { PermissionInfoButton(title: kind.title, details: details).padding(6) }
+            .opacity(state == .notNeeded ? 0.6 : 1)
             .accessibilityElement(children: .contain)
+            .accessibilityLabel("\(kind.title), \(label(kind, state))")
+    }
+
+    @ViewBuilder private func badge(_ kind: PermissionKind, _ state: PermissionState) -> some View {
+        let mark: (String, Color)? = switch state {
+        case .allowed: ("checkmark", .green)
+        case .denied where kind != .location: ("xmark", .orange)
+        default: nil
+        }
+        if let mark {
+            Image(systemName: mark.0).font(.system(size: 9, weight: .heavy)).foregroundStyle(.white)
+                .frame(width: 18, height: 18).background(mark.1, in: Circle())
+                .background(Color(nsColor: .windowBackgroundColor), in: Circle().inset(by: -2.5))
+                .offset(x: 3, y: 3).help(label(kind, state))
+        }
     }
 
     @ViewBuilder private func actions(_ kind: PermissionKind, _ state: PermissionState) -> some View {
@@ -206,19 +230,31 @@ struct PermissionsView: View {
             switch (kind, state) {
             case (_, .notNeeded), (_, .allowed): EmptyView()
             case (.location, _):
-                if state == .denied { Button("Open Settings") { NSWorkspace.shared.open(kind.settingsURL) } }
+                if state == .denied { pill("Settings", prominent: false) { NSWorkspace.shared.open(kind.settingsURL) } }
+                else { pill("Allow", prominent: false) { NSWorkspace.shared.open(kind.settingsURL) } }
             case (.localNetwork, _):
                 if !guide.networkRequested {
-                    Button("Allow…") { guide.request(kind, model: model) }.help("Look for transmitters briefly so macOS can ask about Local Network access")
+                    pill("Allow", prominent: true) { guide.request(kind, model: model) }
+                        .help("Look for transmitters briefly so macOS can ask about Local Network access")
+                } else {
+                    pill("Settings", prominent: false) { NSWorkspace.shared.open(kind.settingsURL) }
                 }
-                Button("Open Settings") { NSWorkspace.shared.open(kind.settingsURL) }
             case (_, .notAsked):
-                Button("Allow…") { guide.request(kind, model: model) }.help("Ask macOS for \(kind.title) access now")
-                if kind == .screenRecording { Button("Open Settings") { NSWorkspace.shared.open(kind.settingsURL) } }
+                pill("Allow", prominent: true) { guide.request(kind, model: model) }.help("Ask macOS for \(kind.title) access now")
             default:
-                Button("Open Settings") { NSWorkspace.shared.open(kind.settingsURL) }.help("Turn on Setbeam in Privacy & Security > \(kind.title)")
+                pill("Settings", prominent: false) { NSWorkspace.shared.open(kind.settingsURL) }
+                    .help("Turn on Setbeam in Privacy & Security > \(kind.title)")
             }
-        }.buttonStyle(.link).font(.caption)
+        }.font(.caption)
+    }
+
+    private func pill(_ title: String, prominent: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title).font(.caption.weight(.medium)).padding(.horizontal, 12).frame(height: 22)
+                .foregroundStyle(prominent ? Color.white : .primary)
+                .background(prominent ? SetbeamChrome.blue : Color.primary.opacity(0.08), in: Capsule())
+                .contentShape(Capsule())
+        }.buttonStyle(.plain)
     }
 
     private func label(_ kind: PermissionKind, _ state: PermissionState) -> String {
@@ -258,6 +294,24 @@ struct PermissionsView: View {
     private func finish(openSources: Bool) {
         model.permissionUses = uses
         if openSources { model.openSources() } else { model.sheet = nil }
+    }
+}
+
+/// Reasons stay one click away rather than as a paragraph on every tile.
+private struct PermissionInfoButton: View {
+    let title: String
+    let details: String
+    @State private var shown = false
+    var body: some View {
+        Button { shown.toggle() } label: {
+            Image(systemName: "info.circle").font(.system(size: 13)).foregroundStyle(.tertiary)
+                .frame(width: 22, height: 22).contentShape(Rectangle())
+        }.buttonStyle(.plain).help(details)
+            .accessibilityLabel("About \(title) access").accessibilityHint(details)
+            .popover(isPresented: $shown, arrowEdge: .bottom) {
+                Text(details).font(.callout).fixedSize(horizontal: false, vertical: true)
+                    .frame(width: 260, alignment: .leading).padding(14)
+            }
     }
 }
 

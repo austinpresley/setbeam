@@ -25,16 +25,13 @@ struct SharingPanel: View {
             ScrollViewReader { scroll in
                 ScrollView {
                     Group {
-                        switch model.sharingSection ?? .invite {
-                        case .invite: SharingInviteView(model: model)
-                        case .viewers: SharingViewersView(model: model) { focusedTab = .viewers }
-                        case .options: SharingOptionsView(model: model)
+                        switch model.sharingSection ?? .viewers {
+                        case .viewers: SharingPeopleView(model: model) { focusedTab = .viewers }
                         case .chat: EmptyView()
                         }
                     }.padding(16).frame(maxWidth: .infinity, alignment: .leading).id("sharing-top")
                 }
                 .onChange(of: model.sharingSection) { _, _ in scroll.scrollTo("sharing-top", anchor: .top) }
-                .onChange(of: model.sharingOptionsTarget) { _, _ in scroll.scrollTo("viewing-network", anchor: .top) }
             }
             }
         }.frame(minWidth: SharingPanelLayout.width, maxWidth: .infinity, maxHeight: .infinity)
@@ -43,7 +40,7 @@ struct SharingPanel: View {
             .accessibilityIdentifier("sharingPanel")
             .task(id: model.sharingFocusRequest) {
                 guard detached == model.sharingInWindow else { return }
-                focusedTab = model.sharingSection ?? .invite
+                focusedTab = model.sharingSection ?? .viewers
             }
     }
 
@@ -52,7 +49,7 @@ struct SharingPanel: View {
             HStack(spacing: 2) {
                 ForEach(SharingSection.allCases) { section in
                     let badge = section == .viewers ? model.pendingViewers.count : section == .chat ? model.chatUnreadCount : 0
-                    let selected = section == (model.sharingSection ?? .invite)
+                    let selected = section == (model.sharingSection ?? .viewers)
                     Button { model.showSharing(section) } label: {
                         Image(systemName: section.symbol).font(.system(size: 16))
                             .frame(maxWidth: .infinity, minHeight: 32)
@@ -96,6 +93,148 @@ struct SharingWindowView: View {
     }
 }
 
+/// One home for bringing people in and seeing who is there. The codes are large while nobody
+/// has joined and shrink to a card once requests or viewers appear.
+struct SharingPeopleView: View {
+    @ObservedObject var model: SessionModel
+    var returnAccessibilityFocus: () -> Void = {}
+
+    private var nobodyYet: Bool { model.admittedViewers.isEmpty && model.pendingViewers.isEmpty }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            if nobodyYet {
+                SharingInviteView(model: model)
+            } else {
+                CompactInvitationCard(model: model)
+            }
+            if model.state.sharing && model.canInviteOtherDevices && !(model.setupCheck.passed && !nobodyYet) {
+                Divider()
+                ReadinessStrip(model: model)
+            }
+            if !nobodyYet {
+                SharingViewersView(model: model, returnAccessibilityFocus: returnAccessibilityFocus)
+            }
+        }
+    }
+}
+
+/// The watch code stays one click away while the list below holds requests and viewers.
+struct CompactInvitationCard: View {
+    @ObservedObject var model: SessionModel
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Button { model.showJoinCodes() } label: {
+                Group {
+                    if let url = model.viewingInvitation?.ipURL {
+                        QRView(payload: url.absoluteString, size: 52, inset: 4)
+                    } else {
+                        Image(systemName: "qrcode").font(.system(size: 26)).foregroundStyle(.secondary)
+                            .frame(width: 52, height: 52)
+                            .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 8))
+                    }
+                }
+            }.buttonStyle(.plain).disabled(model.protectsSourceDraft || (model.viewingInvitation == nil && model.wifiSSID.isEmpty))
+                .help("Enlarge codes").accessibilityLabel("Enlarge viewing QR code")
+            VStack(alignment: .leading, spacing: 4) {
+                if !model.wifiSSID.isEmpty {
+                    Label(model.wifiSSID, systemImage: "wifi").lineLimit(1).help(model.wifiSSID)
+                }
+                if !model.canInviteOtherDevices {
+                    Button { model.showViewingNetwork() } label: { Label("This Mac only", systemImage: "lock") }
+                        .buttonStyle(.link).help("Choose a viewing network in Settings")
+                } else {
+                    Label(model.viewingInvitation == nil ? "Waiting" : "Watch", systemImage: "play.rectangle")
+                        .foregroundStyle(.secondary).lineLimit(1).help(model.viewingInvitation == nil ? model.viewingCodeStatus : "Watch the feed")
+                }
+            }.font(.caption).frame(maxWidth: .infinity, alignment: .leading)
+            ChromeIconButton("Enlarge codes", symbol: "arrow.up.left.and.arrow.down.right", size: 28) { model.showJoinCodes() }
+                .disabled(model.protectsSourceDraft || (model.viewingInvitation == nil && model.wifiSSID.isEmpty))
+                .foregroundStyle(.secondary)
+            ChromeIconButton(model.copiedLink ? "Link copied" : "Copy link", symbol: model.copiedLink ? "checkmark" : "doc.on.doc", size: 28,
+                             hint: model.copiedLink ? "Link copied" : model.copyLinkHelp) { model.copyLink() }
+                .disabled(model.viewingInvitation == nil).foregroundStyle(.secondary)
+        }.padding(10)
+            .background(SetbeamChrome.raised, in: RoundedRectangle(cornerRadius: 10))
+            .overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(SetbeamChrome.line, lineWidth: 1).allowsHitTesting(false) }
+            .accessibilityElement(children: .contain).accessibilityLabel("Invitation")
+    }
+}
+
+/// Replaces a separate setup test. Each step reads observed state: the outgoing picture,
+/// the outgoing audio track, the viewing invitation and another device playing this output.
+struct ReadinessStrip: View {
+    @ObservedObject var model: SessionModel
+
+    private struct Step: Identifiable {
+        let id: String
+        let symbol: String
+        let label: String
+        let done: Bool
+        var neutral = false
+        var waiting = false
+        var help: String
+    }
+
+    private var steps: [Step] {
+        let check = model.setupCheck
+        let picture = check.picture && model.audiencePreviewPlaying
+        let network = model.wifiSSID.isEmpty ? model.viewerNetworkLabel : model.wifiSSID
+        return [
+            Step(id: "picture", symbol: "play.rectangle", label: "Picture", done: picture,
+                 help: picture ? "Viewers receive a confirmed picture" : "Waiting for the outgoing picture"),
+            Step(id: "sound", symbol: check.outgoingAudio ? "speaker.wave.2" : "speaker.slash",
+                 label: check.outgoingAudio ? "Sound" : "No sound", done: check.outgoingAudio, neutral: !check.outgoingAudio,
+                 help: check.outgoingAudio ? "Viewers receive sound" : "This feed sends no sound to viewers"),
+            Step(id: "network", symbol: "wifi", label: network, done: check.viewingAddress,
+                 help: check.viewingAddress ? "Viewers on \(network) can open the link" : "Waiting for the viewing network"),
+            Step(id: "device", symbol: "iphone", label: check.otherDevicePlaying ? "Playing" : "Scan",
+                 done: check.otherDevicePlaying, waiting: !check.otherDevicePlaying,
+                 help: check.otherDevicePlaying ? "Another device is playing this output" : "Scan Watch with a phone to test"),
+        ]
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 0) {
+            ForEach(Array(steps.enumerated()), id: \.element.id) { index, step in
+                if index > 0 {
+                    Rectangle().fill(SetbeamChrome.line).frame(height: 1.5).frame(maxWidth: 16).padding(.top, 19)
+                        .accessibilityHidden(true)
+                }
+                stepView(step)
+            }
+        }.frame(maxWidth: .infinity)
+            .accessibilityElement(children: .contain).accessibilityLabel("Sharing readiness")
+            .onChange(of: model.setupCheck.passed) { _, passed in
+                if passed { AccessibilityNotification.Announcement("Another device is playing. Setup checked.").post() }
+            }
+    }
+
+    private func stepView(_ step: Step) -> some View {
+        let tint: Color = step.done ? SetbeamChrome.greenText : step.waiting ? SetbeamChrome.blueText : .secondary
+        return VStack(spacing: 6) {
+            Image(systemName: step.symbol).font(.system(size: 16))
+                .foregroundStyle(tint)
+                .frame(width: 38, height: 38)
+                .background((step.done ? SetbeamChrome.green : step.waiting ? SetbeamChrome.blue : Color.primary).opacity(step.done ? 0.16 : 0.07), in: Circle())
+                .overlay { if step.waiting { Circle().strokeBorder(SetbeamChrome.blue, lineWidth: 1.5) } }
+                .overlay(alignment: .bottomTrailing) {
+                    if step.done {
+                        Image(systemName: "checkmark").font(.system(size: 8, weight: .heavy)).foregroundStyle(.white)
+                            .frame(width: 16, height: 16).background(SetbeamChrome.green, in: Circle())
+                            .background(SetbeamChrome.panel, in: Circle().inset(by: -2)).offset(x: 3, y: 3)
+                    }
+                }
+            Text(step.label).font(.caption2).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+        }.frame(width: 62)
+            .help(step.help)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(step.label)
+            .accessibilityValue(step.neutral ? step.help : step.done ? "Ready" : step.help)
+    }
+}
+
 struct SharingViewersView: View {
     @ObservedObject var model: SessionModel
     var returnAccessibilityFocus: () -> Void = {}
@@ -114,10 +253,7 @@ struct SharingViewersView: View {
                 ForEach(model.pendingViewers) { viewer in ViewerRequestRow(model: model, viewer: viewer, returnAccessibilityFocus: returnAccessibilityFocus) }
                 Divider()
             }
-            if model.admittedViewers.isEmpty {
-                Label(model.state.sharing ? "No viewers yet" : "Sharing is off", systemImage: "person.2").font(.headline)
-                Button("Invite Viewers") { model.showSharing(.invite) }.buttonStyle(.link)
-            } else {
+            if !model.admittedViewers.isEmpty {
                 HStack(spacing: 16) {
                     count(model.admittedViewers.count, symbol: "person.2", name: "joined", tint: .primary)
                     count(model.admittedViewers.filter { $0.playing && $0.health != .struggling }.count,
