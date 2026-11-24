@@ -838,6 +838,7 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
         rejoinAttempt?.revoke()
         Task {
             defer { preparingConnection = false; busy = false }
+            await viewingWiFiScan?.value
             await discovery?.value
             guard !shuttingDown else { return }
             if candidate.kind.isMacCapture {
@@ -873,7 +874,8 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
             }
             preparingConnection = true
             if !changingSource {
-                gateway.stop(); gatewayPort = nil; viewerURL = nil; viewers = []; sharingPower.hold(false)
+                clearViewingInvitation()
+                gateway.stop(); gatewayPort = nil; viewers = []; sharingPower.hold(false)
                 retireLocalAddress()
                 currentRuntime = nil
             }
@@ -1038,25 +1040,24 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
         defer { busy = false; startingSharing = false; writeIntegrationSession() }
         outgoingTransition.begin(.startSharing)
         do {
+            await viewingWiFiScan?.value
+            guard isCurrentAudienceCommand(generation) else { return }
+            guard localReady || integration else { outgoingTransition.reset(); return }
             await refreshNetworks()
             guard isCurrentAudienceCommand(generation) else { return }
+            guard !viewerNetworkNeedsUpdate else { throw SetbeamError.unavailable("The viewing network could not be configured.") }
             let snapshot = try await runtime.startSharing(approval: viewerApproval)
             guard isCurrentAudienceCommand(generation) else { return }
             apply(snapshot)
             appliedReaders = []; viewingLink += 1
             publishGatewayState()
-            if gatewayPort == nil {
-                let port = try await gateway.start(address: viewerAddress)
-                guard isCurrentAudienceCommand(generation) else { return }
-                gatewayPort = port
-            }
-            if let port = gatewayPort, let snapshot = currentRuntime { viewerURL = URL(string: "http://\(viewerAddress):\(port)/s/\(snapshot.guestToken)/") }
-            updateLocalAddress()
+            try await bindViewingGateway(port: gatewayPort ?? 0)
+            guard isCurrentAudienceCommand(generation) else { return }
             observeJoinRequests()
             networkChanged = false; sharingPower.hold(true)
         } catch {
             guard isCurrentAudienceCommand(generation), beginStoppingSharing() else { return }
-            gateway.stop(); gatewayPort = nil; viewerURL = nil
+            gateway.stop(); gatewayPort = nil
             self.error = "Sharing could not start. Check the viewing network and try again."
             lastRuntimeProblem = Redaction.text(error.localizedDescription)
             await finishStoppingSharing()
@@ -1109,6 +1110,7 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
         stoppingSharing = true
         audienceCommandGeneration &+= 1
         integrationSessionFile?.clear()
+        clearViewingInvitation()
         if startingSharing && gatewayPort == nil { gateway.stop() }
         sharingPower.hold(false)
         retireLocalAddress()
