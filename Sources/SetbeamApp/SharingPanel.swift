@@ -186,7 +186,7 @@ struct SharingInviteView: View {
         HStack(spacing: 8) {
             inviteButton(model.copiedLink ? "Link copied" : "Copy link", symbol: model.copiedLink ? "checkmark" : "doc.on.doc",
                          hint: model.copiedLink ? "Link copied" : model.copyLinkHelp) { model.copyLink() }
-                .disabled(model.invitationURL == nil)
+                .disabled(model.viewingInvitation == nil)
             inviteButton("Enlarge codes", symbol: "arrow.up.left.and.arrow.down.right") { model.showJoinCodes() }
                 .disabled(model.protectsSourceDraft || !canShowCodes)
             inviteButton("Print codes", symbol: "printer") { printCodes() }

@@ -67,6 +67,10 @@ private struct FloatingJoinCodes: View {
                             else { Text(model.viewingCodeStatus).foregroundStyle(.secondary) }
                         }
                     }
+                    if selection != "Wi-Fi", model.state.sharing, model.viewingInvitation == nil {
+                        Button("Choose Viewing Network…") { model.showViewingNetwork() }
+                            .buttonStyle(.link).padding(.top, 12)
+                    }
                 }.padding(20).frame(maxWidth: .infinity)
             }
             Divider()

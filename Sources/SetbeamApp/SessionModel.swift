@@ -188,6 +188,7 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
     private var viewingNetwork: NetworkAddress?
     private var viewerNetworkNeedsUpdate = false
     private var networkOperation = UUID()
+    private var lastReadyViewingAddress: (link: Int, address: String)?
     private var pollTask: Task<Void, Never>?
     private var runtimeUpdates: Task<Void, Never>?
     private var launched = false, shuttingDown = false
@@ -1255,7 +1256,6 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
                 // Keep the port and token while the same network recovers or renews its address.
                 publishGatewayState()
                 try await bindViewingGateway(port: port)
-                if operation == networkOperation && changed { networkChanged = true }
             } else {
                 gateway.stop(); gatewayPort = nil
             }
@@ -1287,6 +1287,7 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
         guard viewingBinding != nil || viewingGatewayReady else { return }
         viewingBinding = nil
         viewingGatewayReady = false
+        if state.sharing { networkChanged = false }
         copiedLink = false; copiedIPLink = false
         retireLocalAddress()
     }
@@ -1298,6 +1299,10 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
         if ready && !viewingNetworkIsCurrent(in: NetworkAddress.available()) { return }
         viewingGatewayReady = ready
         if ready {
+            if let last = lastReadyViewingAddress, last.link == viewingLink, last.address != viewerAddress {
+                networkChanged = true
+            }
+            lastReadyViewingAddress = (viewingLink, viewerAddress)
             updateLocalAddress()
             writeIntegrationSession()
         } else {
@@ -1455,12 +1460,11 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
     /// Actions may run between polls or after a native modal panel has yielded the main run loop.
     func currentViewingInvitation() -> ViewingInvitation? {
         guard let invitation = viewingInvitation, viewingNetworkIsCurrent(in: NetworkAddress.available()) else { return nil }
-        return invitation
+        guard invitation.localURL != nil, localAddressPublisher.state != localAddress else { return invitation }
+        return ViewingInvitation(binding: invitation.binding, ipURL: invitation.ipURL, localURL: nil)
     }
 
-    var viewerURL: URL? { viewingInvitation?.ipURL }
     var localViewerURL: URL? { viewingInvitation?.localURL }
-    var invitationURL: URL? { viewingInvitation?.preferredURL }
     var copyLinkHelp: String {
         guard let host = localViewerURL?.host else { return "Copy the viewing link. \(viewingInstructions)" }
         return "Copy the \(host) viewing link. Join codes use the IP address."
@@ -1505,7 +1509,7 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
         defer { updateReceiverDiscovery() }
         let open = shortAddressOpen
         // Keep issued short-address passes valid during a same-network outage.
-        if activeViewingToken == nil || !shortAddressEnabled || !viewerApproval || !localAddressEnabled || open {
+        if !shortAddressEnabled || !viewerApproval || !localAddressEnabled || open {
             gateway.setShortAddress(open: open)
         }
         guard open, let label = localAddress.activeLabel, let port = gatewayPort, let path = gateway.shortAddressPath else {
