@@ -7,28 +7,51 @@ and Developer ID packaging with the November 21 Mac and browser redesign and
 Android TV receiver. The combined build uses 0.3.1, build 43, and declares both
 the existing RTSP Bonjour service and `_setbeam._tcp.` for receiver discovery.
 
-Sparkle installed the signed combined baseline into an isolated QA copy made
-from the published build 41 binary. The loopback feed and disk image signatures
-verified, and all 124 installed files matched. In a separate scheduled-update
-check, the update appeared in the menu while the Sample share stayed LIVE.
-The combined baseline passed the audit for all 11 Mach-O files. Chrome passed
+Apple notarized and stapled the build 43 Mac app and disk image. All 11 Mach-O
+files passed the signing and linkage audit. The disk image is staged privately
+from source commit `a51a670`. Sparkle installed the final signed build into an
+isolated QA copy made from the published build 41 binary. Both loopback
+signatures verified, and all 125 installed files matched. A scheduled update
+appeared in the menu while the final app's Sample share stayed LIVE. Chrome passed
 eight layouts with decoded Sample playback and chat. macOS WebKit passed
 seven layouts, rotation draft retention, and a frame attachment.
 
+People expands one admitted viewer's details in place. Light and dark
+click-throughs displayed real browser resolution, cadence, and drops, and
+cleared those measurements on Hold. Early measurements included Chrome's
+startup decode burst. The viewer now omits those outlying rates and waits for
+a full sample interval before reporting frame rate. The 60 Node checks pass.
+
+Highlight my cursor passed real ScreenCaptureKit capture of a generated
+window and a generated virtual display at both 1 fps and 30 fps. Decoded
+Chrome frames showed the ring on light and dark content and cleared it
+after the pointer left. Hold, Resume, and Stop kept their expected states
+and left private monitoring available. An interactive window covering the
+cursor suppressed the highlight. The initial test found that Quartz lists
+full-screen utilities and cursor sprites above the selected window, so
+window capture now uses AppKit's mouse hit test. The focused cursor and
+settings suite passed 16 tests.
+
 The first local suite reached the short-address check and got RTSP 404 during
 its approval transition. The probe now waits for the restarted audience
-publisher. Its focused rerun decoded 57 frames with the admitted reader. The
-separate frame-rate and large-keyframe baselines reported 1.047 fps against
-1.0 fps and 210 frames against a 300-frame floor, respectively. The large-frame
-run reported zero decoder errors. Both results need a final-suite retest.
+publisher. Its focused rerun decoded 57 frames with the admitted reader.
+Busy-workstation runs also reported 1.047 fps against 1.0 fps and 210 frames
+against a 300-frame floor. Isolated reruns passed both checks, with 490 decoded
+frames in seven seconds and no decoder errors in the keyframe run.
 
 Android assembled both APKs and passed 86 JVM tests and 102 provisioning tests.
 Lint reported zero errors and eight warnings. The signed developer APK matches
 the build from the November 19 recorded run. The first emulator check received
 only part of the typed setup address. Its 1080p retry timed out in UIAutomator.
 A separate playback run reached Android’s package manager and failed with
-`Broken pipe (32)` before a share could start. The owned emulator was stopped.
-The final software and physical device checks are still in progress.
+`Broken pipe (32)` before a share could start. A fresh 1280 × 720 emulator
+boot passed 11 selected cases including admission, playback, remote controls,
+chat, pointers, Hold, recovery, removal, and Stop. It restored its settings and
+exited with an empty owned process group.
+
+The physical iPad Safari Sample test passed at 1280 × 720 with Hold, same-tab
+Resume, and Stop. The onn receiver and Accsoon were unavailable for this
+checkpoint. [Physical evidence](hardware-tests.md)
 
 ## Branch verification, 2026-11-21
 

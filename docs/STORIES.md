@@ -196,7 +196,7 @@ Implementation: candidate for build 26, pending review. Status: implemented loca
 As the operator sharing this Mac's screen or an application window, I can enable
 a visible cursor highlight so viewers can follow what I am pointing at.
 
-Screens: picture/sharing options, main monitor, browser viewer.
+Screens: Source Details, main monitor, floating preview, browser viewer.
 
 Acceptance:
 - [snap] Cursor highlighting is optional, clearly distinguished from shared viewer pointers, and leaves ordinary cursor capture usable when disabled.
@@ -204,7 +204,11 @@ Acceptance:
 - [self] Highlighting preserves the single-capture path, picture quality settings, local monitoring, and Hold/Stop behavior.
 - [manual] Confirm readability over light and dark pictures and at low screen-capture frame rates. Decide whether the highlight is captured or drawn as an overlay during UX design.
 
-Status: todo
+Progress: Build 43 adds Highlight my cursor to display and application-window
+Source Details. The ring is part of the captured picture and follows its frame
+rate. It starts off when a new source is selected.
+
+Status: implemented in build 43. See [current verification](status.md).
 
 ### S-008 Point together with named viewer cursors
 
