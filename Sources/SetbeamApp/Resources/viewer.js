@@ -51,7 +51,7 @@
   const stalled = () => !document.hidden && !playBlocked && Date.now() - (lastFrameAt ?? readerStartedAt) > 10000;
   const pointers = globalThis.SetbeamPointers?.attach({
     pass: () => pass, name: () => viewerName, color: () => viewerColor, nameLocked,
-    editIdentity: () => openEditor(), live: playing
+    editIdentity: () => openEditor(), live: playing, displayedRevision: () => displayedRevision
   });
   // A stream must deliver its first state quickly and a keepalive about every 10 s after that.
   const streaming = () => events && events.readyState !== 2 && Date.now() - eventsAt <= (eventsHeard ? 25000 : 5000);
@@ -218,7 +218,7 @@
 
     const collaborationSuspended = suspended || !stateKnown || !admissionConfirmed;
     const pointable = pointersOn && access === 'admitted' && !ended() && !collaborationSuspended;
-    pointers?.update({enabled: pointable, live: pointable && live, revision: displayedRevision,
+    pointers?.update({enabled: pointable, live: pointable && live, revision, displayedRevision,
       suspended: collaborationSuspended});
     chat?.update({admitted: access === 'admitted', active: !ended(), live, revision, displayedRevision,
       suspended: collaborationSuspended});

@@ -667,7 +667,7 @@ test('pointing is offered only while admitted, enabled, and the session continue
   const b = browser({eventSource: true, pointers: true, storage: {'setbeam-pass:': pass}, join: {pass, number: 2, admission: 'admitted', ready: true, color: 'blue'}});
   await b.settle();
   await b.push({...b.state, pointers: true}); await b.track();
-  assert.deepEqual({...b.pointerUpdates.at(-1)}, {enabled: true, live: true, revision: 1, suspended: false});
+  assert.deepEqual({...b.pointerUpdates.at(-1)}, {enabled: true, live: true, revision: 1, displayedRevision: 1, suspended: false});
   assert.equal(b.pointerUpdates.viewer.nameLocked(), false);
   await b.push({...b.state, approval: true, pointers: true});
   assert.equal(b.pointerUpdates.viewer.nameLocked(), false, 'A session admitted unnamed before approval may name itself once');
@@ -940,6 +940,7 @@ test('Hold, Stop, and removal invalidate delayed credentials immediately', async
     await b.push({...b.state, revision: 2});
     assert.equal(b.readers[0].closed, true);
     assert.equal(b.chatUpdates.viewer.displayedRevision(), undefined);
+    assert.equal(b.chatUpdates.at(-1).revision, 2);
     assert.equal(b.heartbeats.at(-1).playing, false);
     assert.ok(late.signal);
     if (transition === 'removed') {
