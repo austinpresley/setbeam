@@ -20,6 +20,14 @@ See `Setbeam.app/Contents/Resources/Licenses` for the complete notices, pinned v
 The bundled MediaMTX reader includes Setbeam patches. The upstream and bundled
 SHA-256 digests and a patch description are in `runtime-lock.json`.
 
+MediaMTX's own MIT license is `MediaMTX-MIT.txt`. The helper also contains
+Go runtime and dependency code and an embedded copy of hls.js. See
+`Licenses/MediaMTX/buildinfo.txt` for the binary's Go module inventory and
+`Licenses/MediaMTX/notices.txt` for pinned notice sources and license texts.
+The notice file records the missing standalone license at the exact
+`github.com/benburkert/openpgp` fork revision and the source notices available
+for that code.
+
 To rebuild the runtime, use this repository's `scripts/build-runtime.sh`. Source archives from the bundle can be copied into `Vendor/cache/` to reuse them. The build script downloads the pinned MediaMTX archive and verifies all archive hashes. Replace the matching helpers in a local copy of the app and re-sign that copy for local use.
 
 Setbeam applies the bundled `patch-avfoundation.py` to FFmpeg's LGPL AVFoundation adapter. It adds exact video/audio device identity options, failing when the selected device is missing rather than selecting a different device. The unmodified archive, patch script, and build script reproduce the modified helper. Keep the build script, `build-support.py`, and patch script together under a `scripts` directory when rebuilding from the bundled source materials.

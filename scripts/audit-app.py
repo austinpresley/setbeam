@@ -10,6 +10,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[1]
 TEAM = "G2R8798RLT"
 SPARKLE = "Frameworks/Sparkle.framework/Versions/B/"
 MAIN = "MacOS/Setbeam"
@@ -51,9 +52,40 @@ def digest(path):
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
+def mediamtx_files(contents, lock, *, before_signing=False):
+    licenses = contents / "Resources/Licenses"
+    notices = licenses / "MediaMTX"
+    pinned_manifest = (ROOT / "licenses/mediamtx/manifest.json").read_bytes()
+    manifest_path = notices / "manifest.json"
+    require(not notices.is_symlink() and manifest_path.is_file() and not manifest_path.is_symlink()
+            and manifest_path.read_bytes() == pinned_manifest,
+            "Bundled MediaMTX notice manifest differs from the checkout.")
+    manifest = json.loads(pinned_manifest)
+    require(any(item["name"] == "mediamtx" and item["sha256"] == manifest["archiveSHA256"]
+                for item in lock["dependencies"]),
+            "MediaMTX notice manifest does not cover the pinned release archive.")
+    for path in (licenses / "MediaMTX-MIT.txt", notices / "buildinfo.txt", notices / "notices.txt"):
+        require(path.is_file() and not path.is_symlink() and digest(path) == manifest["filesSHA256"][path.name],
+                f"Bundled MediaMTX license or inventory differs from the pin: {path.name}")
+
+    binary = contents / "Helpers/mediamtx"
+    require(binary.is_file() and not binary.is_symlink(), "Missing bundled MediaMTX executable.")
+    if before_signing:
+        require(digest(binary) == manifest["upstreamBinarySHA256"],
+                "MediaMTX executable differs from the original pinned release binary.")
+    # codesign rewrites the signature and Mach-O load metadata. The pinned
+    # __DATA,__go_buildinfo bytes retain their file offset through signing.
+    section = manifest["goBuildInfoSection"]
+    with binary.open("rb") as stream:
+        stream.seek(section["offset"])
+        checksum = hashlib.sha256(stream.read(section["size"])).hexdigest()
+    require(checksum == section["sha256"], "Bundled MediaMTX Go build information differs from the pin.")
+
+
 def runtime_files(contents):
     licenses = contents / "Resources/Licenses"
     lock = json.loads((licenses / "runtime-lock.json").read_bytes())
+    mediamtx_files(contents, lock)
     provenance = json.loads((licenses / "runtime-provenance.json").read_bytes())
     require(digest(contents / "Resources/reader.js") == lock["reader"]["bundledSHA256"],
             "Bundled reader.js differs from runtime-lock.json.")
@@ -154,10 +186,18 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("app", type=Path)
     parser.add_argument("--identity", default="-")
+    parser.add_argument("--check-mediamtx-before-signing", action="store_true",
+                        help="check the original MediaMTX executable and its staged notices")
     args = parser.parse_args()
     try:
         require(args.identity == "-" or re.fullmatch("[A-F0-9]{40}", args.identity), "Use a SHA-1 signing fingerprint.")
-        audit(args.app.resolve(strict=True), args.identity)
+        app = args.app.resolve(strict=True)
+        if args.check_mediamtx_before_signing:
+            contents = app / "Contents"
+            lock = json.loads((contents / "Resources/Licenses/runtime-lock.json").read_bytes())
+            mediamtx_files(contents, lock, before_signing=True)
+        else:
+            audit(app, args.identity)
     except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:
         print(f"App audit failed: {error}", file=sys.stderr)
         if isinstance(error, subprocess.CalledProcessError):

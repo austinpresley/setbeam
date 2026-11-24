@@ -106,6 +106,35 @@ license files, and relinking sources. The reader entry in the lock records
 both the upstream MediaMTX file and the exact patched file shipped in Setbeam.
 Update the bundled hash and change description when changing `reader.js`.
 
+### Reviewing the MediaMTX pin
+
+The app copies the checked-in [MediaMTX inventory and notices](../licenses/mediamtx/)
+into `Contents/Resources/Licenses/MediaMTX`. Before signing, the packaging
+check matches the original helper against the SHA-256 of the binary extracted
+from the pinned release archive. The app audit checks the bundled notices and
+the pinned Mach-O Go build-info section after signing. Packaging uses the
+existing Python tooling. Go is only needed to reproduce the inventory.
+
+To review a new pin, verify the release archive against `runtime-lock.json`,
+extract it in a temporary directory and run the following with the official Go
+toolchain. The first command produces the path-independent inventory. The
+second locates the section hashed in `manifest.json`.
+
+```sh
+go version -m ./mediamtx | sed '1s/^.*: //; s/[[:space:]]*$//'
+otool -l ./mediamtx | sed -n '/sectname __go_buildinfo/,+4p'
+```
+
+Use the recorded VCS revision to get the matching MediaMTX source and
+`go.sum`. Verify each listed dependency ZIP against its embedded `h1`
+checksum using `go mod download -json <module>@<version>` in that source
+tree with an isolated module cache. The notice collection records the exact
+source file or excerpt and its original SHA-256. Review any embedded assets
+separately from the Go module list. For this pin, MediaMTX's HLS downloader
+specifies the hls.js release ZIP and its SHA-256. The ZIP's `dist/hls.min.js`
+matches bytes in the helper, and its source map and the tagged hls.js
+`package-lock.json` identify the included JavaScript dependencies.
+
 ## Update behavior
 
 The app checks daily by default. Settings → Updates turns that off. Installing

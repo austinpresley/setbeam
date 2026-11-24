@@ -1,0 +1,14 @@
+{
+  "archiveSHA256": "7d0d0c5c11527cbd10bde1c3d728864eb0334a9b653566cd73c0259750cbf093",
+  "upstreamBinarySHA256": "72f67f718cfe5f75f081db5b2f31d1664008b6b8ff8627cb2a8acf5d7e5e61be",
+  "goBuildInfoSection": {
+    "offset": 34668544,
+    "size": 7888,
+    "sha256": "9d1ad0a8b250c54a560d5576576249174d7def4277bc6f480d99cfac5e9f1a3d"
+  },
+  "filesSHA256": {
+    "MediaMTX-MIT.txt": "ecae73b0a23185a35a1222edc0aae5245bb9739420bad0125b0c42e935301a80",
+    "buildinfo.txt": "a0c7803d5ffd11592e2c6809af336327a153a9c26c2e082a4312bfa21985935c",
+    "notices.txt": "5166aaa9fe4eabd4bd68eff4693f468ff9c801290e0ad24c8b67446c12acb406"
+  }
+}

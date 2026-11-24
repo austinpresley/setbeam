@@ -1,5 +1,6 @@
 """Offline release tests with temporary Git repositories and stubbed platform tools."""
 import base64
+import hashlib
 import importlib.util
 import json
 import plistlib
@@ -23,7 +24,69 @@ def load(name, filename):
 
 publish = load("publish", "publish-release.py")
 release = publish.release
+app_audit = load("app_audit", "audit-app.py")
 NS = {"sparkle": release.SPARKLE_NS}
+
+
+class MediaMTXNoticeTests(unittest.TestCase):
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        root = Path(folder.name)
+        self.contents = root / "Fixture.app/Contents"
+        licenses = self.contents / "Resources/Licenses"
+        self.notices = licenses / "MediaMTX"
+        self.notices.mkdir(parents=True)
+        self.binary = self.contents / "Helpers/mediamtx"
+        self.binary.parent.mkdir()
+        self.binary.write_bytes(b"headergo build infoold signature")
+        section = b"go build info"
+        (licenses / "MediaMTX-MIT.txt").write_text("MIT license")
+        (self.notices / "buildinfo.txt").write_text("Go build inventory")
+        (self.notices / "notices.txt").write_text("Dependency notices")
+        archive_sha = "a" * 64
+        self.lock = {"dependencies": [{"name": "mediamtx", "sha256": archive_sha}]}
+        manifest = {
+            "archiveSHA256": archive_sha,
+            "upstreamBinarySHA256": app_audit.digest(self.binary),
+            "goBuildInfoSection": {
+                "offset": len(b"header"), "size": len(section),
+                "sha256": hashlib.sha256(section).hexdigest(),
+            },
+            "filesSHA256": {
+                path.name: app_audit.digest(path) for path in (
+                    licenses / "MediaMTX-MIT.txt", self.notices / "buildinfo.txt", self.notices / "notices.txt")
+            },
+        }
+        pinned = root / "licenses/mediamtx/manifest.json"
+        pinned.parent.mkdir(parents=True)
+        pinned.write_text(json.dumps(manifest))
+        (self.notices / "manifest.json").write_bytes(pinned.read_bytes())
+        self.enterContext(mock.patch.object(app_audit, "ROOT", root))
+
+    def test_original_binary_and_resigned_build_information(self):
+        app_audit.mediamtx_files(self.contents, self.lock, before_signing=True)
+        self.binary.write_bytes(b"headergo build infonew signature")
+        app_audit.mediamtx_files(self.contents, self.lock)
+        with self.assertRaisesRegex(ValueError, "original pinned release binary"):
+            app_audit.mediamtx_files(self.contents, self.lock, before_signing=True)
+        self.binary.write_bytes(b"headersubstituted build info")
+        with self.assertRaisesRegex(ValueError, "Go build information"):
+            app_audit.mediamtx_files(self.contents, self.lock)
+
+    def test_missing_or_changed_notices_are_rejected(self):
+        notice = self.notices / "notices.txt"
+        notice.unlink()
+        with self.assertRaisesRegex(ValueError, "notices.txt"):
+            app_audit.mediamtx_files(self.contents, self.lock)
+        notice.write_text("Altered dependency notices")
+        with self.assertRaisesRegex(ValueError, "notices.txt"):
+            app_audit.mediamtx_files(self.contents, self.lock)
+
+    def test_notice_manifest_must_cover_the_locked_archive(self):
+        self.lock["dependencies"][0]["sha256"] = "b" * 64
+        with self.assertRaisesRegex(ValueError, "pinned release archive"):
+            app_audit.mediamtx_files(self.contents, self.lock)
 
 
 def args(build):

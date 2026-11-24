@@ -46,6 +46,32 @@ build, macOS 14 installation and update, and the startup Force Quit regression
 remain to be exercised with disposable builds. Supervisor lifecycle code was
 left for that runtime check.
 
+## MediaMTX dependency notices, 2026-11-24
+
+Build 43 carries MediaMTX's MIT license. Its helper has the same Go build info
+as the checksum-pinned MediaMTX 1.21.2 macOS arm64 release archive. The helper
+reports Go 1.27.2 and MediaMTX revision `914e39535ece709919ac325aaeed98d394ed9093`.
+All 84 Go dependency ZIPs matched the embedded `h1` and the exact upstream
+`go.sum`. The archive-pinned hls.js 1.7.3 script also matched byte-for-byte in
+both helper copies.
+
+New packages include the [module inventory](../licenses/mediamtx/buildinfo.txt)
+and [pinned notices](../licenses/mediamtx/notices.txt) with the existing MIT
+license. Packaging verifies the whole upstream executable before signing.
+The app audit checks the bundled notice digests and the Go build-info section.
+Temporary staging passed with the extracted release binary and a copy of the
+already-signed Build 43 helper. The pre-signing check rejected the signed
+helper, and the audit rejected a modified Go build-info section. The full
+local `scripts/check.sh` passed with temporary copies of the Build 43 helpers,
+including 356 Swift cases with two opt-in cases skipped, 85 Node tests, and
+all media probes. All 34 offline release tests passed in a separate run.
+No signing or release ran for this change.
+
+The exact `github.com/benburkert/openpgp` source is available and has no
+standalone LICENSE. The bundle includes the historical Go-origin notices and
+the fork's file-level keywrap license. Terms for fork-specific changes beyond
+those source notices remain unresolved.
+
 ## QA evidence audit, 2026-11-24
 
 The checkout checks accept the original build 43 Helpers and Resources/Fixtures

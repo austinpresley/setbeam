@@ -69,6 +69,9 @@ for name in MediaMTX-MIT.txt Opus-BSD.txt FFmpeg-LGPL-2.1.txt FFmpeg-build-confi
 done
 cp Vendor/runtime-provenance.json "$APP/Contents/Resources/Licenses/"
 cp LICENSE THIRD_PARTY_NOTICES.md runtime-lock.json "$APP/Contents/Resources/Licenses/"
+mkdir "$APP/Contents/Resources/Licenses/MediaMTX"
+cp licenses/mediamtx/{manifest.json,buildinfo.txt,notices.txt} "$APP/Contents/Resources/Licenses/MediaMTX/"
+python3 scripts/audit-app.py "$APP" --check-mediamtx-before-signing
 cp "$ROOT/.build/artifacts/sparkle/Sparkle/LICENSE" "$APP/Contents/Resources/Licenses/Sparkle-LICENSE.txt"
 cp Vendor/cache/ffmpeg-9.0.2.tar.xz Vendor/cache/ffmpeg-9.0.2.tar.xz.asc Vendor/cache/ffmpeg-devel.asc Vendor/cache/opus-1.6.1.tar.gz "$APP/Contents/Resources/Licenses/Sources/"
 SETBEAM_VERSION="$VERSION" SETBEAM_BUILD="$BUILD_NUMBER" SETBEAM_UPDATES="$UPDATES" python3 - "$APP" "$scratch/Setbeam.icns" <<'PY'
