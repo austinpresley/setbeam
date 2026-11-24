@@ -67,12 +67,17 @@ struct SetupCheckView: View {
 
     private var network: some View {
         VStack(alignment: .leading, spacing: 4) {
-            row("Viewing Network", detail: model.canInviteOtherDevices
-                ? "\(model.viewerNetworkLabel) (\(model.viewerAddress)). Test from a device that can reach this network."
-                : "This Mac only. Choose a network your test device can reach.",
-                confirmed: model.setupCheck.viewingAddress)
+            row("Viewing Network", detail: networkDetail, confirmed: model.setupCheck.viewingAddress)
             Button("Choose Viewing Network…") { model.showViewingNetwork() }.disabled(model.busy)
         }
+    }
+
+    private var networkDetail: String {
+        if let network = model.setupViewingNetwork {
+            return "\(network.name) (\(network.address)). Use a test device that can reach this network."
+        }
+        if model.canInviteOtherDevices { return "The selected viewing network is unavailable. Check the connection or choose another network." }
+        return "This Mac only. Choose a network your test device can reach."
     }
 
     private var approval: some View {
@@ -113,7 +118,7 @@ struct SetupCheckView: View {
         if !model.state.sharing {
             Button("Start Sharing for Test") { model.startSharing() }
                 .buttonStyle(.borderedProminent)
-                .disabled(!model.canShare || !model.setupCheck.picture || !model.canInviteOtherDevices || model.expectsAudio == nil)
+                .disabled(!model.canShare || !model.setupCheck.picture || model.setupViewingNetwork == nil || model.expectsAudio == nil)
         } else {
             let count = model.setupCheckPlayingCount
             row("Playback on Another Device", detail: count > 0

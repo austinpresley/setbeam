@@ -473,15 +473,19 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
             self?.accessSync = nil
         }
     }
+    var setupViewingNetwork: NetworkAddress? {
+        guard !viewerNetworkNeedsUpdate, canInviteOtherDevices else { return nil }
+        return networks.first { $0.interface == viewerInterface && $0.address == viewerAddress }
+    }
     var setupViewingLinkReady: Bool {
-        viewingInvitation != nil
+        setupViewingNetwork != nil && viewingInvitation != nil
     }
     var setupApprovalReady: Bool { !applyingViewerApproval && (!state.sharing || viewerApproval == appliedApproval) }
 
     private var setupCheckOutput: SetupCheckOutput? {
         guard setupViewingLinkReady, setupApprovalReady, audiencePresentation.phase == .sharing,
-              let revision = currentRuntime?.audienceRevision else { return nil }
-        return SetupCheckOutput(link: viewingLink, revision: revision, route: viewerAddress, reports: gateway.viewers)
+              let network = setupViewingNetwork, let revision = currentRuntime?.audienceRevision else { return nil }
+        return SetupCheckOutput(link: viewingLink, revision: revision, route: network.id, reports: gateway.viewers)
     }
     var setupCheckPlayingCount: Int { setupCheckOutput?.viewerCount ?? 0 }
     var canConfirmSetupSound: Bool { setupCheckPlayingCount > 0 && audienceHasAudio && expectsAudio == true }
