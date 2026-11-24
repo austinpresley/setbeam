@@ -20,7 +20,8 @@ import android.widget.TextView;
 import com.setbeam.receiver.core.HostConfig;
 import com.setbeam.receiver.core.NearbyMacs;
 
-import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.List;
 
 /**
@@ -40,7 +41,7 @@ public final class SetupActivity extends Activity {
     private View chooseMac, manualPairing, startupPanel;
     private Discovery nearby;
     private LinearLayout nearbyList;
-    private final List<String> shownAddresses = new ArrayList<>();
+    private final Map<String, Button> nearbyRows = new LinkedHashMap<>();
     private Page page = Page.MACS;
     private boolean navigatedMacs;
 
@@ -74,7 +75,7 @@ public final class SetupActivity extends Activity {
         editPairing.setOnClickListener(v -> showPage(Page.MANUAL, host));
         startup.setOnClickListener(v -> showPage(Page.TV, boot));
         View save = findViewById(R.id.save);
-        save.setOnClickListener(v -> connect(host.getText().toString(), name.getText().toString()));
+        save.setOnClickListener(v -> connect(host.getText().toString(), name.getText().toString(), null));
         // A single-line EditText can consume an arrow to move its cursor. Outside the TV
         // keyboard, vertical arrows should always move between the form's controls.
         host.setOnKeyListener((v, key, event) -> moveFieldFocus(key, event, null, name));
@@ -160,44 +161,58 @@ public final class SetupActivity extends Activity {
     /** A nearby Mac is paired only when the viewer presses OK on its row. */
     private void renderNearby() {
         List<NearbyMacs.Choice> choices = NearbyMacs.choices(nearby.seen());
-        List<String> addresses = new ArrayList<>();
-        for (NearbyMacs.Choice choice : choices) addresses.add(choice.address);
-        if (addresses.equals(shownAddresses)) return;
-        int previousIndex = nearbyList.indexOfChild(nearbyList.getFocusedChild());
-        String focusedAddress = previousIndex < 0 ? null : shownAddresses.get(previousIndex);
-        shownAddresses.clear();
-        shownAddresses.addAll(addresses);
-        nearbyList.removeAllViews();
+        View focused = nearbyList.getFocusedChild();
+        int previousIndex = nearbyList.indexOfChild(focused);
+        Map<String, Button> next = new LinkedHashMap<>();
+        for (NearbyMacs.Choice choice : choices) {
+            Button row = nearbyRows.get(choice.address);
+            if (row == null) row = nearbyButton();
+            if (!TextUtils.equals(row.getText(), choice.title)) row.setText(choice.title);
+            String label = choice.detail.isEmpty() ? choice.title : choice.title + ", " + choice.detail;
+            if (!TextUtils.equals(row.getContentDescription(), label)) row.setContentDescription(label);
+            row.setOnClickListener(v -> {
+                HostConfig current = settings.host();
+                connect(choice.address, current == null ? getString(R.string.default_receiver_name) : current.name, choice.id);
+            });
+            next.put(choice.address, row);
+        }
+        for (Button previous : nearbyRows.values()) if (!next.containsValue(previous)) nearbyList.removeView(previous);
+        int index = 0;
+        for (Button row : next.values()) {
+            if (nearbyList.getChildAt(index) != row) {
+                if (row.getParent() == nearbyList) nearbyList.removeView(row);
+                nearbyList.addView(row, index);
+            }
+            index++;
+        }
+        boolean hadRows = !nearbyRows.isEmpty();
+        nearbyRows.clear();
+        nearbyRows.putAll(next);
         nearbyStatus.setText(choices.isEmpty() ? R.string.setup_nearby_looking : R.string.setup_nearby);
         findViewById(R.id.discovery_help).setVisibility(choices.isEmpty() ? View.VISIBLE : View.GONE);
-        for (NearbyMacs.Choice choice : choices) {
-            Button button = new Button(this, null, 0, R.style.Tv_Button);
-            button.setId(View.generateViewId());
-            button.setText(choice.title);
-            button.setSingleLine();
-            button.setEllipsize(TextUtils.TruncateAt.END);
-            button.setCompoundDrawablesRelativeWithIntrinsicBounds(R.drawable.ic_mac, 0, 0, 0);
-            button.setCompoundDrawableTintList(getColorStateList(R.color.button_text));
-            button.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
-            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT, dp(60));
-            params.topMargin = dp(8);
-            button.setLayoutParams(params);
-            button.setOnClickListener(v -> {
-                HostConfig current = settings.host();
-                connect(choice.address, current == null ? getString(R.string.default_receiver_name) : current.name);
-            });
-            nearbyList.addView(button);
-        }
         if (page != Page.MACS) return;
-        if (previousIndex >= 0 || (!navigatedMacs && settings.host() == null)) {
-            if (choices.isEmpty()) editPairing.requestFocus();
-            else {
-                int nextIndex = addresses.indexOf(focusedAddress);
-                if (nextIndex < 0) nextIndex = Math.min(Math.max(0, previousIndex), choices.size() - 1);
-                nearbyList.getChildAt(nextIndex).requestFocus();
-            }
+        View fallback = choices.isEmpty() ? editPairing
+                : nearbyList.getChildAt(Math.min(Math.max(0, previousIndex), choices.size() - 1));
+        if (focused != null && !focused.hasFocus()) {
+            (next.containsValue(focused) ? focused : fallback).requestFocus();
+        } else if (!hadRows && !choices.isEmpty() && !navigatedMacs && settings.host() == null
+                && !editPairing.isAccessibilityFocused()) {
+            fallback.requestFocus();
         }
+    }
+
+    private Button nearbyButton() {
+        Button button = new Button(this, null, 0, R.style.Tv_Button);
+        button.setId(View.generateViewId());
+        button.setSingleLine();
+        button.setEllipsize(TextUtils.TruncateAt.END);
+        button.setCompoundDrawablesRelativeWithIntrinsicBounds(R.drawable.ic_mac, 0, 0, 0);
+        button.setCompoundDrawableTintList(getColorStateList(R.color.button_text));
+        button.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(60));
+        params.topMargin = dp(8);
+        button.setLayoutParams(params);
+        return button;
     }
 
     private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
@@ -218,11 +233,12 @@ public final class SetupActivity extends Activity {
                 : allowed ? R.string.setup_boot_on : R.string.setup_boot_permission);
     }
 
-    private void connect(String address, String label) {
+    private void connect(String address, String label, String selectedId) {
         HostConfig config;
         try { config = HostConfig.parse(address, label); }
         catch (HostConfig.Invalid e) { showError(e.getMessage()); return; }
-        if (!config.equals(settings.host()) && !PairingChanges.apply(this, s -> s.pair(config))) {
+        boolean changed = !config.equals(settings.host()) || selectedId != null && !selectedId.equals(settings.pinnedMacId());
+        if (changed && !PairingChanges.apply(this, s -> s.pair(config, selectedId))) {
             showError(R.string.setup_save_error);
             return;
         }

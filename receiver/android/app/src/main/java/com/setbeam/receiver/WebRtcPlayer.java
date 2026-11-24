@@ -53,6 +53,10 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.Future;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 
@@ -70,13 +74,17 @@ import java.util.function.Consumer;
  */
 final class WebRtcPlayer implements ReceiverController.Player {
     private static final String TAG = "SetbeamPlayer";
+    private static final long NEGOTIATION_MS = 9000;
 
     interface Failure { void failed(int generation, String why); }
 
     private final ExecutorService rtc = Executors.newSingleThreadExecutor(r -> new Thread(r, "setbeam-rtc"));
+    private final ScheduledThreadPoolExecutor deadlines = new ScheduledThreadPoolExecutor(1, r -> new Thread(r, "setbeam-rtc-deadline"));
+    // A WHEP DELETE is best effort and must never block negotiation or native disposal.
+    private final ExecutorService teardown = new ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS,
+            new ArrayBlockingQueue<>(8), r -> new Thread(r, "setbeam-whep-delete"), new ThreadPoolExecutor.DiscardPolicy());
     private final EglBase egl;
     private final JavaAudioDeviceModule audio;
-    private final ObservedDecoderFactory decoders;
     private final PeerConnectionFactory factory;
     private final Failure failure;
 
@@ -92,12 +100,13 @@ final class WebRtcPlayer implements ReceiverController.Player {
     private final class Peer {
         final int generation;
         volatile boolean active = true;
-        final AtomicLong lastFrameAt = new AtomicLong();
+        final long deadline = SystemClock.elapsedRealtime() + NEGOTIATION_MS;
+        volatile Future<?> timeout;
         final AtomicLong frames = new AtomicLong();
         volatile MiniHttp.Call offerCall;
         volatile boolean hasAudio;
-        /** Reached the point where its sound may play: every earlier peer is closed. */
-        volatile boolean audible;
+        /** The remote description was set before the negotiation deadline. */
+        volatile boolean negotiated;
         volatile String connection = "new";
         PeerConnection pc;
         WhepTarget target;
@@ -110,10 +119,7 @@ final class WebRtcPlayer implements ReceiverController.Player {
             @Override public void onFrame(VideoFrame frame) {
                 PictureView target = view;
                 if (!active || target == null) return;
-                // The picture's own generation gate decides; only drawn-for frames count as fresh.
-                if (!target.render(generation, frame)) return;
-                lastFrameAt.set(SystemClock.elapsedRealtime());
-                frames.incrementAndGet();
+                if (target.render(generation, frame)) frames.incrementAndGet();
             }
         };
 
@@ -123,6 +129,7 @@ final class WebRtcPlayer implements ReceiverController.Player {
 
         void deactivate() {
             active = false;
+            if (timeout != null) timeout.cancel(false);
             MiniHttp.Call call = offerCall;
             if (call != null) call.cancel();
         }
@@ -133,7 +140,7 @@ final class WebRtcPlayer implements ReceiverController.Player {
         Context app = context.getApplicationContext();
         PeerConnectionFactory.initialize(PeerConnectionFactory.InitializationOptions.builder(app).createInitializationOptions());
         egl = EglBase.create();
-        decoders = new ObservedDecoderFactory(egl.getEglBaseContext());
+        deadlines.setRemoveOnCancelPolicy(true);
         audio = JavaAudioDeviceModule.builder(app)
                 .setUseStereoOutput(true)
                 .setUseHardwareAcousticEchoCanceler(false)
@@ -144,7 +151,7 @@ final class WebRtcPlayer implements ReceiverController.Player {
         audio.setSpeakerMute(true);
         factory = PeerConnectionFactory.builder()
                 .setAudioDeviceModule(audio)
-                .setVideoDecoderFactory(decoders)
+                .setVideoDecoderFactory(new ObservedDecoderFactory(egl.getEglBaseContext()))
                 .setVideoEncoderFactory(new SoftwareVideoEncoderFactory())
                 .createPeerConnectionFactory();
     }
@@ -158,12 +165,11 @@ final class WebRtcPlayer implements ReceiverController.Player {
     void setSound(boolean on) {
         synchronized (authority) {
             soundOn = on;
+            if (!on) audio.setSpeakerMute(true);
             Peer peer = current;
-            audio.setSpeakerMute(!(on && peer != null && peer.live() && peer.audible));
+            if (peer != null && !rtc.isShutdown()) rtc.execute(() -> applySound(peer));
         }
     }
-
-    boolean soundOn() { return soundOn; }
 
     void attach(PictureView picture) { view = picture; }
 
@@ -171,7 +177,15 @@ final class WebRtcPlayer implements ReceiverController.Player {
 
     @Override public long lastFrameAt(int generation) {
         Peer peer = current;
-        return peer != null && peer.active && peer.generation == generation ? peer.lastFrameAt.get() : 0;
+        PictureView picture = view;
+        return peer != null && peer.live() && peer.generation == generation && picture != null ? picture.lastFrameAt(generation) : 0;
+    }
+
+    boolean hasRendered(int generation) { return lastFrameAt(generation) > 0; }
+
+    @Override public boolean negotiating(int generation) {
+        Peer peer = current;
+        return peer != null && peer.generation == generation && !peer.negotiated;
     }
 
     @Override public void play(int generation, Gateway.Playback playback) {
@@ -181,6 +195,7 @@ final class WebRtcPlayer implements ReceiverController.Player {
             if (previous != null) previous.deactivate();
             current = next;
             audio.setSpeakerMute(true);
+            if (!deadlines.isShutdown()) next.timeout = deadlines.schedule(() -> expire(next), NEGOTIATION_MS, TimeUnit.MILLISECONDS);
         }
         // Only this generation may draw from now on; the old picture is paused and cleared at once.
         PictureView picture = view;
@@ -209,7 +224,9 @@ final class WebRtcPlayer implements ReceiverController.Player {
             factory.dispose();
             audio.release();
             egl.release();
+            teardown.shutdown();
         });
+        deadlines.shutdownNow();
         rtc.shutdown();
     }
 
@@ -229,6 +246,7 @@ final class WebRtcPlayer implements ReceiverController.Player {
         PeerConnection pc = factory.createPeerConnection(config, new Observer(peer, gathered));
         if (pc == null) { fail(peer, "Could not create a media connection"); return; }
         peer.pc = pc;
+        pc.setAudioPlayout(false);
         RtpTransceiver video = pc.addTransceiver(MediaStreamTrack.MediaType.MEDIA_TYPE_VIDEO,
                 new RtpTransceiver.RtpTransceiverInit(RtpTransceiver.RtpTransceiverDirection.RECV_ONLY));
         RtpTransceiver sound = pc.addTransceiver(MediaStreamTrack.MediaType.MEDIA_TYPE_AUDIO,
@@ -236,13 +254,15 @@ final class WebRtcPlayer implements ReceiverController.Player {
         MediaStreamTrack track = video.getReceiver().track();
         if (track instanceof VideoTrack) { peer.videoTrack = (VideoTrack) track; peer.videoTrack.addSink(peer.sink); }
         MediaStreamTrack heard = sound.getReceiver().track();
-        if (heard instanceof AudioTrack) { peer.audioTrack = (AudioTrack) heard; peer.audioTrack.setEnabled(true); }
+        if (heard instanceof AudioTrack) { peer.audioTrack = (AudioTrack) heard; peer.audioTrack.setEnabled(false); }
 
-        SessionDescription offer = awaitSdp(observer -> pc.createOffer(observer, new MediaConstraints()));
+        SessionDescription offer = awaitSdp(peer, observer -> pc.createOffer(observer, new MediaConstraints()));
         if (offer == null || !peer.live()) { fail(peer, "Could not prepare the media request"); return; }
-        if (!awaitSet(observer -> pc.setLocalDescription(observer, offer)) || !peer.live()) { fail(peer, "Could not prepare the media request"); return; }
-        try { gathered.await(3, TimeUnit.SECONDS); } catch (InterruptedException e) { Thread.currentThread().interrupt(); return; }
-        if (!peer.live() || pc.getLocalDescription() == null) return;
+        if (!awaitSet(peer, observer -> pc.setLocalDescription(observer, offer)) || !peer.live()) { fail(peer, "Could not prepare the media request"); return; }
+        await(peer, gathered, SystemClock.elapsedRealtime() + 2000);
+        if (!peer.live()) return;
+        SessionDescription local = pc.getLocalDescription();
+        if (local == null) { fail(peer, "The local media offer was unavailable"); return; }
 
         String answer;
         MiniHttp.Call call = new MiniHttp.Call();
@@ -254,7 +274,8 @@ final class WebRtcPlayer implements ReceiverController.Player {
             headers.put("Content-Type", "application/sdp");
             headers.put("Accept", "application/sdp");
             MiniHttp.Response response = MiniHttp.execute(peer.target.route, "POST", peer.target.path, headers,
-                    pc.getLocalDescription().description.getBytes(StandardCharsets.UTF_8), 5000, 64 * 1024, call);
+                    local.description.getBytes(StandardCharsets.UTF_8),
+                    (int) Math.max(1, Math.min(5000, peer.deadline - SystemClock.elapsedRealtime())), 64 * 1024, call);
             if (response.status == 401 || response.status == 403) { fail(peer, "The Mac refused media access"); return; }
             if (response.status == 404) { fail(peer, "The Mac's media output is not available"); return; }
             if (response.status != 201) { fail(peer, "Media request failed (" + response.status + ")"); return; }
@@ -268,18 +289,35 @@ final class WebRtcPlayer implements ReceiverController.Player {
         }
         if (!peer.live()) return;
         if (!answer.startsWith("v=0")) { fail(peer, "Unexpected media answer"); return; }
-        if (!awaitSet(observer -> pc.setRemoteDescription(observer, new SessionDescription(SessionDescription.Type.ANSWER, answer)))) {
+        if (!awaitSet(peer, observer -> pc.setRemoteDescription(observer, new SessionDescription(SessionDescription.Type.ANSWER, answer)))) {
             fail(peer, "The media answer was not accepted");
             return;
         }
-        // Every earlier peer is closed (this thread closes before it opens), so sound may resume,
-        // and only if this peer is still the current one. Decided under the same lock that
-        // play() and stop() use, so a stop cannot land between the check and the unmute.
         synchronized (authority) {
-            if (peer.live()) {
-                peer.audible = true;
-                if (soundOn) audio.setSpeakerMute(false);
-            }
+            if (!peer.live() || SystemClock.elapsedRealtime() >= peer.deadline) return;
+            peer.negotiated = true;
+            if (peer.timeout != null) peer.timeout.cancel(false);
+        }
+        applySound(peer);
+    }
+
+    private void expire(Peer peer) {
+        synchronized (authority) {
+            if (!peer.live() || peer.negotiated) return;
+            peer.deactivate();
+            PictureView picture = view;
+            if (picture != null) picture.authorize(0);
+        }
+        failure.failed(peer.generation, "Media negotiation timed out");
+    }
+
+    private void applySound(Peer peer) {
+        if (!peer.live() || !peer.negotiated || peer.pc == null) return;
+        boolean enabled = soundOn;
+        peer.pc.setAudioPlayout(enabled);
+        if (peer.audioTrack != null) peer.audioTrack.setEnabled(enabled);
+        synchronized (authority) {
+            if (peer.live()) audio.setSpeakerMute(!(enabled && soundOn));
         }
     }
 
@@ -300,19 +338,23 @@ final class WebRtcPlayer implements ReceiverController.Player {
         if (peer.videoTrack != null) { peer.videoTrack.removeSink(peer.sink); peer.videoTrack = null; }
         peer.pc = null; peer.sessionPath = null; peer.authorization = null; peer.target = null;
         peer.hasAudio = false; peer.connection = "closed";
-        if (pc == null) return;
-        pc.close();
-        pc.dispose();
+        if (pc != null) {
+            pc.setAudioPlayout(false);
+            pc.close();
+            pc.dispose();
+        }
         if (path != null && where != null && auth != null) {
             // Ends the WHEP session on the Mac promptly; failure only means it times out there.
-            try { MiniHttp.execute(where.route, "DELETE", path, Map.of("Authorization", auth), null, 2000, 4096, new MiniHttp.Call()); }
-            catch (IOException ignored) { }
+            teardown.execute(() -> {
+                try { MiniHttp.execute(where.route, "DELETE", path, Map.of("Authorization", auth), null, 2000, 4096, new MiniHttp.Call()); }
+                catch (IOException ignored) { }
+            });
         }
     }
 
     private interface SdpCall { void run(SdpObserver observer); }
 
-    private static SessionDescription awaitSdp(SdpCall call) {
+    private SessionDescription awaitSdp(Peer peer, SdpCall call) {
         final SessionDescription[] result = new SessionDescription[1];
         CountDownLatch done = new CountDownLatch(1);
         call.run(new SdpObserver() {
@@ -321,11 +363,10 @@ final class WebRtcPlayer implements ReceiverController.Player {
             @Override public void onCreateFailure(String error) { done.countDown(); }
             @Override public void onSetFailure(String error) { done.countDown(); }
         });
-        try { if (!done.await(5, TimeUnit.SECONDS)) return null; } catch (InterruptedException e) { Thread.currentThread().interrupt(); return null; }
-        return result[0];
+        return await(peer, done, peer.deadline) ? result[0] : null;
     }
 
-    private static boolean awaitSet(SdpCall call) {
+    private boolean awaitSet(Peer peer, SdpCall call) {
         final boolean[] ok = new boolean[1];
         CountDownLatch done = new CountDownLatch(1);
         call.run(new SdpObserver() {
@@ -334,8 +375,19 @@ final class WebRtcPlayer implements ReceiverController.Player {
             @Override public void onCreateFailure(String error) { done.countDown(); }
             @Override public void onSetFailure(String error) { Log.w(TAG, "SDP: " + error); done.countDown(); }
         });
-        try { if (!done.await(5, TimeUnit.SECONDS)) return false; } catch (InterruptedException e) { Thread.currentThread().interrupt(); return false; }
-        return ok[0];
+        return await(peer, done, peer.deadline) && ok[0];
+    }
+
+    private boolean await(Peer peer, CountDownLatch done, long until) {
+        until = Math.min(until, peer.deadline);
+        try {
+            while (peer.live()) {
+                long left = until - SystemClock.elapsedRealtime();
+                if (left <= 0) return false;
+                if (done.await(Math.min(left, 100), TimeUnit.MILLISECONDS)) return true;
+            }
+        } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+        return false;
     }
 
     private final class Observer implements PeerConnection.Observer {
@@ -372,15 +424,14 @@ final class WebRtcPlayer implements ReceiverController.Player {
     static final class Snapshot {
         int decodedWidth, decodedHeight, requestedWidth, requestedHeight, bufferWidth, bufferHeight;
         double sinkFps, renderedFps;
-        long framesShown;
+        long sampledAt;
         Map<String, Object> video = Map.of();
         Map<String, Object> audio = Map.of();
         String codec = "";
         String candidatePair = "";
         String connection = "";
         boolean hasAudio;
-        String createdDecoder = "";
-        String decoderKind = "";
+        int generation;
     }
 
     private long fpsAtMs, fpsFrames, fpsRendered;
@@ -393,17 +444,19 @@ final class WebRtcPlayer implements ReceiverController.Player {
         PictureView picture = view;
         long now = SystemClock.elapsedRealtime();
         long frames = peer == null ? 0 : peer.frames.get();
-        long rendered = picture == null ? 0 : picture.renderedFrames();
         int generation = peer == null ? 0 : peer.generation;
+        long rendered = picture == null ? 0 : picture.renderedFrames(generation);
         synchronized (this) {
             if (fpsAtMs > 0 && now > fpsAtMs && generation == fpsGeneration) {
                 sinkFps = (frames - fpsFrames) * 1000.0 / (now - fpsAtMs);
-                renderedFps = (rendered - fpsRendered) * 1000.0 / (now - fpsAtMs);
+                renderedFps = Math.max(0, rendered - fpsRendered) * 1000.0 / (now - fpsAtMs);
             } else { sinkFps = 0; renderedFps = 0; }
             fpsAtMs = now; fpsFrames = frames; fpsRendered = rendered; fpsGeneration = generation;
         }
         Snapshot snapshot = new Snapshot();
-        boolean showing = peer != null && peer.active && now - peer.lastFrameAt.get() < 2000;
+        long last = lastFrameAt(generation);
+        boolean showing = last > 0 && now - last < ReceiverController.FRESH_FRAME_MS;
+        snapshot.generation = generation;
         if (picture != null) {
             snapshot.decodedWidth = showing ? picture.decodedWidth() : 0;
             snapshot.decodedHeight = showing ? picture.decodedHeight() : 0;
@@ -412,11 +465,9 @@ final class WebRtcPlayer implements ReceiverController.Player {
         }
         snapshot.sinkFps = showing ? sinkFps : 0;
         snapshot.renderedFps = showing ? renderedFps : 0;
-        snapshot.framesShown = frames;
+        snapshot.sampledAt = now;
         snapshot.hasAudio = peer != null && peer.hasAudio;
         snapshot.connection = peer == null ? "none" : peer.connection;
-        snapshot.createdDecoder = decoders.created;
-        snapshot.decoderKind = decoders.kind;
         if (rtc.isShutdown()) { done.accept(snapshot); return; }
         rtc.execute(() -> {
             PeerConnection pc = peer != null && peer.live() ? peer.pc : null;
@@ -441,18 +492,21 @@ final class WebRtcPlayer implements ReceiverController.Player {
                                 + " → " + remote.getMembers().get("address") + ":" + remote.getMembers().get("port");
                     }
                 }
-                done.accept(snapshot);
+                if (isCurrent(snapshot)) done.accept(snapshot);
             });
         });
     }
 
-    /** Decoder selection as WebRTC's default factory does it, recording what was actually created. */
+    boolean isCurrent(Snapshot snapshot) {
+        Peer peer = current;
+        return snapshot.generation == 0 ? peer == null : peer != null && peer.live() && peer.generation == snapshot.generation;
+    }
+
+    /** Decoder selection as WebRTC's default factory does it. */
     static final class ObservedDecoderFactory implements VideoDecoderFactory {
         private final VideoDecoderFactory hardware;
         private final VideoDecoderFactory platformSoftware;
         private final VideoDecoderFactory software = new SoftwareVideoDecoderFactory();
-        volatile String created = "";
-        volatile String kind = "";
 
         ObservedDecoderFactory(EglBase.Context context) {
             hardware = new HardwareVideoDecoderFactory(context);
@@ -464,9 +518,7 @@ final class WebRtcPlayer implements ReceiverController.Player {
             VideoDecoder primary = hardware.createDecoder(info);
             if (primary == null) primary = platformSoftware.createDecoder(info);
             String name = primary != null ? primary.getImplementationName() : fallback != null ? "libwebrtc software" : "none";
-            created = info.name + ": " + name;
-            kind = classify(name);
-            Log.i(TAG, "Decoder for " + info.name + ": " + name + " (" + kind + ")");
+            Log.i(TAG, "Decoder for " + info.name + ": " + name + " (" + classify(name) + ")");
             if (primary != null && fallback != null) return new VideoDecoderFallback(fallback, primary);
             return primary != null ? primary : fallback;
         }

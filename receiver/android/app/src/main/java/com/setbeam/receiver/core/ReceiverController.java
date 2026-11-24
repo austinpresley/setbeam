@@ -1,7 +1,10 @@
 package com.setbeam.receiver.core;
 
 import java.io.IOException;
+import java.util.Objects;
+import java.util.UUID;
 import java.util.concurrent.Executor;
+import java.util.function.Consumer;
 
 /**
  * The receiver's single state machine: find the paired Mac's short address, ask once per share,
@@ -20,7 +23,7 @@ import java.util.concurrent.Executor;
  * <li>Media is closed at once for any audience state other than {@code live}, and on refusal,
  *     path retirement, or stop. Playback credentials are fetched for each publisher revision and
  *     kept in memory only.</li>
- * <li>Live is claimed only while decoded frames are fresh.</li>
+ * <li>Live is claimed only while rendered frames are fresh.</li>
  * </ul>
  */
 public final class ReceiverController {
@@ -42,7 +45,7 @@ public final class ReceiverController {
     public interface Loop {
         void post(Runnable task);
         void postDelayed(Runnable task, long delayMs);
-        /** Monotonic milliseconds. */
+        /** Thread-safe monotonic milliseconds. */
         long now();
         /** Wall-clock milliseconds, for persisted timestamps. */
         long wallNow();
@@ -53,8 +56,9 @@ public final class ReceiverController {
         void play(int generation, Gateway.Playback playback);
         /** Detaches and mutes at once; releases asynchronously. Idempotent. */
         void stop();
-        /** Monotonic time of the last decoded frame for this generation, or 0. */
+        /** Thread-safe monotonic time of the last fresh frame the renderer swapped, or 0. */
         long lastFrameAt(int generation);
+        default boolean negotiating(int generation) { return false; }
     }
 
     public interface Listener { void onView(View view); }
@@ -122,9 +126,12 @@ public final class ReceiverController {
     private Gateway.StateResult state;
     private Gateway.Playback playback;
     private int playbackRevision = -1;
-    private int configRevision = -1;
+    private long stateUpdates, mediaVersion;
+    private boolean routeStateConfirmed;
+    private long lastAdmissionReply, nextAdmissionRequest;
+    private boolean resumedRoute;
+    private Consumer<Gateway.Resolution> onResolved = value -> {};
     private String reason = "";
-    private String configPass;
     private String lastAskKey;
     private long lastAskMono;
     /** Ask count, time, and monotonic anchor before the request in flight, restored if it was not created. */
@@ -152,6 +159,8 @@ public final class ReceiverController {
 
     /** Attaches chat and pointers. They follow only the current admitted pass (see {@link #publish}). */
     public void setExtras(SessionExtras value) { extras = value; }
+
+    public void setResolutionListener(Consumer<Gateway.Resolution> value) { onResolved = value; }
 
     // ---- Commands (loop thread) ----
 
@@ -191,6 +200,9 @@ public final class ReceiverController {
         long now = loop.now();
         if (path == null || admission.refused()) { nextResolveAt = Math.min(nextResolveAt, now); resolveFailures = 0; }
         else if (gatewayFailures > 0) { nextResolveAt = now; }
+        // DNS-SD often arrives after a successful direct lookup. Revalidate the route once
+        // the advertisement can corroborate the paired installation's hint.
+        if (path != null && !admission.refused() && !resolving && now >= nextResolveAt) resolve();
         reconcile();
     }
 
@@ -255,7 +267,7 @@ public final class ReceiverController {
     }
 
     private boolean wantsConfig() {
-        return admission == AccessStore.Admission.ADMITTED && state != null && state.live()
+        return admission == AccessStore.Admission.ADMITTED && routeStateConfirmed && state != null && state.live()
                 && (playback == null || playbackRevision != state.revision);
     }
 
@@ -281,6 +293,8 @@ public final class ReceiverController {
         }
         // Count the request durably before sending it, so a crash cannot turn into repeated asks.
         askBefore = new long[]{record.asks, record.lastAskAt, lastAskMono};
+        String previousID = record.requestID;
+        if (record.requestID == null) record.requestID = UUID.randomUUID().toString();
         record.asks++;
         record.lastAskAt = wall;
         lastAskKey = path.key; lastAskMono = now;
@@ -288,15 +302,13 @@ public final class ReceiverController {
         if (!store.saveVerified(path.key, record, wall)) {
             storageProblem = true;
             reason = "This receiver could not save its request state";
-            if (!manualAsk) {
-                // Not durable: never send an automatic request that a restart could repeat.
-                record.asks = (int) askBefore[0]; record.lastAskAt = askBefore[1]; lastAskMono = askBefore[2];
-                nextJoinAt = now + REFUSED_RECHECK_MS;
-                return;
-            }
-        } else {
-            storageProblem = false;
+            record.asks = (int) askBefore[0]; record.lastAskAt = askBefore[1]; lastAskMono = askBefore[2];
+            record.requestID = previousID;
+            manualAsk = false;
+            nextJoinAt = now + REFUSED_RECHECK_MS;
+            return;
         }
+        storageProblem = false;
         manualAsk = false;
         join(true);
     }
@@ -304,11 +316,12 @@ public final class ReceiverController {
     private void join(boolean ask) {
         final int e = epoch; final AskPath p = path; final String sentPass = ask ? null : pass;
         final String name = host.name;
+        final String requestID = ask ? record.requestID : null;
         joining = true;
         Gateway.Scope s = scope;
         io.execute(() -> {
             Gateway.JoinResult result;
-            try { result = gateway.join(p, sentPass, name, ask, COLOR, s); }
+            try { result = gateway.join(p, sentPass, name, ask, COLOR, requestID, s); }
             catch (IOException ex) { result = null; }
             final Gateway.JoinResult r = result;
             loop.post(() -> joined(e, sentPass, ask, r));
@@ -329,15 +342,22 @@ public final class ReceiverController {
                 if (result.admission.refused()) { refuse(result.admission); break; }
                 if (!ask && sentPass != null && !sentPass.equals(result.pass)) { lapsed(); break; }
                 askingAgain = false;
+                record.requestID = null;
                 pass = result.pass; number = result.number; admission = result.admission;
+                lastAdmissionReply = ++nextAdmissionRequest;
                 record.pass = pass; record.number = number; record.admission = admission; record.passUnreadable = false;
                 if (!store.save(path.key, record, loop.wallNow())) { storageProblem = true; reason = "This receiver could not save its request state"; }
                 if (admission == AccessStore.Admission.PENDING) { playback = null; stopPlayer(); }
+                else if (admission == AccessStore.Admission.ADMITTED) store.saveAdmittedRoute(host, path);
                 nextJoinAt = now + (admission == AccessStore.Admission.PENDING ? PENDING_POLL_MS : HEARTBEAT_MS);
                 break;
             case NAME_REQUIRED:
                 if (sentPass != null) lapsed();
-                else { nameRejected = true; reason = "The Mac did not accept this receiver's request"; }
+                else {
+                    record.requestID = null;
+                    store.save(path.key, record, loop.wallNow());
+                    nameRejected = true; reason = "The Mac did not accept this receiver's request";
+                }
                 break;
             case FULL:
                 // The Mac created no request, so this attempt does not count toward the re-ask limits.
@@ -363,6 +383,7 @@ public final class ReceiverController {
         pass = null; playback = null; admission = AccessStore.Admission.NONE;
         record.pass = null; record.admission = AccessStore.Admission.NONE;
         if (!store.save(path.key, record, loop.wallNow())) storageProblem = true;
+        if (resumedRoute) { retire("The request lapsed"); return; }
         reason = "The request lapsed";
         nextJoinAt = loop.now();
     }
@@ -381,6 +402,7 @@ public final class ReceiverController {
     /** The ask path returned 404: the share ended or the short address closed. Look again. */
     private void retire(String why) {
         boolean wasAdmitted = admission == AccessStore.Admission.ADMITTED;
+        if (path != null) store.clearAdmittedRoute();
         invalidate();
         stopPlayer();
         path = null; state = null; playback = null; pass = null; admission = AccessStore.Admission.NONE;
@@ -406,11 +428,12 @@ public final class ReceiverController {
 
     private void resolve() {
         final int e = epoch; final HostConfig h = host;
+        final AskPath saved = store.admittedRoute(h);
         resolving = true;
         Gateway.Scope s = scope;
         io.execute(() -> {
             Gateway.Resolution resolution = null; String failure = null;
-            try { resolution = gateway.resolve(h, s); }
+            try { resolution = gateway.resolve(h, saved, s); }
             catch (Gateway.Unanswered ex) { failure = ex.getMessage(); }
             catch (IOException ex) { failure = "Looking for " + h.host; }
             catch (AskPath.Rejected ex) { failure = "Unexpected reply: " + ex.getMessage(); }
@@ -433,16 +456,29 @@ public final class ReceiverController {
         }
         resolveFailures = 0;
         via = resolution.via;
+        onResolved.accept(resolution);
         if (path != null && path.sameShare(resolution.path)) {
             // Same share, possibly at a new address after a DHCP move. Keep the request.
-            boolean moved = !path.route.address.equals(resolution.path.route.address) || path.route.port != resolution.path.route.port;
+            boolean moved = !path.route.toString().equals(resolution.path.route.toString());
             path = resolution.path;
+            resumedRoute = resolution.resumed;
             gatewayFailures = 0;
-            if (moved) { playback = null; restartEventsLater(); }
+            if (moved) {
+                invalidate();
+                stopPlayer();
+                // Keep the sequence watermark for this share, but require a state reply from this route.
+                routeStateConfirmed = false;
+                playback = null;
+                if (admission == AccessStore.Admission.PENDING) nextJoinAt = now;
+                nextPollAt = now; nextConfigAt = now; nextHeartbeatAt = now; nextPlayAt = now;
+                eventsRetryAt = now;
+                if (admission == AccessStore.Admission.ADMITTED) store.saveAdmittedRoute(host, path);
+            }
             nextResolveAt = now + REFUSED_RECHECK_MS;
             reconcile();
             return;
         }
+        resumedRoute = resolution.resumed;
         beginShare(resolution.path);
         reconcile();
     }
@@ -456,6 +492,9 @@ public final class ReceiverController {
         pass = record.pass;
         number = record.number;
         state = null; playback = null; playbackRevision = -1;
+        routeStateConfirmed = false;
+        stateUpdates = 0;
+        if (admission == AccessStore.Admission.ADMITTED) store.saveAdmittedRoute(host, path);
         ended = false; nameRejected = false; busy = false; manualAsk = false; askingAgain = false; everPlayed = false; storageProblem = false;
         gatewayFailures = 0; playerFailures = 0; reason = "";
         long now = loop.now();
@@ -513,25 +552,26 @@ public final class ReceiverController {
         eventsScope = null; eventsOpen = false;
     }
 
-    private void restartEventsLater() { closeEvents(); eventsRetryAt = loop.now(); }
-
     private void poll() {
         final int e = epoch; final AskPath p = path;
+        final long observed = stateUpdates;
         polling = true;
         Gateway.Scope s = scope;
         io.execute(() -> {
             Gateway.StateResult result;
             try { result = gateway.state(p, s); } catch (IOException ex) { result = null; }
             final Gateway.StateResult r = result;
-            loop.post(() -> polled(e, r));
+            loop.post(() -> polled(e, observed, r));
         });
     }
 
-    private void polled(int e, Gateway.StateResult result) {
+    private void polled(int e, long observed, Gateway.StateResult result) {
         if (e != epoch || !running) return;
         polling = false;
         long now = loop.now();
         nextPollAt = now + STATE_POLL_MS;
+        // Legacy state and unsequenced failures cannot supersede a push received in flight.
+        if (observed != stateUpdates && (result == null || result.sequence < 0)) { reconcile(); return; }
         if (result == null || result.status == Gateway.Status.ERROR) { gatewayFailure("Status updates from the Mac failed"); nextPollAt = now + backoff(gatewayFailures); reconcile(); return; }
         gatewayFailures = 0;
         applyState(result);
@@ -541,6 +581,26 @@ public final class ReceiverController {
     private void applyState(Gateway.StateResult result) {
         if (result.status == Gateway.Status.GONE) { retire("This share ended"); return; }
         if (result.status != Gateway.Status.OK) return;
+        if (state != null) {
+            if (result.sequence >= 0 && state.sequence >= 0 && result.sequence <= state.sequence) {
+                if (result.sequence == state.sequence && result.revision == state.revision && result.state.equals(state.state)) {
+                    routeStateConfirmed = true;
+                    stateUpdates++;
+                }
+                return;
+            }
+            if (state.sequence >= 0 && result.sequence < 0) return;
+            if (result.sequence < 0 && result.revision >= 0 && result.revision < state.revision) return;
+        }
+        stateUpdates++;
+        routeStateConfirmed = true;
+        if (state == null || !state.state.equals(result.state) || state.revision != result.revision) {
+            mediaVersion++;
+            nextConfigAt = loop.now();
+        }
+        if ("stopped".equals(result.state) && (state == null || !"stopped".equals(state.state))) store.clearAdmittedRoute();
+        else if (result.live() && state != null && "stopped".equals(state.state)
+                && admission == AccessStore.Admission.ADMITTED) store.saveAdmittedRoute(host, path);
         state = result;
         // Authoritative non-live state: detach and mute now. Hold already suppresses outgoing media.
         // Playback details are fetched again when live returns.
@@ -553,22 +613,26 @@ public final class ReceiverController {
     private void fetchConfig() {
         final int e = epoch; final AskPath p = path; final String sentPass = pass; final int revision = state.revision;
         configuring = true;
-        configPass = sentPass;
-        configRevision = revision;
+        final long version = mediaVersion;
+        final long request = ++nextAdmissionRequest;
         Gateway.Scope s = scope;
         io.execute(() -> {
             Gateway.ConfigResult result; String failure = null;
             try { result = gateway.config(p, sentPass, s); } catch (IOException ex) { result = null; failure = ex.getMessage(); }
             final Gateway.ConfigResult r = result; final String f = failure;
-            loop.post(() -> configured(e, revision, r, f));
+            loop.post(() -> configured(e, sentPass, revision, version, request, r, f));
         });
     }
 
-    private void configured(int e, int revision, Gateway.ConfigResult result, String failure) {
+    private void configured(int e, String sentPass, int revision, long version, long request, Gateway.ConfigResult result, String failure) {
         if (e != epoch || !running) return;
         configuring = false;
         // Like heartbeats: a reply that arrives after a refusal or for a replaced pass changes nothing.
-        if (admission != AccessStore.Admission.ADMITTED || configPass == null || !configPass.equals(pass)) { reconcile(); return; }
+        if (admission != AccessStore.Admission.ADMITTED || !Objects.equals(sentPass, pass)) { reconcile(); return; }
+        AccessStore.Admission told = result == null ? null : AccessStore.Admission.parse(result.admission);
+        if (told != null && told.refused()) { refuse(told); reconcile(); return; }
+        if (result != null && result.status == Gateway.Status.GONE) { retire("This share ended"); reconcile(); return; }
+        if (version != mediaVersion || state == null || !state.live()) { reconcile(); return; }
         long now = loop.now();
         if (result == null || result.status == Gateway.Status.ERROR) {
             gatewayFailure(failure != null ? failure : "Playback details failed");
@@ -578,31 +642,39 @@ public final class ReceiverController {
         gatewayFailures = 0;
         switch (result.status) {
             case OK:
-                if (state == null || state.revision != revision) { nextConfigAt = now; break; }
+                lastAdmissionReply = Math.max(lastAdmissionReply, request);
                 playback = result.playback; playbackRevision = revision;
                 break;
             case NOT_READY:
                 nextConfigAt = now + 1500;
                 break;
             case NOT_ADMITTED: {
-                AccessStore.Admission told = AccessStore.Admission.parse(result.admission);
-                if (told != null && told.refused()) refuse(told);
-                else if (told == AccessStore.Admission.PENDING) { admission = AccessStore.Admission.PENDING; nextJoinAt = now; }
+                if (request < lastAdmissionReply) break;
+                lastAdmissionReply = request;
+                if (told == AccessStore.Admission.PENDING) pending(now);
                 else if (told == null) lapsed();
                 else nextConfigAt = now + 1500;
                 break;
             }
-            case GONE:
-                retire("This share ended");
-                break;
             default:
                 break;
         }
         reconcile();
     }
 
+    private void pending(long now) {
+        admission = AccessStore.Admission.PENDING;
+        mediaVersion++;
+        record.admission = admission;
+        if (!store.save(path.key, record, loop.wallNow())) storageProblem = true;
+        playback = null;
+        stopPlayer();
+        if (resumedRoute) retire("The request is no longer admitted");
+        else nextJoinAt = now;
+    }
+
     private void reconcilePlayer(long now) {
-        boolean want = admission == AccessStore.Admission.ADMITTED && state != null && state.live()
+        boolean want = admission == AccessStore.Admission.ADMITTED && routeStateConfirmed && state != null && state.live()
                 && playback != null && playbackRevision == state.revision;
         if (!want) { stopPlayer(); return; }
         if (!playerActive) {
@@ -613,6 +685,7 @@ public final class ReceiverController {
             }
             return;
         }
+        if (player.negotiating(playerGeneration)) playerStartedAt = now;
         long last = player.lastFrameAt(playerGeneration);
         long since = now - Math.max(last, playerStartedAt);
         if (since > WATCHDOG_MS) {
@@ -654,28 +727,42 @@ public final class ReceiverController {
         final int e = epoch; final AskPath p = path; final String sentPass = pass;
         final String health = playing ? "playing" : state != null && "holding".equals(state.state) ? "holding" : everPlayed ? "reconnecting" : "connecting";
         final int revision = playing ? playingRevision : -1;
+        final int generation = playerGeneration;
+        final long request = ++nextAdmissionRequest;
+        final long version = mediaVersion;
         heartbeating = true;
         reportedPlaying = playing;
         nextHeartbeatAt = loop.now() + HEARTBEAT_MS;
         Gateway.Scope s = scope;
         io.execute(() -> {
             Gateway.HeartbeatResult result;
-            try { result = gateway.heartbeat(p, sentPass, playing, health, revision, COLOR, s); } catch (IOException ex) { result = null; }
+            long last = playing ? player.lastFrameAt(generation) : 0;
+            boolean freshAtSend = last > 0 && loop.now() - last < FRESH_FRAME_MS;
+            try {
+                result = gateway.heartbeat(p, sentPass, freshAtSend,
+                        playing && !freshAtSend ? "reconnecting" : health, freshAtSend ? revision : -1, COLOR, s);
+            } catch (IOException ex) { result = null; }
             final Gateway.HeartbeatResult r = result;
-            loop.post(() -> heartbeatDone(e, sentPass, r));
+            loop.post(() -> heartbeatDone(e, sentPass, version, request, r));
         });
     }
 
-    private void heartbeatDone(int e, String sentPass, Gateway.HeartbeatResult result) {
+    private void heartbeatDone(int e, String sentPass, long version, long request, Gateway.HeartbeatResult result) {
         if (e != epoch || !running) return;
         heartbeating = false;
-        if (result == null || result.status == Gateway.Status.ERROR) { gatewayFailure("Connection to the Mac failed"); reconcile(); return; }
+        if (admission.refused() || sentPass == null || !sentPass.equals(pass)) { reconcile(); return; }
+        AccessStore.Admission told = result == null ? null : AccessStore.Admission.parse(result.admission);
+        if (told != null && told.refused()) { refuse(told); reconcile(); return; }
+        if (result != null && result.status == Gateway.Status.GONE) { retire("This share ended"); reconcile(); return; }
+        if (admission != AccessStore.Admission.ADMITTED || request < lastAdmissionReply) { reconcile(); return; }
+        if (result == null || result.status == Gateway.Status.ERROR) {
+            if (version == mediaVersion) gatewayFailure("Connection to the Mac failed");
+            reconcile();
+            return;
+        }
         gatewayFailures = 0;
-        if (result.status == Gateway.Status.GONE) { retire("This share ended"); reconcile(); return; }
-        if (admission.refused() || sentPass == null || !sentPass.equals(pass)) return;
-        AccessStore.Admission told = AccessStore.Admission.parse(result.admission);
-        if (told != null && told.refused()) refuse(told);
-        else if (told == AccessStore.Admission.PENDING) { admission = AccessStore.Admission.PENDING; playback = null; stopPlayer(); nextJoinAt = loop.now(); }
+        lastAdmissionReply = request;
+        if (told == AccessStore.Admission.PENDING) pending(loop.now());
         else if (told == null) lapsed();
         else if (told == AccessStore.Admission.ADMITTED && extras != null) extras.chatHint(result.chatLastId);
         reconcile();
@@ -689,7 +776,8 @@ public final class ReceiverController {
             // unbinds them first, which cancels their requests and drops their content.
             // Stop Sharing ends the session chat on the Mac; drop it here at once rather than on the next reply.
             boolean admitted = running && path != null && pass != null && admission == AccessStore.Admission.ADMITTED
-                    && (state == null || !"stopped".equals(state.state));
+                    && routeStateConfirmed && state != null && !"stopped".equals(state.state);
+            extras.setPictureRevision(admitted && state.live() ? state.revision : -1);
             extras.bind(admitted ? path : null, admitted ? pass : null, host == null ? null : host.name);
         }
         long now = loop.now();

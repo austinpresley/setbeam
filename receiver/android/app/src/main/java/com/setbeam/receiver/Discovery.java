@@ -236,18 +236,15 @@ final class Discovery implements HttpGateway.Candidates {
         synchronized (this) {
             long now = SystemClock.elapsedRealtime();
             for (Seen seen : services.values()) {
-                seenServices.add(seen.service);
-                if (now - seen.at > STALE_MS) {
+                if (now - seen.at <= STALE_MS) seenServices.add(seen.service);
+                else {
                     NsdServiceInfo info = new NsdServiceInfo();
                     info.setServiceName(seen.service.instance); info.setServiceType(TYPE);
                     refresh.add(info);
                 }
             }
         }
-        HostMatcher.Plan plan = HostMatcher.plan(host, settings.pinnedMacId(), resolved, seenServices);
-        // The configured name and the advertisement agree on the address: keep the id as a hint.
-        if (plan.corroboratedId != null) settings.pinMacId(plan.corroboratedId);
         for (NsdServiceInfo info : refresh) enqueue(info);
-        return plan.candidates;
+        return HostMatcher.plan(host, settings.pinnedMacId(), resolved, seenServices);
     }
 }

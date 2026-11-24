@@ -55,6 +55,7 @@ public final class AccessStore {
         public Admission admission = Admission.NONE;
         public String pass;
         public int number;
+        public String requestID;
         /** Requests sent with {@code ask} on this path, and when the last one was sent (wall clock). */
         public int asks;
         public long lastAskAt;
@@ -73,7 +74,7 @@ public final class AccessStore {
         String raw = values.get(PREFIX + key);
         if (raw == null) return record;
         String[] parts = raw.split("\\|", -1);
-        if (parts.length != 7 || !parts[0].equals("v1")) {
+        if (!validRecord(parts)) {
             // An unreadable record must never become a fresh request if it might have been a refusal.
             record.admission = Admission.DECLINED;
             return record;
@@ -85,6 +86,7 @@ public final class AccessStore {
         record.asks = parseInt(parts[3]);
         record.lastAskAt = parseLong(parts[4]);
         record.updatedAt = parseLong(parts[5]);
+        if (parts.length == 8 && parts[7].matches("[0-9a-f-]{36}") && !admission.refused()) record.requestID = parts[7];
         if (!parts[6].isEmpty() && !admission.refused()) {
             if (parts[6].equals(UNSEALED)) record.passUnreadable = true;
             else {
@@ -112,15 +114,16 @@ public final class AccessStore {
         }
         if (existing == null && !makeRoom(key)) return false;
         record.updatedAt = now;
-        return values.put(PREFIX + key, "v1|" + record.admission.name() + "|" + record.number + "|" + record.asks + "|"
-                + record.lastAskAt + "|" + now + "|" + sealed);
+        return values.put(PREFIX + key, "v2|" + record.admission.name() + "|" + record.number + "|" + record.asks + "|"
+                + record.lastAskAt + "|" + now + "|" + sealed + "|" + (record.requestID == null ? "" : record.requestID));
     }
 
     /** Saves and reads back the fields that guard against repeated requests. */
     public synchronized boolean saveVerified(String key, Record record, long now) {
         if (!save(key, record, now)) return false;
         Record back = load(key);
-        return back.admission == record.admission && back.asks == record.asks && back.lastAskAt == record.lastAskAt;
+        return back.admission == record.admission && back.asks == record.asks && back.lastAskAt == record.lastAskAt
+                && java.util.Objects.equals(back.requestID, record.requestID);
     }
 
     /** Marks this share refused and forgets its pass. Returns whether the refusal is on disk. */
@@ -157,14 +160,46 @@ public final class AccessStore {
 
     private static boolean isRefusal(String raw) {
         String[] parts = raw.split("\\|", -1);
-        if (parts.length != 7 || !parts[0].equals("v1")) return true;
+        if (!validRecord(parts)) return true;
         return !parts[1].equals(Admission.NONE.name()) && !parts[1].equals(Admission.PENDING.name()) && !parts[1].equals(Admission.ADMITTED.name());
     }
 
     private static long updatedAt(String raw) {
         String[] parts = raw.split("\\|", -1);
-        return parts.length == 7 ? parseLong(parts[5]) : 0;
+        return validRecord(parts) ? parseLong(parts[5]) : 0;
     }
+
+    private static boolean validRecord(String[] parts) {
+        return (parts.length == 7 && parts[0].equals("v1")) || (parts.length == 8 && parts[0].equals("v2"));
+    }
+
+    private static final String ADMITTED_ROUTE = "admitted_route";
+
+    /** Stores a route only for a pass that is already durably admitted. */
+    public synchronized void saveAdmittedRoute(HostConfig host, AskPath path) {
+        Record record = load(path.key);
+        if (record.admission != Admission.ADMITTED || record.pass == null) return;
+        String plain = host.baseUrl() + "|" + path.route.address.getHostAddress() + "|" + path.route.hostHeader + "|" + path.path;
+        String existing = values.get(ADMITTED_ROUTE);
+        if (existing != null) {
+            try { if (plain.equals(box.open(existing))) return; } catch (Exception ignored) { }
+        }
+        try { values.put(ADMITTED_ROUTE, box.seal(plain)); } catch (Exception ignored) { }
+    }
+
+    public synchronized AskPath admittedRoute(HostConfig host) {
+        try {
+            String saved = values.get(ADMITTED_ROUTE);
+            if (saved == null) return null;
+            String[] parts = box.open(saved).split("\\|", -1);
+            if (parts.length != 4 || !host.baseUrl().equals(parts[0]) || !HostConfig.isIpv4Literal(parts[1])) return null;
+            AskPath path = AskPath.restore(host, parts[1], parts[2], parts[3]);
+            Record record = load(path.key);
+            return record.admission == Admission.ADMITTED && record.pass != null ? path : null;
+        } catch (Exception e) { return null; }
+    }
+
+    public synchronized void clearAdmittedRoute() { values.remove(ADMITTED_ROUTE); }
 
     public static boolean validPass(String value) {
         if (value == null || value.length() != 48) return false;

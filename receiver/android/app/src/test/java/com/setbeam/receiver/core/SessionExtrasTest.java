@@ -142,6 +142,36 @@ public class SessionExtrasTest {
         assertEquals(1, mac.presenceOpens);
     }
 
+    @Test public void pointerRevisionsStayWithTheirPictureAndReuseTheTranscript() throws Exception {
+        mac.say("Director", "Hello");
+        extras.setPointersWanted(true);
+        admit();
+        List<ChatLine> transcript = snapshot.chat;
+        List<Pointer> items = List.of(new Pointer(2, "Director", "red", 0.25, 0.75, 3000));
+
+        long mark = loop.posted();
+        mac.pointerRevisionOverride = mac.revision + 1;
+        mac.pointerPushes.put(items);
+        // A mismatched event posts to the loop but cannot alter the snapshot.
+        loop.awaitPostedAfter(mark);
+        run(10);
+        assertTrue(snapshot.pointers.isEmpty());
+
+        mark = loop.posted();
+        mac.pointerRevisionOverride = mac.revision;
+        mac.pointerPushes.put(items);
+        loop.awaitPostedAfter(mark);
+        run(10);
+        assertEquals(1, snapshot.pointers.size());
+        assertSame(transcript, snapshot.chat);
+
+        mac.state = "holding";
+        run(1600);
+        assertTrue(snapshot.pointers.isEmpty());
+        assertTrue(mac.presenceScopes.get(0).isCancelled());
+        assertSame(transcript, snapshot.chat);
+    }
+
     @Test public void refusalClosesThePointerChannel() throws Exception {
         extras.setPointersWanted(true);
         admit();

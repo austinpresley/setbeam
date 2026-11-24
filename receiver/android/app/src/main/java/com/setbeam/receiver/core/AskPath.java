@@ -51,6 +51,13 @@ public final class AskPath {
         return new AskPath(gateway, path, digest(match.group(1)));
     }
 
+    static AskPath restore(HostConfig host, String ipv4, String authority, String path) throws java.net.UnknownHostException, Rejected {
+        String name = hostOnly(authority);
+        if (!name.equals(host.host) && !(host.scheme.equals("http") && name.equals(ipv4))) throw new Rejected("Invalid saved host");
+        MiniHttp.Route root = new MiniHttp.Route(host.scheme, java.net.InetAddress.getByName(ipv4), host.port, name, host.host);
+        return fromRedirect(root, 302, host.scheme + "://" + authority + path);
+    }
+
     /** Joins an endpoint name, such as {@code join}, to this path. */
     public String endpoint(String name) { return path + name; }
 

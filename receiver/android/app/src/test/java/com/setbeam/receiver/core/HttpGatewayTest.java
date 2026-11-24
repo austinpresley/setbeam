@@ -22,6 +22,7 @@ public class HttpGatewayTest {
         volatile boolean ready = false;
         volatile String state = "live";
         volatile int revision = 3;
+        volatile boolean shortAddressOpen = true;
         FakeSetbeam() throws IOException {
             gateway = new TestServer((r, out) -> {
                 String prefix = "/s/" + CODE + "/";
@@ -63,7 +64,7 @@ public class HttpGatewayTest {
             });
             root = new TestServer((r, out) -> {
                 String host = r.header("host");
-                if (!r.method.equals("GET") || !r.target.equals("/")) { TestServer.respond(out, 404, null, ""); return; }
+                if (!shortAddressOpen || !r.method.equals("GET") || !r.target.equals("/")) { TestServer.respond(out, 404, null, ""); return; }
                 TestServer.respond(out, 302, null, "", "Location: http://" + host.substring(0, host.indexOf(':')) + ":" + gateway.port() + "/s/" + CODE + "/",
                         "Cache-Control: no-store");
             });
@@ -86,7 +87,8 @@ public class HttpGatewayTest {
             AskPath path = resolution.path;
             assertEquals(mac.gateway.port(), path.route.port);
 
-            Gateway.JoinResult asked = mac.client().join(path, null, "Stage TV", true, "teal", scope);
+            String id = "a8459b78-e14a-4400-8c61-742047405426";
+            Gateway.JoinResult asked = mac.client().join(path, null, "Stage TV", true, "teal", id, scope);
             assertEquals(Gateway.Status.OK, asked.status);
             assertEquals(AccessStore.Admission.PENDING, asked.admission);
             JSONObject sent = new JSONObject(mac.gateway.requests.get(0).text());
@@ -94,11 +96,13 @@ public class HttpGatewayTest {
             assertEquals("Stage TV", sent.getString("name"));
             assertFalse(sent.getBoolean("mobile"));
             assertFalse(sent.has("pass"));
+            assertEquals(id, sent.getString("requestID"));
 
-            Gateway.JoinResult resumed = mac.client().join(path, PASS, "Stage TV", false, "teal", scope);
+            Gateway.JoinResult resumed = mac.client().join(path, PASS, "Stage TV", false, "teal", null, scope);
             JSONObject resent = new JSONObject(mac.gateway.requests.get(1).text());
             assertFalse("a resumed request never asks again", resent.has("ask"));
             assertFalse(resent.has("name"));
+            assertFalse(resent.has("requestID"));
             assertEquals(PASS, resumed.pass);
 
             assertEquals(Gateway.Status.NOT_ADMITTED, mac.client().config(path, PASS, scope).status);
@@ -129,13 +133,59 @@ public class HttpGatewayTest {
         }
     }
 
+    @Test public void optionalStateSequenceAcceptsOnlyIntegers() throws Exception {
+        JSONObject state = new JSONObject().put("state", "live").put("revision", 3);
+        assertEquals(-1, HttpGateway.parseState(state).sequence);
+        assertEquals(4_294_967_296L, HttpGateway.parseState(state.put("sequence", 4_294_967_296L)).sequence);
+        assertEquals(-1, HttpGateway.parseState(state.put("sequence", 1.5)).sequence);
+        assertEquals(-1, HttpGateway.parseState(state.put("sequence", "10")).sequence);
+    }
+
+    @Test public void savedAdmittedRouteNeedsACurrentlyCorroboratedAddressAndAnActiveShare() throws Exception {
+        try (FakeSetbeam mac = new FakeSetbeam()) {
+            Gateway.Scope scope = new Gateway.Scope();
+            HostConfig host = mac.host();
+            AskPath path = mac.client().resolve(host, scope).path;
+            AccessStore.KeyValue values = new AccessStoreTest.MemoryValues();
+            AccessStore.SecretBox box = new AccessStoreTest.ReverseBox();
+            AccessStore store = new AccessStore(values, box);
+            AccessStore.Record record = new AccessStore.Record();
+            record.admission = AccessStore.Admission.ADMITTED;
+            record.pass = PASS;
+            assertTrue(store.save(path.key, record, 5));
+            store.saveAdmittedRoute(host, path);
+            AskPath saved = new AccessStore(values, box).admittedRoute(host);
+            assertEquals(path.key, saved.key);
+            assertNull("pairing changed", store.admittedRoute(HostConfig.parse("backup.local", "Stage TV")));
+
+            mac.shortAddressOpen = false;
+            Gateway.Resolution resumed = mac.client().resolve(host, saved, scope);
+            assertTrue(resumed.resumed);
+            assertEquals(path.route.toString(), resumed.path.route.toString());
+            assertEquals("public state only", path.endpoint("state.json"), mac.gateway.requests.get(0).target);
+            assertNull(mac.gateway.requests.get(0).header("x-setbeam-pass"));
+            try {
+                new HttpGateway(h -> List.of()).resolve(host, saved, scope);
+                fail("uncorroborated address");
+            } catch (IOException expected) { }
+
+            mac.state = "stopped";
+            try {
+                mac.client().resolve(host, saved, scope);
+                fail("stopped route");
+            } catch (Gateway.Unanswered expected) { }
+            assertTrue(store.refuse(path.key, AccessStore.Admission.REMOVED, 6));
+            assertNull(store.admittedRoute(host));
+        }
+    }
+
     @Test public void unknownPassAndRetiredPath() throws Exception {
         try (FakeSetbeam mac = new FakeSetbeam()) {
             Gateway.Scope scope = new Gateway.Scope();
             AskPath path = mac.client().resolve(mac.host(), scope).path;
-            assertEquals(Gateway.Status.NAME_REQUIRED, mac.client().join(path, "00".repeat(24), "Stage TV", false, "teal", scope).status);
+            assertEquals(Gateway.Status.NAME_REQUIRED, mac.client().join(path, "00".repeat(24), "Stage TV", false, "teal", null, scope).status);
             AskPath retired = AskPath.fromRedirect(path.route.withPort(80, "127.0.0.1"), 302, "http://127.0.0.1:" + mac.gateway.port() + "/s/" + "d".repeat(64) + "/");
-            assertEquals(Gateway.Status.GONE, mac.client().join(retired, null, "Stage TV", true, "teal", scope).status);
+            assertEquals(Gateway.Status.GONE, mac.client().join(retired, null, "Stage TV", true, "teal", null, scope).status);
             assertEquals(Gateway.Status.GONE, mac.client().state(retired, scope).status);
         }
     }

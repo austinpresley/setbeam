@@ -54,6 +54,29 @@ public class ExtrasProtocolTest {
         assertEquals(ChatLine.MAX_TEXT, bounded.get(0).text.length());
     }
 
+    @Test public void chatKeepsEvictedAttachmentsAndReadsLegacyArraysNearTheBodyLimit() throws Exception {
+        JSONArray messages = new JSONArray();
+        for (int i = 1; i <= 97; i++) {
+            messages.put(new org.json.JSONObject().put("id", i).put("text", "x".repeat(10_000)));
+        }
+        messages.put(new org.json.JSONObject().put("id", 98).put("hasFrame", false).put("hadFrame", true));
+        messages.put(new org.json.JSONObject().put("id", 99).put("hasFrame", false).put("hadFrame", true).put("sampleFrame", true));
+        messages.put(new org.json.JSONObject().put("id", 100).put("hasFrame", true));
+        String body = messages.toString();
+        assertTrue(body.length() > HttpGateway.MAX_CHAT_BODY * 0.9);
+        try (TestServer server = new TestServer((request, out) -> TestServer.respond(out, 200, "application/json", body))) {
+            AskPath path = askPath(server.port());
+            Gateway.ChatResult result = new HttpGateway(h -> List.of()).chat(path, HttpGatewayTest.PASS, new Gateway.Scope());
+            assertEquals(Gateway.Status.OK, result.status);
+            assertEquals(100, result.messages.size());
+            assertEquals("[Shared frame no longer available]", result.messages.get(97).display());
+            assertEquals("[SAMPLE MEDIA frame no longer available]", result.messages.get(98).display());
+            assertEquals("[Shared a frame]", result.messages.get(99).display());
+            assertEquals("GET", server.requests.get(0).method);
+            assertEquals(path.endpoint("chat"), server.requests.get(0).target);
+        }
+    }
+
     // ---- Pointers ----
 
     @Test public void pointersAreClampedValidatedAndBounded() throws Exception {
@@ -167,9 +190,12 @@ public class ExtrasProtocolTest {
     }
 
     static final class Recorder implements Gateway.PresenceEvents {
-        int welcomes; final List<List<Pointer>> pointers = new ArrayList<>(); String denied;
+        int welcomes;
+        final List<List<Pointer>> pointers = new ArrayList<>();
+        final List<Integer> revisions = new ArrayList<>();
+        String denied;
         @Override public void welcome() { welcomes++; }
-        @Override public void pointers(List<Pointer> items) { pointers.add(items); }
+        @Override public void pointers(int revision, List<Pointer> items) { revisions.add(revision); pointers.add(items); }
         @Override public void denied(String reason) { denied = reason; }
     }
 
@@ -204,6 +230,7 @@ public class ExtrasProtocolTest {
             assertFalse("the receiver never sends a position", hello.has("x"));
             assertEquals(1, events.welcomes);
             assertEquals(1, events.pointers.size());
+            assertEquals(List.of(1), events.revisions);
             Pointer pointer = events.pointers.get(0).get(0);
             assertEquals("Director", pointer.label);
             assertEquals("relative ttl until the caller rebases it", 3000, pointer.expiresAt);

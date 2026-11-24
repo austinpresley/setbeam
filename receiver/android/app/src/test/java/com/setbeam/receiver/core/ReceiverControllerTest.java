@@ -87,12 +87,24 @@ public class ReceiverControllerTest {
         volatile boolean reachable = true;
         String state = "live"; int revision = 1; boolean sample = false;
         int asks, joins, configs, heartbeats, resolves, statePolls, eventStreams;
+        boolean reportedPlaying;
+        int reportedRevision = -1;
         /** When true, events() opens a stream that delivers pushes until END or cancellation. */
         volatile boolean pushMode;
         final BlockingQueue<StateResult> pushes = new LinkedBlockingQueue<>();
         static final StateResult END = StateResult.of(Status.ERROR);
         /** When true, config() parks until a permit is released, then answers from the state at that time. */
         volatile boolean holdConfig;
+        Gateway.StateResult heldPoll;
+        final Semaphore releasePoll = new Semaphore(0);
+        HeartbeatResult heldHeartbeat;
+        Scope heldHeartbeatScope;
+        final Semaphore releaseHeartbeat = new Semaphore(0);
+        ConfigResult capturedConfig;
+        boolean failStateUntilResolve;
+        int gatewayPort = 52001;
+        boolean loseAskResponse;
+        final List<String> requestIDs = new ArrayList<>();
         final Semaphore releaseConfig = new Semaphore(0);
         final List<String> askedCodes = new ArrayList<>();
         final List<Long> askWalls = new ArrayList<>();
@@ -106,7 +118,7 @@ public class ReceiverControllerTest {
         AskPath pathFor(String code) {
             try {
                 MiniHttp.Route root = new MiniHttp.Route("http", address, 80, "192.168.1.20", "192.168.1.20");
-                return AskPath.fromRedirect(root, 302, "http://192.168.1.20:52001/s/" + code + "/");
+                return AskPath.fromRedirect(root, 302, "http://192.168.1.20:" + gatewayPort + "/s/" + code + "/");
             } catch (AskPath.Rejected e) { throw new AssertionError(e); }
         }
         boolean current(AskPath path) { return path.sameShare(pathFor(currentCode)); }
@@ -118,10 +130,11 @@ public class ReceiverControllerTest {
 
         @Override public synchronized Resolution resolve(HostConfig host, Scope scope) throws IOException {
             resolves++;
+            failStateUntilResolve = false;
             if (!reachable) throw new IOException("refused");
             return new Resolution(pathFor(currentCode), "configured address", null);
         }
-        @Override public synchronized JoinResult join(AskPath path, String pass, String name, boolean ask, String color, Scope scope) throws IOException {
+        @Override public synchronized JoinResult join(AskPath path, String pass, String name, boolean ask, String color, String requestID, Scope scope) throws IOException {
             if (!reachable) throw new IOException("refused");
             joins++;
             if (!current(path)) return JoinResult.of(Status.GONE);
@@ -131,23 +144,35 @@ public class ReceiverControllerTest {
             }
             if (!ask || name == null) return JoinResult.of(Status.NAME_REQUIRED);
             if (fullReplies > 0) { fullReplies--; fullAt.add(clock.now); return JoinResult.of(Status.FULL); }
+            requestIDs.add(requestID);
+            if (loseAskResponse) { loseAskResponse = false; throw new IOException("response lost"); }
             asks++; askedCodes.add(currentCode); if (clock != null) askWalls.add(clock.wall);
             String issued = String.format("%048x", nextPass++);
             passes.put(issued, "pending");
             return new JoinResult(Status.OK, issued, passes.size(), AccessStore.Admission.PENDING, false);
         }
-        @Override public synchronized StateResult state(AskPath path, Scope scope) throws IOException {
-            if (!reachable) throw new IOException("refused");
-            statePolls++;
-            if (!current(path)) return StateResult.of(Status.GONE);
-            return new StateResult(Status.OK, state, "Feed", sample, revision, true);
+        @Override public StateResult state(AskPath path, Scope scope) throws IOException {
+            StateResult delayed;
+            synchronized (this) {
+                if (!reachable || failStateUntilResolve) throw new IOException("refused");
+                statePolls++;
+                delayed = heldPoll;
+                heldPoll = null;
+                if (delayed == null) return current(path)
+                        ? new StateResult(Status.OK, state, "Feed", sample, revision, true) : StateResult.of(Status.GONE);
+            }
+            waitFor(releasePoll);
+            return delayed;
         }
         @Override public ConfigResult config(AskPath path, String pass, Scope scope) throws IOException {
-            if (holdConfig) {
-                SettlingExecutor.parkCurrent();
-                try { releaseConfig.acquire(); } catch (InterruptedException e) { throw new IOException(e); }
-            }
-            return configNow(path, pass);
+            ConfigResult delayed = capturedConfig;
+            capturedConfig = null;
+            if (holdConfig) waitFor(releaseConfig);
+            return delayed == null ? configNow(path, pass) : delayed;
+        }
+        private static void waitFor(Semaphore release) throws IOException {
+            SettlingExecutor.parkCurrent();
+            try { release.acquire(); } catch (InterruptedException e) { throw new IOException(e); }
         }
         synchronized ConfigResult configNow(AskPath path, String pass) throws IOException {
             if (!reachable) throw new IOException("refused");
@@ -161,12 +186,24 @@ public class ReceiverControllerTest {
                         "viewer1x0", "p" + revision, "Feed", sample), null);
             } catch (AskPath.Rejected e) { throw new IOException(e); }
         }
-        @Override public synchronized HeartbeatResult heartbeat(AskPath path, String pass, boolean playing, String health, int rev, String color, Scope scope) throws IOException {
-            if (!reachable) throw new IOException("refused");
-            heartbeats++;
-            if (!current(path)) return new HeartbeatResult(Status.GONE, null);
-            String admission = passes.getOrDefault(pass, "unknown");
-            return new HeartbeatResult(Status.OK, admission, admission.equals("admitted") ? chatLastId : -1);
+        @Override public HeartbeatResult heartbeat(AskPath path, String pass, boolean playing, String health, int rev, String color, Scope scope) throws IOException {
+            HeartbeatResult delayed;
+            synchronized (this) {
+                if (!reachable) throw new IOException("refused");
+                heartbeats++;
+                reportedPlaying = playing;
+                reportedRevision = rev;
+                if (!current(path)) return new HeartbeatResult(Status.GONE, null);
+                delayed = heldHeartbeat;
+                if (delayed == null) {
+                    String admission = passes.getOrDefault(pass, "unknown");
+                    return new HeartbeatResult(Status.OK, admission, admission.equals("admitted") ? chatLastId : -1);
+                }
+                heldHeartbeat = null;
+                heldHeartbeatScope = scope;
+            }
+            waitFor(releaseHeartbeat);
+            return delayed;
         }
 
         // ---- Session chat and pointers ----
@@ -175,6 +212,7 @@ public class ReceiverControllerTest {
         int chatFetches;
         final List<String> chatPasses = new ArrayList<>();
         volatile boolean pointersOffered = true;
+        volatile int pointerRevisionOverride = -1;
         int presenceOpens;
         final List<String> presencePasses = new ArrayList<>();
         final BlockingQueue<List<Pointer>> pointerPushes = new LinkedBlockingQueue<>();
@@ -202,7 +240,7 @@ public class ReceiverControllerTest {
             while (!scope.isCancelled()) {
                 List<Pointer> next;
                 try { next = pointerPushes.poll(20, TimeUnit.MILLISECONDS); } catch (InterruptedException e) { return; }
-                if (next != null && !scope.isCancelled()) events.pointers(next);
+                if (next != null && !scope.isCancelled()) events.pointers(pointerRevisionOverride < 0 ? revision : pointerRevisionOverride, next);
             }
         }
         @Override public void events(AskPath path, Scope scope, Consumer<StateResult> onState) throws IOException {
@@ -306,6 +344,29 @@ public class ReceiverControllerTest {
         player.frames = true;
         run(15_000);
         assertEquals(ReceiverController.Phase.LIVE, view.phase);
+    }
+
+    @Test public void heartbeatOnlyReportsPlayingAfterAnAuthorizedFrame() {
+        player.frames = false;
+        controller.start(host);
+        run(1000);
+        mac.decide("admitted");
+        run(4000);
+        assertEquals(ReceiverController.Phase.CONNECTING, view.phase);
+        assertFalse(mac.reportedPlaying);
+        assertEquals(-1, mac.reportedRevision);
+
+        player.frames = true;
+        run(1000);
+        assertEquals(ReceiverController.Phase.LIVE, view.phase);
+        assertTrue(mac.reportedPlaying);
+        assertEquals(mac.revision, mac.reportedRevision);
+
+        player.frames = false;
+        run(1000);
+        assertEquals(ReceiverController.Phase.STALLED, view.phase);
+        assertFalse(mac.reportedPlaying);
+        assertEquals(-1, mac.reportedRevision);
     }
 
     @Test public void holdClosesMediaAtOnceAndLiveRefetchesConfig() {
@@ -608,6 +669,143 @@ public class ReceiverControllerTest {
         controller.stop();
     }
 
+    @Test public void unsequencedPollCannotUndoHoldPushedWhileItWasInFlight() throws Exception {
+        useThreads();
+        mac.pushMode = true;
+        mac.state = "holding";
+        mac.heldPoll = new Gateway.StateResult(Gateway.Status.OK, "live", "Stale", false, mac.revision, true);
+        controller.start(host);
+        run(1000);
+        mac.decide("admitted");
+        run(3000);
+        assertEquals(ReceiverController.Phase.HOLDING, view.phase);
+        long mark = loop.posted();
+        mac.releasePoll.release();
+        loop.awaitPostedAfter(mark);
+        run(100);
+        assertEquals(ReceiverController.Phase.HOLDING, view.phase);
+        assertEquals(0, player.plays);
+        controller.stop();
+    }
+
+    @Test public void sequenceOrdersPushedUpdatesWithinOnePublisherRevision() throws Exception {
+        useThreads();
+        mac.pushMode = true;
+        controller.start(host);
+        run(1000);
+        mac.decide("admitted");
+        run(4000);
+        sendState("holding", 12);
+        sendState("live", 11);
+        assertEquals(ReceiverController.Phase.HOLDING, view.phase);
+        sendState("live", 13);
+        assertEquals(ReceiverController.Phase.LIVE, view.phase);
+        controller.stop();
+    }
+
+    private void sendState(String state, long sequence) throws InterruptedException {
+        long mark = loop.posted();
+        mac.pushes.add(new Gateway.StateResult(Gateway.Status.OK, state, "Feed", false, mac.revision, true, sequence));
+        loop.awaitPostedAfter(mark);
+        run(300);
+    }
+
+    @Test public void configFromBeforeHoldCannotStartAnOldPeerAfterResume() throws Exception {
+        useThreads();
+        mac.pushMode = true;
+        controller.start(host);
+        run(1000);
+        mac.decide("admitted");
+        run(4000);
+        int plays = player.plays;
+        mac.revision++;
+        mac.holdConfig = true;
+        mac.capturedConfig = mac.configNow(controller.pathForTest(), mac.passFor("admitted"));
+        push("live");
+        run(250);
+        push("holding");
+        run(250);
+        push("live");
+        run(250);
+        mac.holdConfig = false;
+        long mark = loop.posted();
+        mac.releaseConfig.release();
+        loop.awaitPostedAfter(mark);
+        int configs = mac.configs;
+        run(500);
+        assertEquals("resume fetched a fresh config despite unchanged publisher revision", configs + 1, mac.configs);
+        assertEquals(plays + 1, player.plays);
+        controller.stop();
+    }
+
+    @Test public void olderHeartbeatCannotLapseAPassConfirmedByNewerConfig() throws Exception {
+        useThreads();
+        controller.start(host);
+        run(1000);
+        mac.decide("admitted");
+        run(4000);
+        mac.heldHeartbeat = new Gateway.HeartbeatResult(Gateway.Status.OK, "unknown");
+        run(3500);
+        assertNotNull(mac.heldHeartbeatScope);
+        int configs = mac.configs;
+        mac.revision++;
+        run(2000);
+        assertEquals(configs + 1, mac.configs);
+        long mark = loop.posted();
+        mac.releaseHeartbeat.release();
+        loop.awaitPostedAfter(mark);
+        run(500);
+        assertEquals(ReceiverController.Phase.LIVE, view.phase);
+        assertEquals(1, mac.asks);
+        controller.stop();
+    }
+
+    @Test public void sameShareRouteMoveCancelsOldHeartbeatAndPreservesThePass() throws Exception {
+        useThreads();
+        controller.start(host);
+        run(1000);
+        mac.decide("admitted");
+        run(4000);
+        mac.heldHeartbeat = new Gateway.HeartbeatResult(Gateway.Status.OK, "removed");
+        run(4000);
+        Gateway.Scope old = mac.heldHeartbeatScope;
+        assertNotNull(old);
+
+        mac.gatewayPort++;
+        mac.failStateUntilResolve = true;
+        run(20_000);
+        assertEquals(mac.gatewayPort, controller.pathForTest().route.port);
+        assertTrue(old.isCancelled());
+        assertEquals(ReceiverController.Phase.LIVE, view.phase);
+
+        long mark = loop.posted();
+        mac.releaseHeartbeat.release();
+        loop.awaitPostedAfter(mark);
+        run(4000);
+        assertEquals(ReceiverController.Phase.LIVE, view.phase);
+        assertEquals(1, mac.asks);
+        assertEquals(mac.gatewayPort, new AccessStore(values, box).admittedRoute(host).route.port);
+        controller.stop();
+    }
+
+    @Test public void ambiguousAskReusesItsDurableIdAcrossRestartAndLapseGetsANewId() {
+        mac.loseAskResponse = true;
+        controller.start(host);
+        run(1000);
+        String first = mac.requestIDs.get(0);
+        assertNotNull(first);
+        assertEquals(first, new AccessStore(values, box).load(controller.pathForTest().key).requestID);
+        restart();
+        run(35_000);
+        assertEquals(List.of(first, first), mac.requestIDs);
+        assertEquals(ReceiverController.Phase.WAITING, view.phase);
+        mac.passes.clear();
+        run(35_000);
+        assertEquals(3, mac.requestIDs.size());
+        assertNotEquals(first, mac.requestIDs.get(2));
+        assertEquals(ReceiverController.Phase.WAITING, view.phase);
+    }
+
     @Test public void sealFailureWaitsForTheTvUserAfterRestart() {
         controller = newController(Runnable::run, new AccessStoreTest.NoSealBox());
         controller.start(host);
@@ -632,7 +830,11 @@ public class ReceiverControllerTest {
         assertTrue(view.canAskAgain);
         controller.askAgain();
         run(1000);
-        assertEquals("the TV user may still ask once explicitly", 1, mac.asks);
+        assertEquals("a request ID must be durable even for an explicit request", 0, mac.asks);
+        values.failWrites = false;
+        controller.askAgain();
+        run(1000);
+        assertEquals(1, mac.asks);
     }
 
     @Test public void silentlyDroppedWritesAreCaughtBeforeAsking() {

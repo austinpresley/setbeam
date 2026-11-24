@@ -49,40 +49,42 @@ public final class HostMatcher {
         return Verdict.OTHER_MAC;
     }
 
-    /** Addresses to try, in order, and an id hint that the system resolver corroborates. */
-    public static final class Plan {
-        public final List<HttpGateway.Candidate> candidates;
-        /** Set only when no id is pinned and a matching service advertises the address the configured name resolves to. */
-        public final String corroboratedId;
-        Plan(List<HttpGateway.Candidate> candidates, String corroboratedId) { this.candidates = candidates; this.corroboratedId = corroboratedId; }
-    }
-
     /**
      * The configured host's own system-resolved IPv4 addresses come first; matching DNS-SD
-     * services are only a fallback, reached at their numeric address. A copied advertisement at
-     * another address is never preferred over the configured name and can never become the hint.
+     * services are only a fallback, reached at their numeric address. A direct route with an
+     * advertisement that contradicts an existing pin is skipped. Only a DNS-corroborated direct
+     * candidate may supply a new pin.
      */
-    public static Plan plan(HostConfig host, String pinnedId, List<InetAddress> resolved, List<Service> services) throws UnknownHostException {
+    public static List<HttpGateway.Candidate> plan(HostConfig host, String pinnedId, List<InetAddress> resolved, List<Service> services) throws UnknownHostException {
         List<HttpGateway.Candidate> result = new ArrayList<>();
-        if (host.isIpLiteral()) {
-            result.add(new HttpGateway.Candidate(InetAddress.getByName(host.host), host.port, host.hostHeader(), "configured address", null));
-            return new Plan(result, null);
-        }
+        if (host.isIpLiteral()) resolved = List.of(InetAddress.getByName(host.host));
         for (InetAddress address : resolved) {
             if (address.getAddress().length != 4) continue;
             boolean duplicate = false;
             for (HttpGateway.Candidate c : result) duplicate |= c.address.equals(address);
-            if (!duplicate) result.add(new HttpGateway.Candidate(address, host.port, host.hostHeader(), "configured address", null));
+            if (duplicate) continue;
+            String id = null;
+            boolean conflicts = false;
+            for (Service service : services) {
+                if (!address.getHostAddress().equals(service.ipv4) || service.id() == null) continue;
+                if (pinnedId != null && !pinnedId.equals(service.id())
+                        && match(host, null, service) == Verdict.MATCH) {
+                    conflicts = true;
+                }
+                if (match(host, pinnedId, service) != Verdict.MATCH) continue;
+                if (id != null && !id.equals(service.id())) conflicts = true;
+                id = service.id();
+            }
+            if (!conflicts) result.add(new HttpGateway.Candidate(address, host.port, host.hostHeader(), "configured address", id));
+            else if (pinnedId == null) result.add(new HttpGateway.Candidate(address, host.port, host.hostHeader(), "configured address", null));
         }
-        String corroborated = null;
         for (Service service : services) {
             if (match(host, pinnedId, service) != Verdict.MATCH) continue;
             InetAddress address = InetAddress.getByName(service.ipv4);
-            if (pinnedId == null && corroborated == null && service.id() != null && resolved.contains(address)) corroborated = service.id();
             boolean duplicate = false;
             for (HttpGateway.Candidate c : result) duplicate |= c.address.equals(address);
-            if (!duplicate) result.add(new HttpGateway.Candidate(address, service.port, service.ipv4, "Bonjour", service.id()));
+            if (!duplicate) result.add(new HttpGateway.Candidate(address, service.port, service.ipv4, "Bonjour", pinnedId));
         }
-        return new Plan(result, corroborated);
+        return result;
     }
 }

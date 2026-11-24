@@ -120,27 +120,39 @@ public class PolicyTest {
         HostMatcher.Service spoof = service("192.168.1.66", "setbeam.local", spoofId);
         HostMatcher.Service genuine = service("192.168.1.20", "setbeam.local", realId);
 
-        HostMatcher.Plan resolvedPlan = HostMatcher.plan(config, null, java.util.List.of(real), java.util.List.of(spoof, genuine));
-        assertEquals("the configured name's own address is tried first", real, resolvedPlan.candidates.get(0).address);
-        assertEquals("configured address", resolvedPlan.candidates.get(0).via);
-        assertEquals("setbeam.local", resolvedPlan.candidates.get(0).hostHeader);
-        assertEquals("only the advertisement at the resolved address becomes the hint", realId, resolvedPlan.corroboratedId);
-        assertEquals("the duplicate address is not tried twice", 2, resolvedPlan.candidates.size());
+        java.util.List<HttpGateway.Candidate> resolvedPlan = HostMatcher.plan(config, null, java.util.List.of(real), java.util.List.of(spoof, genuine));
+        assertEquals("the configured name's own address is tried first", real, resolvedPlan.get(0).address);
+        assertEquals("configured address", resolvedPlan.get(0).via);
+        assertEquals("setbeam.local", resolvedPlan.get(0).hostHeader);
+        assertEquals("only the advertisement at the resolved address becomes the hint", realId, resolvedPlan.get(0).macId);
+        assertEquals("the duplicate address is not tried twice", 2, resolvedPlan.size());
 
-        HostMatcher.Plan unresolved = HostMatcher.plan(config, null, java.util.List.of(), java.util.List.of(spoof));
-        assertEquals("Bonjour is still a fallback when the name does not resolve", 1, unresolved.candidates.size());
-        assertEquals("192.168.1.66", unresolved.candidates.get(0).hostHeader);
-        assertNull("an uncorroborated advertisement never becomes the hint", unresolved.corroboratedId);
+        java.util.List<HttpGateway.Candidate> unresolved = HostMatcher.plan(config, null, java.util.List.of(), java.util.List.of(spoof));
+        assertEquals("Bonjour is still a fallback when the name does not resolve", 1, unresolved.size());
+        assertEquals("192.168.1.66", unresolved.get(0).hostHeader);
+        assertNull("an uncorroborated advertisement never becomes the hint", unresolved.get(0).macId);
 
-        HostMatcher.Plan hinted = HostMatcher.plan(config, realId, java.util.List.of(), java.util.List.of(spoof, genuine));
-        assertEquals(1, hinted.candidates.size());
-        assertEquals("192.168.1.20", hinted.candidates.get(0).hostHeader);
-        assertNull(hinted.corroboratedId);
+        java.util.List<HttpGateway.Candidate> hinted = HostMatcher.plan(config, realId, java.util.List.of(), java.util.List.of(spoof, genuine));
+        assertEquals(1, hinted.size());
+        assertEquals("192.168.1.20", hinted.get(0).hostHeader);
+        assertEquals(realId, hinted.get(0).macId);
 
         HostConfig literal = HostConfig.parse("192.168.1.20", "TV");
-        HostMatcher.Plan direct = HostMatcher.plan(literal, null, java.util.List.of(), java.util.List.of(spoof));
-        assertEquals(1, direct.candidates.size());
-        assertEquals("configured address", direct.candidates.get(0).via);
+        java.util.List<HttpGateway.Candidate> direct = HostMatcher.plan(literal, null, java.util.List.of(), java.util.List.of(spoof));
+        assertEquals(1, direct.size());
+        assertEquals("configured address", direct.get(0).via);
+    }
+
+    @Test public void pinnedMacCanMoveAndConflictingDirectAdvertisementDoesNotReplaceIt() throws Exception {
+        HostConfig host = HostConfig.parse("setbeam.local", "TV");
+        String paired = "a".repeat(32), replacement = "b".repeat(32);
+        InetAddress old = InetAddress.getByName("192.168.1.20");
+        java.util.List<HttpGateway.Candidate> plan = HostMatcher.plan(host, paired, java.util.List.of(old), java.util.List.of(
+                service("192.168.1.20", "setbeam.local", replacement),
+                service("192.168.1.21", "renamed.local", paired)));
+        assertEquals(1, plan.size());
+        assertEquals("192.168.1.21", plan.get(0).address.getHostAddress());
+        assertEquals(paired, plan.get(0).macId);
     }
 
     static HostMatcher.Service service(String ip, String host, String id) {

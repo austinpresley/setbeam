@@ -35,7 +35,11 @@ public interface Gateway {
         public final String via;
         /** The advertised installation hint of the service used, if found by DNS-SD. Not authentication. */
         public final String macId;
-        public Resolution(AskPath path, String via, String macId) { this.path = path; this.via = via; this.macId = macId; }
+        public final boolean resumed;
+        public Resolution(AskPath path, String via, String macId) { this(path, via, macId, false); }
+        public Resolution(AskPath path, String via, String macId, boolean resumed) {
+            this.path = path; this.via = via; this.macId = macId; this.resumed = resumed;
+        }
     }
 
     /** The Mac answered, but not with an ask path (for example 404 for an unknown name). */
@@ -64,8 +68,13 @@ public interface Gateway {
         public final boolean sample;
         public final int revision;
         public final boolean approval;
+        public final long sequence;
         public StateResult(Status status, String state, String title, boolean sample, int revision, boolean approval) {
-            this.status = status; this.state = state; this.title = title; this.sample = sample; this.revision = revision; this.approval = approval;
+            this(status, state, title, sample, revision, approval, -1);
+        }
+        public StateResult(Status status, String state, String title, boolean sample, int revision, boolean approval, long sequence) {
+            this.status = status; this.state = state; this.title = title; this.sample = sample;
+            this.revision = revision; this.approval = approval; this.sequence = sequence;
         }
         public static StateResult of(Status status) { return new StateResult(status, null, null, false, -1, false); }
         public boolean live() { return "live".equals(state); }
@@ -114,13 +123,16 @@ public interface Gateway {
     interface PresenceEvents {
         void welcome();
         /** The latest pointers; here each {@link Pointer#expiresAt} is its remaining time in ms. */
-        void pointers(java.util.List<Pointer> pointers);
+        void pointers(int revision, java.util.List<Pointer> pointers);
         /** The Mac refused the channel: "access", "name", "full", or "off" when pointers are not offered. */
         void denied(String reason);
     }
 
     Resolution resolve(HostConfig host, Scope scope) throws IOException, AskPath.Rejected;
-    JoinResult join(AskPath path, String pass, String name, boolean ask, String color, Scope scope) throws IOException;
+    default Resolution resolve(HostConfig host, AskPath saved, Scope scope) throws IOException, AskPath.Rejected {
+        return resolve(host, scope);
+    }
+    JoinResult join(AskPath path, String pass, String name, boolean ask, String color, String requestID, Scope scope) throws IOException;
     StateResult state(AskPath path, Scope scope) throws IOException;
     ConfigResult config(AskPath path, String pass, Scope scope) throws IOException;
     HeartbeatResult heartbeat(AskPath path, String pass, boolean playing, String health, int revision, String color, Scope scope) throws IOException;

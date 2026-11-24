@@ -84,6 +84,7 @@ public final class MainActivity extends Activity implements PairingChanges.Recei
     /** New chat messages since the panel was last opened, while pop-ups are off. */
     private int unread;
     private boolean showDiagnostics;
+    private long lastDiagnosticsAt;
     private ReceiverController.View lastView;
     private ConnectivityManager.NetworkCallback networkCallback;
     private int requestedModeId;
@@ -130,6 +131,12 @@ public final class MainActivity extends Activity implements PairingChanges.Recei
         chatText = findViewById(R.id.chat_text);
         chatStatus = findViewById(R.id.chat_status);
         chatToasts = findViewById(R.id.chat_toasts);
+        diagnostics.setFocusable(true);
+        if (android.os.Build.VERSION.SDK_INT >= 28) {
+            controls.setAccessibilityPaneTitle(getText(R.string.receiver_options));
+            diagnostics.setAccessibilityPaneTitle(getText(R.string.connection_info));
+            chatPanel.setAccessibilityPaneTitle(getText(R.string.chat_button));
+        }
 
         controlThread = new HandlerThread("setbeam-control");
         controlThread.start();
@@ -154,12 +161,22 @@ public final class MainActivity extends Activity implements PairingChanges.Recei
         controller = new ReceiverController(loop, io, gateway, settings.store(), player, view -> main.post(() -> render(view)));
         extras = new SessionExtras(loop, io, gateway, snapshot -> main.post(() -> renderExtras(snapshot)));
         controller.setExtras(extras);
+        controller.setResolutionListener(resolution -> settings.pinMacId(resolution.macId));
         player.setSound(settings.sound());
         boolean pointersWanted = settings.pointers();
         control.post(() -> extras.setPointersWanted(pointersWanted));
 
         askAgain.setOnClickListener(v -> control.post(() -> controller.askAgain()));
         openOptions.setOnClickListener(v -> showControls());
+        root.setAccessibilityDelegate(new View.AccessibilityDelegate() {
+            @Override public void onInitializeAccessibilityNodeInfo(View view, android.view.accessibility.AccessibilityNodeInfo info) {
+                super.onInitializeAccessibilityNodeInfo(view, info);
+                if (view.isClickable()) info.setClassName(Button.class.getName());
+            }
+        });
+        root.setContentDescription(getText(R.string.receiver_options));
+        root.setOnClickListener(v -> { if (!overlayOpen() && card.getVisibility() != View.VISIBLE) showControls(); });
+        updateCardInteraction();
         connectionInfo.setOnClickListener(v -> { hideControls(); setDiagnostics(true); });
         macSettings.setOnClickListener(v -> {
             hideControls();
@@ -206,6 +223,7 @@ public final class MainActivity extends Activity implements PairingChanges.Recei
             startActivity(new Intent(this, SetupActivity.class));
             return;
         }
+        player.setSound(settings.sound());
         discovery.start();
         watchNetwork(true);
         control.post(() -> controller.start(host));
@@ -215,6 +233,7 @@ public final class MainActivity extends Activity implements PairingChanges.Recei
 
     @Override protected void onStop() {
         started = false;
+        player.setSound(false);
         hideControls();
         hideChat();
         chatToasts.removeAllViews();
@@ -228,23 +247,31 @@ public final class MainActivity extends Activity implements PairingChanges.Recei
     }
 
     @Override protected void onDestroy() {
-        PairingChanges.unregister(this);
-        control.post(() -> controller.stop());
         player.detach(video);
         video.release();
-        player.release();
-        io.shutdownNow();
+        control.post(() -> {
+            controller.stop();
+            main.post(() -> PairingChanges.unregister(this));
+            player.release();
+            io.shutdownNow();
+        });
         controlThread.quitSafely();
         super.onDestroy();
     }
 
     // ---- PairingChanges.Receiver (main thread) ----
 
-    @Override public void stopForChange() {
+    @Override public boolean stopForChange() {
         CountDownLatch stopped = new CountDownLatch(1);
-        control.post(() -> { controller.stop(); stopped.countDown(); });
-        try { stopped.await(3, TimeUnit.SECONDS); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+        if (!control.post(() -> { controller.stop(); stopped.countDown(); })) return false;
+        try {
+            if (!stopped.await(3, TimeUnit.SECONDS)) return false;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
         discovery.stop();
+        return true;
     }
 
     @Override public void resumeAfterChange() {
@@ -315,8 +342,7 @@ public final class MainActivity extends Activity implements PairingChanges.Recei
     @Override public boolean dispatchKeyEvent(KeyEvent event) {
         // Button key events are consumed before onKeyDown, so refresh the timeout here.
         if (event.getAction() == KeyEvent.ACTION_DOWN && controls.getVisibility() == View.VISIBLE) {
-            main.removeCallbacks(dismissControls);
-            main.postDelayed(dismissControls, 10_000);
+            scheduleControlsDismissal();
         }
         return super.dispatchKeyEvent(event);
     }
@@ -365,8 +391,18 @@ public final class MainActivity extends Activity implements PairingChanges.Recei
         controls.setVisibility(View.VISIBLE);
         updateCardInteraction();
         (card.getVisibility() == View.VISIBLE ? macSettings : soundToggle).requestFocus();
+        scheduleControlsDismissal();
+    }
+
+    private boolean spokenNavigation() {
+        android.view.accessibility.AccessibilityManager accessibility = getSystemService(android.view.accessibility.AccessibilityManager.class);
+        return accessibility != null && accessibility.isEnabled() && (accessibility.isTouchExplorationEnabled()
+                || !accessibility.getEnabledAccessibilityServiceList(android.accessibilityservice.AccessibilityServiceInfo.FEEDBACK_SPOKEN).isEmpty());
+    }
+
+    private void scheduleControlsDismissal() {
         main.removeCallbacks(dismissControls);
-        main.postDelayed(dismissControls, 10_000);
+        if (!spokenNavigation()) main.postDelayed(dismissControls, 10_000);
     }
 
     private void hideControls() {
@@ -382,8 +418,8 @@ public final class MainActivity extends Activity implements PairingChanges.Recei
         diagnostics.setVisibility(visible ? View.VISIBLE : View.GONE);
         if (visible) {
             updateCardInteraction();
-            root.requestFocus();
             diagnostics.setText(R.string.connection_info);
+            diagnostics.requestFocus();
             if (player != null) player.collect(snapshot -> main.post(() -> renderDiagnostics(snapshot)));
         } else restorePlaybackFocus();
     }
@@ -394,6 +430,9 @@ public final class MainActivity extends Activity implements PairingChanges.Recei
 
     private void updateCardInteraction() {
         boolean overlay = overlayOpen();
+        boolean playbackAction = !overlay && card.getVisibility() != View.VISIBLE;
+        root.setClickable(playbackAction);
+        root.setImportantForAccessibility(playbackAction ? View.IMPORTANT_FOR_ACCESSIBILITY_YES : View.IMPORTANT_FOR_ACCESSIBILITY_NO);
         card.setDescendantFocusability(overlay ? ViewGroup.FOCUS_BLOCK_DESCENDANTS : ViewGroup.FOCUS_BEFORE_DESCENDANTS);
         card.setImportantForAccessibility(overlay ? View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS : View.IMPORTANT_FOR_ACCESSIBILITY_AUTO);
     }
@@ -511,7 +550,8 @@ public final class MainActivity extends Activity implements PairingChanges.Recei
         // The picture is visible only while Live, or dimmed and labeled while Reconnecting. Every
         // other phase (Hold, removed, declined, ended, waiting, searching...) covers it opaquely,
         // independent of whether the renderer has finished clearing.
-        cover.setVisibility(live || view.phase == Phase.STALLED ? View.GONE : View.VISIBLE);
+        boolean showPicture = (live || view.phase == Phase.STALLED) && player.hasRendered(view.playerGeneration);
+        cover.setVisibility(showPicture ? View.GONE : View.VISIBLE);
         dim.setVisibility(view.phase == Phase.STALLED ? View.VISIBLE : View.GONE);
         setStatusText(cardMessage, message);
         setStatusText(cardDetail, detail);
@@ -530,8 +570,10 @@ public final class MainActivity extends Activity implements PairingChanges.Recei
     }
 
     private void renderDiagnostics(WebRtcPlayer.Snapshot s) {
-        if (!showDiagnostics) return;
+        if (!showDiagnostics || !player.isCurrent(s) || s.sampledAt < lastDiagnosticsAt) return;
         ReceiverController.View v = lastView;
+        if (v != null && s.generation != v.playerGeneration) return;
+        lastDiagnosticsAt = s.sampledAt;
         StringBuilder text = new StringBuilder();
         if (v != null) {
             if (!v.title.isEmpty()) text.append("Session ").append(v.title).append('\n');
@@ -547,7 +589,7 @@ public final class MainActivity extends Activity implements PairingChanges.Recei
         text.append("Bonjour id hint ").append(pinned == null ? "none" : pinned.substring(0, 8) + "… (unverified, not authentication)").append('\n');
         text.append("Discovery ").append(discovery.status()).append('\n');
         text.append("Video ").append(s.decodedWidth > 0 ? s.decodedWidth + "x" + s.decodedHeight : "no picture")
-                .append(String.format(Locale.ROOT, "   shown %.1f fps   rendered %.1f fps", s.sinkFps, s.renderedFps)).append('\n');
+                .append(String.format(Locale.ROOT, "   sink %.1f fps   rendered %.1f fps", s.sinkFps, s.renderedFps)).append('\n');
         text.append("Buffer requested ").append(size(s.requestedWidth, s.requestedHeight))
                 .append("   surface confirmed ").append(size(s.bufferWidth, s.bufferHeight))
                 .append("   view ").append(size(video.getWidth(), video.getHeight())).append('\n');
@@ -568,7 +610,6 @@ public final class MainActivity extends Activity implements PairingChanges.Recei
                     .append("   freezes ").append(m.get("freezeCount")).append("   NACK ").append(m.get("nackCount"))
                     .append("   PLI ").append(m.get("pliCount")).append('\n');
         }
-        if (!s.createdDecoder.isEmpty()) text.append("Created ").append(s.createdDecoder).append(" — ").append(s.decoderKind).append('\n');
         if (!s.codec.isEmpty()) text.append("Codec ").append(s.codec.trim()).append('\n');
         Map<String, Object> a = s.audio;
         text.append("Audio ").append(a.isEmpty() ? (s.hasAudio ? "track, no stats" : "none negotiated")
@@ -621,10 +662,12 @@ public final class MainActivity extends Activity implements PairingChanges.Recei
     }
 
     private void renderChatBadge() {
-        openChat.setText(unread > 0 ? getString(R.string.chat_unread, Math.min(unread, 99)) : getString(R.string.chat_button));
+        String label = unread > 0 ? getString(R.string.chat_unread, Math.min(unread, 99)) : getString(R.string.chat_button);
+        if (!TextUtils.equals(openChat.getText(), label)) openChat.setText(label);
     }
 
     private void renderExtras(SessionExtras.Snapshot snapshot) {
+        SessionExtras.Snapshot previous = lastExtras;
         lastExtras = snapshot;
         pointerView.setPointers(settings.pointers() && snapshot.bound ? snapshot.pointers : Collections.<com.setbeam.receiver.core.Pointer>emptyList());
         if (!snapshot.bound) {
@@ -637,7 +680,8 @@ public final class MainActivity extends Activity implements PairingChanges.Recei
             else unread += snapshot.arrived.size();
         }
         renderChatBadge();
-        if (chatOpen) renderChat();
+        if (chatOpen && (previous == null || previous.chat != snapshot.chat || previous.bound != snapshot.bound
+                || !previous.chatStatus.equals(snapshot.chatStatus))) renderChat();
     }
 
     private void showChat() {

@@ -38,6 +38,11 @@ public final class HttpGateway implements Gateway {
 
     @Override
     public Resolution resolve(HostConfig host, Scope scope) throws IOException, AskPath.Rejected {
+        return resolve(host, null, scope);
+    }
+
+    @Override
+    public Resolution resolve(HostConfig host, AskPath saved, Scope scope) throws IOException, AskPath.Rejected {
         List<Candidate> found = candidates.find(host);
         if (found.isEmpty()) throw new IOException("Looking for " + host.host);
         IOException lastFailure = null;
@@ -60,16 +65,33 @@ public final class HttpGateway implements Gateway {
                     ? "The Mac answered, but is not offering its short address for " + candidate.hostHeader
                     : "The Mac answered with " + response.status);
         }
+        // A saved pass may outlive the short address. Reuse only a route corroborated by
+        // current resolution, and check its public state before any request carries the pass.
+        if (saved != null && lastRejection == null) {
+            for (Candidate candidate : found) {
+                if (!candidate.address.equals(saved.route.address)) continue;
+                try {
+                    StateResult state = state(saved, scope);
+                    if (state.status == Status.OK && !"stopped".equals(state.state)) return new Resolution(saved, "saved route via " + candidate.via, null, true);
+                } catch (IOException e) {
+                    if (scope.isCancelled()) throw e;
+                }
+                break;
+            }
+        }
         if (lastRejection != null) throw lastRejection;
         throw lastFailure != null ? lastFailure : new IOException("Not reachable");
     }
 
     @Override
-    public JoinResult join(AskPath path, String pass, String name, boolean ask, String color, Scope scope) throws IOException {
+    public JoinResult join(AskPath path, String pass, String name, boolean ask, String color, String requestID, Scope scope) throws IOException {
         JSONObject body = new JSONObject();
         try {
             if (pass != null) body.put("pass", pass);
-            if (ask) { body.put("name", name); body.put("ask", true); }
+            if (ask) {
+                body.put("name", name); body.put("ask", true);
+                if (requestID != null) body.put("requestID", requestID);
+            }
             if (color != null) body.put("color", color);
             body.put("mobile", false);
         } catch (JSONException e) { throw new IOException(e); }
@@ -102,7 +124,12 @@ public final class HttpGateway implements Gateway {
             throw new IOException("Unexpected state");
         String title = HostConfig.cleanLabel(json.optString("title", ""), 120);
         return new StateResult(Status.OK, state, title == null ? "" : title, json.optBoolean("sample", false),
-                json.optInt("revision", -1), json.optBoolean("approval", false));
+                json.optInt("revision", -1), json.optBoolean("approval", false), optionalSequence(json));
+    }
+
+    private static long optionalSequence(JSONObject json) {
+        Object value = json.opt("sequence");
+        return value instanceof Integer || value instanceof Long ? Math.max(-1, ((Number) value).longValue()) : -1;
     }
 
     @Override
@@ -209,7 +236,7 @@ public final class HttpGateway implements Gateway {
                     try { json = new JSONObject(message); } catch (JSONException e) { continue; }
                     switch (json.optString("t", "")) {
                         case "welcome": events.welcome(); break;
-                        case "pointers": events.pointers(Pointer.parse(json.optJSONArray("items"), 0)); break;
+                        case "pointers": events.pointers(json.optInt("r", -1), Pointer.parse(json.optJSONArray("items"), 0)); break;
                         case "denied": {
                             String reason = HostConfig.cleanLabel(json.optString("reason", "access"), 16);
                             events.denied(reason == null ? "access" : reason);

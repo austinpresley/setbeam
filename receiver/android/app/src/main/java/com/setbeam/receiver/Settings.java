@@ -68,21 +68,34 @@ final class Settings {
      * Saves a pairing; call through {@link PairingChanges#apply}. A different base URL forgets the
      * pinned Bonjour id hint. Returns whether it reached storage.
      */
-    boolean pair(HostConfig config) {
+    boolean pair(HostConfig config) { return pair(config, null); }
+
+    boolean pair(HostConfig config, String selectedId) {
         HostConfig previous = host();
         SharedPreferences.Editor editor = pairing.edit().putString(HOST, config.baseUrl()).putString(NAME, config.name);
-        if (previous == null || !previous.baseUrl().equals(config.baseUrl())) editor.remove(PINNED_ID);
-        return editor.commit();
+        boolean differentId = selectedId != null && !selectedId.equals(pinnedMacId());
+        if (selectedId != null) editor.putString(PINNED_ID, selectedId);
+        else if (previous == null || !previous.baseUrl().equals(config.baseUrl())) editor.remove(PINNED_ID);
+        boolean saved = editor.commit();
+        if (saved && (differentId || previous == null || !previous.baseUrl().equals(config.baseUrl()))) store().clearAdmittedRoute();
+        return saved;
     }
 
     /** Forgets the paired Mac and its id hint. Per-share refusals are kept. */
     boolean forget() {
-        return pairing.edit().remove(HOST).remove(NAME).remove(PINNED_ID).commit();
+        boolean saved = pairing.edit().remove(HOST).remove(NAME).remove(PINNED_ID).commit();
+        if (saved) store().clearAdmittedRoute();
+        return saved;
     }
 
     /** An unverified Bonjour installation-id hint, used only to filter discovery. */
-    String pinnedMacId() { return pairing.getString(PINNED_ID, null); }
-    boolean pinMacId(String id) { return pairing.edit().putString(PINNED_ID, id).commit(); }
+    String pinnedMacId() {
+        String id = pairing.getString(PINNED_ID, null);
+        return id != null && id.matches("[0-9a-f]{32}") ? id : null;
+    }
+    void pinMacId(String id) {
+        if (id != null && pinnedMacId() == null) pairing.edit().putString(PINNED_ID, id).commit();
+    }
 
     boolean startAtBoot() { return pairing.getBoolean(START_AT_BOOT, true); }
     boolean setStartAtBoot(boolean value) { return pairing.edit().putBoolean(START_AT_BOOT, value).commit(); }

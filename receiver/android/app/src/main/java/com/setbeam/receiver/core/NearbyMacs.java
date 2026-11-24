@@ -27,7 +27,10 @@ public final class NearbyMacs {
         public final String detail;
         /** The address to pair with. */
         public final String address;
-        Choice(String title, String detail, String address) { this.title = title; this.detail = detail; this.address = address; }
+        public final String id;
+        Choice(String title, String detail, String address, String id) {
+            this.title = title; this.detail = detail; this.address = address; this.id = id;
+        }
     }
 
     public static List<Choice> choices(List<HostMatcher.Service> services) {
@@ -45,9 +48,14 @@ public final class NearbyMacs {
                 } catch (HostConfig.Invalid ignored) { }
             }
             if (address == null && service.ipv4 != null && HostConfig.isIpv4Literal(service.ipv4)) { address = "http://" + service.ipv4 + "/"; title = service.ipv4; }
-            if (address == null || unique.containsKey(address)) continue;
+            if (address == null) continue;
             String detail = service.ipv4 != null && !service.ipv4.equals(title) ? service.ipv4 : "";
-            unique.put(address, new Choice(title, detail, address));
+            String id = HostConfig.isIpv4Literal(service.ipv4) ? service.id() : null;
+            Choice previous = unique.get(address);
+            if (previous == null) unique.put(address, new Choice(title, detail, address, id));
+            else if (!java.util.Objects.equals(previous.id, id)) {
+                unique.put(address, new Choice(previous.title, "", address, null));
+            }
         }
         List<Choice> list = new ArrayList<>(unique.values());
         Collections.sort(list, (a, b) -> a.title.toLowerCase(Locale.ROOT).compareTo(b.title.toLowerCase(Locale.ROOT)));

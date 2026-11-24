@@ -67,6 +67,7 @@ public final class SessionExtras {
     private String chatStatus = "not admitted";
 
     // Pointers.
+    private int pictureRevision = -1;
     private Gateway.Scope presenceScope;
     private long nextPresenceAt;
     private int presenceFailures;
@@ -85,7 +86,7 @@ public final class SessionExtras {
      */
     public void bind(AskPath next, String nextPass, String nextName) {
         if (next == null || nextPass == null) { if (path != null) { unbind(); publish(Collections.emptyList()); } return; }
-        if (path != null && path.key.equals(next.key) && path.route.toString().equals(next.route.toString()) && nextPass.equals(pass)) return;
+        if (path != null && path.key.equals(next.key) && path.route.toString().equals(next.route.toString()) && nextPass.equals(pass)) { reconcile(); return; }
         unbind();
         path = next; pass = nextPass; name = nextName;
         long now = loop.now();
@@ -108,6 +109,16 @@ public final class SessionExtras {
     public void setChatVisible(boolean visible) {
         chatVisible = visible;
         if (visible && path != null) { nextChatAt = loop.now(); reconcile(); }
+    }
+
+    public void setPictureRevision(int revision) {
+        if (pictureRevision == revision) return;
+        pictureRevision = revision;
+        closePresence(pointersWanted && revision >= 0 ? "connecting" : "off");
+        nextPresenceAt = loop.now();
+        presenceFailures = 0;
+        // The next controller update binds or reconciles the same admitted session.
+        if (path != null) publish(Collections.emptyList());
     }
 
     /** The TV user's Show pointers choice. Off closes the channel and clears pointers at once. */
@@ -142,7 +153,7 @@ public final class SessionExtras {
         long now = loop.now();
         boolean wantChat = hint != fetchedForHint || !chatLoaded || (chatVisible && now - lastChatAt >= CHAT_VISIBLE_POLL_MS);
         if (!fetching && wantChat && now >= nextChatAt) fetchChat();
-        if (pointersWanted && presenceScope == null && now >= nextPresenceAt) openPresence();
+        if (pointersWanted && pictureRevision >= 0 && presenceScope == null && now >= nextPresenceAt) openPresence();
     }
 
     private void unbind() {
@@ -190,7 +201,7 @@ public final class SessionExtras {
                 for (ChatLine line : result.messages) if (line.id > previousNewest) fresh.add(line);
                 arrived = Collections.unmodifiableList(fresh);
             }
-            chat = result.messages;
+            if (!chat.equals(result.messages)) chat = result.messages;
             chatLoaded = true;
             fetchedForHint = forHint;
             chatStatus = chat.size() + (chat.size() == 1 ? " message" : " messages");
@@ -210,7 +221,9 @@ public final class SessionExtras {
             try {
                 gateway.presence(p, sentPass, label, ReceiverController.COLOR, s, new Gateway.PresenceEvents() {
                     @Override public void welcome() { loop.post(() -> presenceWelcome(e, s)); }
-                    @Override public void pointers(List<Pointer> items) { loop.post(() -> presencePointers(e, s, items)); }
+                    @Override public void pointers(int revision, List<Pointer> items) {
+                        loop.post(() -> presencePointers(e, s, revision, items));
+                    }
                     @Override public void denied(String reason) { loop.post(() -> presenceDenied(e, s, reason)); }
                 });
             } catch (IOException ex) { failure = "lost"; }
@@ -228,8 +241,8 @@ public final class SessionExtras {
         publish(Collections.emptyList());
     }
 
-    private void presencePointers(int e, Gateway.Scope s, List<Pointer> items) {
-        if (!current(e, s)) return;
+    private void presencePointers(int e, Gateway.Scope s, int revision, List<Pointer> items) {
+        if (!current(e, s) || revision != pictureRevision) return;
         long now = loop.now();
         List<Pointer> rebased = new ArrayList<>();
         // The gateway reports each pointer's remaining time; place it on this loop's clock.
