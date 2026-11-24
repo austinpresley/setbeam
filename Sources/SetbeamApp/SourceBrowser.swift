@@ -7,7 +7,7 @@ struct NetworkSourceChoice: Identifiable {
     let address: String
 }
 
-enum PyroHSearchState { case looking, found, noWiFi, unavailable, monitoring }
+enum PyroHSearchState { case looking, found, noWiFi, unverifiedWiFi, unavailable, monitoring }
 
 /// Bonjour uses advertised paths. Pyro H separately probes only the upstream launcher's scoped /live route.
 @MainActor final class SourceBrowser: NSObject, ObservableObject, @preconcurrency NetServiceBrowserDelegate, @preconcurrency NetServiceDelegate {
@@ -25,8 +25,11 @@ enum PyroHSearchState { case looking, found, noWiFi, unavailable, monitoring }
 
     init(pyroHNetworks: @escaping @Sendable () -> [PyroHNetwork] = { PyroHNetwork.connected() },
          pyroHPorts: [UInt16] = PyroHDiscovery.ports,
-         pyroHProbe: @escaping @Sendable ([PyroHNetwork], [UInt16]) async -> [PyroHSource] = { await PyroHDiscovery.scan(networks: $0, ports: $1) }) {
-        self.pyroHNetworks = pyroHNetworks; self.pyroHPorts = pyroHPorts; self.pyroHProbe = pyroHProbe
+         pyroHProbe: (@Sendable ([PyroHNetwork], [UInt16]) async -> [PyroHSource])? = nil) {
+        self.pyroHNetworks = pyroHNetworks; self.pyroHPorts = pyroHPorts
+        self.pyroHProbe = pyroHProbe ?? {
+            await PyroHDiscovery.scan(networks: $0, ports: $1, currentNetworks: pyroHNetworks)
+        }
         super.init()
     }
 
@@ -41,14 +44,17 @@ enum PyroHSearchState { case looking, found, noWiFi, unavailable, monitoring }
                     self.pyroHSources = []; self.pyroHSearchState = .monitoring
                 } else {
                     let networks = self.pyroHNetworks()
-                    self.pyroHSearchState = networks.isEmpty ? .noWiFi : .looking
-                    let found = networks.isEmpty ? [] : await self.pyroHProbe(networks, self.pyroHPorts)
+                    let verifiable = networks.filter(\.isVerifiable)
+                    if !verifiable.isEmpty { self.pyroHSearchState = .looking }
+                    let found = verifiable.isEmpty ? [] : await self.pyroHProbe(verifiable, self.pyroHPorts)
                     guard !Task.isCancelled, self.started, self.generation == current else { return }
                     if !pyroHScanAllowed() { self.pyroHSources = []; self.pyroHSearchState = .monitoring }
                     else {
                         let connected = Set(self.pyroHNetworks())
                         self.pyroHSources = found.filter { connected.contains($0.network) }
-                        self.pyroHSearchState = connected.isEmpty ? .noWiFi : self.pyroHSources.isEmpty ? .unavailable : .found
+                        if connected.isEmpty { self.pyroHSearchState = .noWiFi }
+                        else if !connected.contains(where: \.isVerifiable) { self.pyroHSearchState = .unverifiedWiFi }
+                        else { self.pyroHSearchState = self.pyroHSources.isEmpty ? .unavailable : .found }
                     }
                 }
                 do { try await Task.sleep(nanoseconds: 6_000_000_000) } catch { return }

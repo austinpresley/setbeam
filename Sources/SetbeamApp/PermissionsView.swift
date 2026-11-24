@@ -49,7 +49,7 @@ enum PermissionKind: String, CaseIterable, Identifiable {
         case .camera: return "Uses the USB camera or capture device you select."
         case .microphone: return "Optional. Only for sound from a capture input you choose in Source Details."
         case .localNetwork: return "Finds transmitters on this Mac's Wi-Fi and lets viewers on this network open your link."
-        case .location: return "Optional. Only for automatic transmitter Wi-Fi rejoin, because macOS shows Wi-Fi names only with Location access. Setbeam asks when you turn it on in Source Details."
+        case .location: return "macOS uses Location access to identify Wi-Fi networks. Setbeam may ask for it when verifying Pyro H Wi-Fi or when you enable automatic transmitter rejoin."
         }
     }
     /// The Privacy & Security pane for this access.

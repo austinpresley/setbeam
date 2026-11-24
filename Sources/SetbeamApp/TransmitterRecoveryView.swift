@@ -35,6 +35,9 @@ struct TransmitterRecoveryView: View {
                 Image(systemName: "antenna.radiowaves.left.and.right").font(.system(size: 46, weight: .light))
             }.foregroundStyle(.white.opacity(0.89)).accessibilityHidden(true)
             checklist
+            if let problem = model.pyroHRouteProblem {
+                Text(problem).font(.callout).multilineTextAlignment(.center).frame(maxWidth: 440)
+            }
             HStack(spacing: 8) {
                 if wifiStatus != .done {
                     Button { model.openWiFiSettings() } label: { Label("Join Wi-Fi", systemImage: "wifi") }
@@ -119,7 +122,6 @@ struct TransmitterRecoveryView: View {
             Divider()
             Text(model.audiencePresentation.sourceRecoveryDetail).foregroundStyle(.secondary)
             Button("Retry Now") { model.retry() }.disabled(model.busy)
-            if model.setup?.kind == .network { Button("Edit Stream Address…") { model.openNetworkSource() } }
             if let previous = model.previousSourceName {
                 Button("Return to \(previous)") { model.returnToPreviousSource() }.disabled(model.busy)
             }

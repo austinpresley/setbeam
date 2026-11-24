@@ -26,9 +26,27 @@ incoming RTMP stream, a compatible capture device, and direct CineView Master 4K
 RTMS4 reception. Support requires recorded physical connection evidence in
 `hardware-tests.md`; generic adapters do not imply model compatibility.
 
-PyroHDiscovery ports Holly Share's known `/live` RTSP connection into the native chooser. SystemConfiguration supplies only active Wi-Fi service IPv4 routers on the interface's actual private subnet. Each TCP probe binds that interface and local address and checks up to the three upstream ports, in order. A bounded DESCRIBE requires a complete, correctly framed H.264 SDP response; it never sends SETUP/PLAY. Polling runs off the main actor with deadlines, bounded input, owned file descriptors, and cancellation checks at most 50 ms apart. No shell tool, Wi-Fi association, Location grant, subnet scan, or streaming receiver is involved in discovery.
+PyroHDiscovery uses SystemConfiguration to find active private IPv4 router
+addresses on Wi-Fi interfaces. It requires the Wi-Fi access point's BSSID from
+CoreWLAN because different networks can reuse the same IPv4 addresses. The
+chooser offers Location access if macOS withholds that information. A bounded
+DESCRIBE binds the selected interface and local address and checks up to three
+ports for a complete H.264 SDP. Discovery sends neither SETUP nor PLAY. It
+checks the route around the probe, cancels when the chooser closes, and pauses
+while any network source is monitored.
 
-SourceBrowser owns the chooser-lifetime scan task and discards late results or results from a changed network. All network-source monitoring suspends Pyro H probes because the hardware can have a single-client limit. Source selection drains any in-flight probe before MediaRuntime opens its upstream stream. A discovered PyroHSource creates a normal network SourceSetup with optional `networkProfile: pyroH` metadata. The proven-setup gate and Keychain retain the exact selected URL, restoring privately; metadata does not establish a physical device identity. No additional source adapter or audience process is introduced. The existing RTSP path supplies one received feed to native/floating monitoring and sharing, preserving recovery, Hold and Stop. The original launcher remains a reference. Physical Pyro H qualification is separate from simulation tests.
+SourceSetup keeps the Wi-Fi interface, local address, subnet mask, router,
+BSSID, and RTSP port with the proven Pyro H setup. The complete URL remains in
+Keychain. Older Pyro H setups require discovery again. SessionModel drains
+discovery before playback, and MediaRuntime rechecks the current route
+before applying a Pyro H selection. The private loopback relay accepts one
+FFmpeg client, opens one socket with the same IP_BOUND_IF and local IPv4 binding
+as discovery, and blocks RTSP redirects. The relay closes if the original route
+is no longer verifiable. The existing watchdog retries only that route, and the
+local feed still supplies native and floating monitoring and the independent
+audience output. Hold and Stop preserve private monitoring on the verified
+route. This route verifies a direct Wi-Fi endpoint. Physical hardware
+qualification is recorded separately.
 
 Computer displays, including DigiTech applications such as Capture One, and
 camera feeds are peer source use cases. The transport and input describe how
@@ -343,7 +361,7 @@ The browser maps pointer events through the video's `object-fit: contain` rectan
 
 Choose a source always shows a model card for the Accsoon CineView Master 4K and the Hollyland Pyro H. A card opens that model's guide inside the same sheet, so the chooser's discovery keeps running: steps for the source, the transmitter's Wi-Fi, and, for Pyro H, closing other viewers. Discovered units connect through the existing direct RTMS4 or `/live` RTSP paths. The CineView guide also offers the unverified Accsoon SEE stream bridge, alongside direct Enter Stream Address in the chooser for generic RTSP sources. Cards use drawn artwork, not product photos, and state each model's recorded evidence from `hardware-tests.md`.
 
-Permissions, shown once on first run when no working setup exists and reopened from the Feed and settings menus, explains access by the sources the operator chooses. It reads Screen Recording, Camera, Microphone, and Location status without prompting and asks only from an Allow button, through the same calls a source uses when it starts. Local Network has no status API; its Allow button runs the chooser's own discovery for four seconds so macOS can ask. Location is never requested there, because only the transmitter Wi-Fi rejoin option needs it.
+Permissions, shown once on first run when no working setup exists and reopened from the Feed and settings menus, explains access by the sources the operator chooses. It reads Screen Recording, Camera, Microphone, and Location status without prompting and asks only from an Allow button, through the same calls a source uses when it starts. Local Network has no status API; its Allow button runs the chooser's own discovery for four seconds so macOS can ask. The Pyro H chooser and the transmitter Wi-Fi rejoin option provide their own Location guidance.
 
 ## Bare local address
 

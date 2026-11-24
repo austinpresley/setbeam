@@ -4,7 +4,7 @@ import os
 @testable import SetbeamApp
 
 @MainActor final class PyroHBrowserTests: XCTestCase {
-    private let network = PyroHNetwork(interface: "lo0", address: "127.0.0.1", router: "127.0.0.1")
+    private let network = PyroHNetwork.loopbackFixture
 
     func testMonitoringNetworkSourceSuppressesProbesAndOtherSourceKindsAllowThem() async throws {
         var state = SessionState(); state.beginMonitoring()
@@ -51,6 +51,34 @@ import os
         routes.withLock { $0 = [] }
         await gate.finish([PyroHSource(network: network, port: 5554, hasAudio: false)])
         try await waitFor { browser.pyroHSearchState == .noWiFi }
+        XCTAssertTrue(browser.pyroHSources.isEmpty)
+    }
+
+    func testLegacyRestoreShowsRediscoveryWithoutOpeningAStream() {
+        let suite = "Setbeam-pyro-legacy-tests-\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let model = SessionModel(preferences: defaults)
+        var old = SourceSetup(kind: .network, name: "Pyro H", networkAddress: "rtsp://192.168.218.1:5554/live")
+        old.networkProfile = .pyroH
+        model.restore(old)
+        XCTAssertEqual(model.setup, old)
+        XCTAssertFalse(model.state.monitoring)
+        XCTAssertFalse(model.busy)
+        XCTAssertTrue(model.canDiscoverPyroH)
+        XCTAssertEqual(model.pyroHRouteProblem, PyroHRoute.rediscover)
+    }
+
+    func testUnverifiedWiFiSuppressesProbesAndOffersGuidance() async throws {
+        let unverified = PyroHNetwork(interface: "en0", address: "192.168.218.10", router: "192.168.218.1",
+                                      subnetMask: "255.255.255.0")
+        let calls = OSAllocatedUnfairLock(initialState: 0)
+        let browser = SourceBrowser(pyroHNetworks: { [unverified] },
+                                    pyroHProbe: { _, _ in calls.withLock { $0 += 1 }; return [] })
+        browser.start()
+        defer { browser.stop() }
+        try await waitFor { browser.pyroHSearchState == .unverifiedWiFi }
+        XCTAssertEqual(calls.withLock { $0 }, 0)
         XCTAssertTrue(browser.pyroHSources.isEmpty)
     }
 

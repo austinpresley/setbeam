@@ -48,8 +48,8 @@ final class PyroHDiscoveryTests: XCTestCase {
         let unused = try RTSPFixture(response: Self.response())
         defer { wrong.stop(); good.stop(); unused.stop() }
         try await wrong.start(); try await good.start(); try await unused.start()
-        let network = PyroHNetwork(interface: "lo0", address: "127.0.0.1", router: "127.0.0.1")
-        let found = await PyroHDiscovery.scan(networks: [network, network], ports: [wrong.port, wrong.port, good.port, unused.port])
+        let network = PyroHNetwork.loopbackFixture
+        let found = await PyroHDiscovery.scan(networks: [network, network], ports: [wrong.port, wrong.port, good.port, unused.port], currentNetworks: { [network] })
         XCTAssertEqual(found.count, 1); XCTAssertEqual(found.first?.port, good.port); XCTAssertEqual(found.first?.hasAudio, true)
         XCTAssertEqual(found.first?.address, "rtsp://127.0.0.1:\(good.port)/live")
         try await waitFor { good.snapshot.closed == 1 }
@@ -63,12 +63,12 @@ final class PyroHDiscoveryTests: XCTestCase {
         let server = try RTSPFixture(response: nil)
         defer { server.stop() }
         try await server.start()
-        let network = PyroHNetwork(interface: "lo0", address: "127.0.0.1", router: "127.0.0.1")
+        let network = PyroHNetwork.loopbackFixture
         let start = Date()
-        let timedOut = await PyroHDiscovery.scan(networks: [network], ports: [server.port], timeout: 0.1)
+        let timedOut = await PyroHDiscovery.scan(networks: [network], ports: [server.port], timeout: 0.1, currentNetworks: { [network] })
         XCTAssertTrue(timedOut.isEmpty); XCTAssertLessThan(Date().timeIntervalSince(start), 0.8)
         try await waitFor { server.snapshot.closed == 1 }
-        let pending = Task { await PyroHDiscovery.scan(networks: [network], ports: [server.port], timeout: 2) }
+        let pending = Task { await PyroHDiscovery.scan(networks: [network], ports: [server.port], timeout: 2, currentNetworks: { [network] }) }
         try await waitFor { server.snapshot.requests.count == 2 }
         let cancelledAt = Date(); pending.cancel()
         let cancelled = await pending.value
@@ -79,8 +79,17 @@ final class PyroHDiscoveryTests: XCTestCase {
         XCTAssertTrue(absent.isEmpty); XCTAssertEqual(server.snapshot.requests.count, 2)
     }
 
+    func testLegacyPyroHSetupCannotFallBackToUnscopedRTSP() throws {
+        let data = Data("""
+            {"id":"EA60731B-59D0-4EE5-A958-70E22A72C994","kind":"network","name":"Hollyland Pyro H",
+            "networkAddress":"rtsp://192.168.218.1:5554/live","sourceWiFi":"","inputPort":19350,"networkProfile":"pyroH"}
+            """.utf8)
+        let legacy = try JSONDecoder().decode(SourceSetup.self, from: data)
+        XCTAssertThrowsError(try legacy.source(address: legacy.networkAddress))
+    }
+
     func testProvenProfileRestoresExactEndpointAndOldSetupsStillDecode() throws {
-        let source = PyroHSource(network: .init(interface: "en0", address: "192.168.218.10", router: "192.168.218.1"), port: 5554, hasAudio: true)
+        let source = PyroHSource(network: wifi, port: 5554, hasAudio: true)
         let suite = "Setbeam-pyro-tests-\(UUID())"
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -90,12 +99,69 @@ final class PyroHDiscoveryTests: XCTestCase {
         XCTAssertEqual(restored.networkProfile, .pyroH)
         XCTAssertEqual(restored.kind, .network)
         XCTAssertThrowsError(try restored.source())
-        XCTAssertEqual(try restored.source(address: source.address), .network(source.address))
+        XCTAssertEqual(restored.pyroHRoute, source.route)
+        XCTAssertEqual(try restored.source(address: source.address), .pyroH(source.route))
+        XCTAssertThrowsError(try restored.source(address: "rtsp://192.168.218.1:554/live"))
         var json = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(restored)) as? [String: Any])
+        json.removeValue(forKey: "pyroHRoute")
         json.removeValue(forKey: "networkProfile")
         let old = try JSONDecoder().decode(SourceSetup.self, from: JSONSerialization.data(withJSONObject: json))
         XCTAssertNil(old.networkProfile); XCTAssertEqual(old.id, restored.id)
+        XCTAssertEqual(try old.source(address: source.address), .network(source.address))
         XCTAssertFalse(SessionState().sharing)
+    }
+
+    private var wifi: PyroHNetwork {
+        .init(interface: "en0", address: "192.168.218.10", router: "192.168.218.1",
+              subnetMask: "255.255.255.0", bssid: "00:11:22:33:44:55")
+    }
+
+    func testRouteRequiresMatchingInterfaceLocalAddressRouterSubnetAndBSSID() throws {
+        let route = PyroHSource(network: wifi, port: 5554, hasAudio: true).route
+        func network(interface: String = "en0", address: String = "192.168.218.10", router: String = "192.168.218.1",
+                     mask: String = "255.255.255.0", bssid: String? = "00:11:22:33:44:55") -> PyroHNetwork {
+            .init(interface: interface, address: address, router: router, subnetMask: mask, bssid: bssid)
+        }
+        let overlappingEthernet = network(interface: "en1")
+        XCTAssertNoThrow(try route.requireCurrent([overlappingEthernet, wifi]))
+        for changed in [overlappingEthernet, network(address: "192.168.218.11"), network(router: "192.168.218.2"),
+                        network(mask: "255.255.0.0"), network(bssid: "00:11:22:33:44:66")] {
+            XCTAssertThrowsError(try route.requireCurrent([changed])) {
+                XCTAssertEqual($0.localizedDescription, PyroHRoute.changedWiFi)
+            }
+        }
+        for unavailable in [[], [network(bssid: nil)], [network(bssid: "00:00:00:00:00:00")]] {
+            XCTAssertThrowsError(try route.requireCurrent(unavailable)) {
+                XCTAssertEqual($0.localizedDescription, PyroHRoute.verifyWiFi)
+            }
+        }
+    }
+
+    func testPlaybackRewritesRequestAndClosesBeforeRelayingARedirect() async throws {
+        let redirected = try RTSPFixture(response: Self.response())
+        defer { redirected.stop() }
+        try await redirected.start()
+        let response = Data("RTSP/1.0 302 Moved\r\nCSeq: 1\r\nLocation: rtsp://127.0.0.1:\(redirected.port)/live\r\n\r\n".utf8)
+        let upstream = try RTSPFixture(response: response, fragmented: true)
+        defer { upstream.stop() }
+        try await upstream.start()
+        let route = PyroHSource(network: .loopbackFixture, port: upstream.port, hasAudio: false).route
+        let playback = try PyroHPlayback(route: route, currentNetworks: { [.loopbackFixture] })
+        defer { playback.stop() }
+        let port = try XCTUnwrap(URL(string: playback.inputURL)?.port)
+        let client = NWConnection(host: "127.0.0.1", port: .init(rawValue: UInt16(port))!, using: .tcp)
+        defer { client.cancel() }
+        client.start(queue: .global())
+        client.send(content: Data("OPTIONS \(playback.inputURL) RTSP/1.0\r\nCSeq: 1\r\n\r\n".utf8), completion: .idempotent)
+        let closed = expectation(description: "The redirect closes the private connection")
+        client.receive(minimumIncompleteLength: 1, maximumLength: 4096) { bytes, _, complete, error in
+            XCTAssertTrue(bytes?.isEmpty ?? true)
+            XCTAssertTrue(complete || error != nil)
+            closed.fulfill()
+        }
+        await fulfillment(of: [closed], timeout: 3)
+        XCTAssertEqual(upstream.snapshot.requests, ["OPTIONS \(route.address) RTSP/1.0\r\nCSeq: 1\r\n\r\n"])
+        XCTAssertTrue(redirected.snapshot.requests.isEmpty)
     }
 
     private func waitFor(_ predicate: () -> Bool) async throws {
@@ -144,7 +210,8 @@ private final class RTSPFixture: @unchecked Sendable {
             var collected = bytes; if let data { collected.append(data) }
             guard collected.count <= 8192 else { connection.cancel(); return }
             if collected.range(of: Data("\r\n\r\n".utf8)) != nil {
-                self.stats.withLock { $0.requests.append(String(decoding: collected, as: UTF8.self)) }
+                let request = String(decoding: collected, as: UTF8.self)
+                self.stats.withLock { $0.requests.append(request) }
                 if let response = self.response {
                     if self.fragmented {
                         connection.send(content: response.prefix(17), completion: .contentProcessed { _ in

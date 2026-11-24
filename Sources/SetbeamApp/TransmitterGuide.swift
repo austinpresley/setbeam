@@ -168,6 +168,9 @@ struct TransmitterGuideView: View {
             switch browser.pyroHSearchState {
             case .looking: Label("Looking for Pyro H…", systemImage: "antenna.radiowaves.left.and.right").font(.caption).foregroundStyle(.secondary)
             case .noWiFi: note("This Mac isn't on a Wi-Fi network yet. Join the transmitter's Wi-Fi to search.")
+            case .unverifiedWiFi:
+                note("Join the Pyro H's Wi-Fi. If Setbeam still can't verify the network, allow Location access in Privacy & Security → Location Services.")
+                Button("Allow Location Access") { model.requestPyroHLocation() }.buttonStyle(.link)
             case .unavailable: note("No Pyro H stream found on this Wi-Fi. Join the transmitter's Wi-Fi, close HollyView, and check that the transmitter is on. Setbeam keeps looking.")
             case .monitoring: note("Pyro H discovery pauses while a network source is monitored, because the transmitter may allow one viewer.")
             case .found: EmptyView()

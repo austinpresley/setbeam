@@ -135,7 +135,9 @@ struct SourceDetailsView: View {
                 GroupBox {
                     VStack(alignment: .leading, spacing: 12) {
                         LabeledContent("Address", value: setup.networkAddress).textSelection(.enabled)
-                        Button("Edit Stream Address…") { model.openNetworkSource() }.disabled(changed)
+                        if setup.networkProfile == nil {
+                            Button("Edit Stream Address…") { model.openNetworkSource() }.disabled(changed)
+                        }
                     }.padding(8).frame(maxWidth: .infinity, alignment: .leading)
                 } label: { Text("Network source").font(.headline) }
             } else if setup.kind == .incoming {
