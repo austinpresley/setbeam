@@ -155,6 +155,32 @@ frame-rate, and keyframe probes all passed. The keyframe probe decoded
 checks with the combined changes, physical tests, and opt-in soaks remain
 outside this checkpoint.
 
+## Scoped Pyro H playback, 2026-11-24
+
+The discovered Pyro H setup now retains its Wi-Fi interface, local IPv4
+address, subnet mask, router, access point BSSID, and RTSP port. Discovery and
+private playback bind the same interface and local address. A matching
+numeric address on a different route cannot open the saved stream. Older
+Pyro H setups ask the operator to rediscover the input. If macOS withholds
+the BSSID, the chooser explains how to allow Location access.
+
+The new legacy-profile test initially failed with `XCTAssertThrowsError
+failed: did not throw an error`. It passes with the fix. Local tests also
+cover overlapping interface addresses, a different BSSID at the same IP,
+a changed router, unavailable route information, and RTSP redirect rejection.
+The bundled loopback fixture verified zero upstream readers during discovery,
+one during playback and Hold, and zero after a simulated route change.
+Hold retained the viewing link and silent output. Returning to the original
+route restored one reader. The saved setup refused the mismatched route and
+restored privately on the original route. Shutdown cleared the owned
+processes.
+
+Local `scripts/check.sh` passed 333 XCTest cases with two opt-in soaks
+skipped, 17 Python checks, 60 Node checks, the preview bridge, and all ten
+media probes. The generated Info.plist contains the updated Location
+explanation. Physical Pyro H behavior and macOS Location prompts remain
+unverified.
+
 ## Unified release candidate, 2026-11-23
 
 The local `release/unified-candidate` branch combines build 41’s signed updates
