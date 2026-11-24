@@ -24,7 +24,8 @@
     </style>
     <style name="Tv.Button.Controls">
         <item name="android:layout_width">0dp</item>
-        <item name="android:layout_height">84dp</item>
+        <item name="android:layout_height">match_parent</item>
+        <item name="android:minHeight">84dp</item>
         <item name="android:layout_weight">1</item>
         <item name="android:drawablePadding">6dp</item>
         <item name="android:paddingHorizontal">4dp</item>

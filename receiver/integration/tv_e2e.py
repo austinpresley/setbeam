@@ -72,6 +72,26 @@ def diagnostic_phase(text):
     return match.group(1).lower() if match else None
 
 
+def menu_choices(rows):
+    tokens = [(x, y, text.casefold().strip()) for y, items in rows for x, text in items]
+    choices = {}
+    for label in ("Sound", "Pop-ups", "Pointers"):
+        name = label.casefold()
+        disabled = "muted" if label == "Sound" else f"{name} off"
+        for x, y, token in tokens:
+            if token in (f"{name} on", disabled):
+                choices[label] = token != disabled
+                break
+            if token == name:
+                # A wrapped state belongs to the label above it in the same button column.
+                matches = [(abs(other_x - x), value) for other_x, other_y, value in tokens
+                           if 0 < other_y - y < 0.10 and abs(other_x - x) < 0.075 and value in ("on", "off")]
+                if matches:
+                    choices[label] = min(matches)[1] == "on"
+                    break
+    return choices
+
+
 CARD_TITLES = {
     "Looking for the Mac": "searching", "Waiting for the Mac": "searching", "Asking to join": "asking", "Asking again": "asking again",
     "Waiting for approval": "waiting", "The Mac is busy": "busy", "Ask to join": "needs ask",
@@ -359,9 +379,9 @@ class Device:
         state["card_phase"] = CARD_TITLES.get(state["title"])
         state["sample_label"] = "SAMPLE MEDIA" in text
         state["diag"] = state["phase"] is not None
-        # Several labels distinguish the menu from the identically named status-card button.
-        state["remote_menu"] = ("TV options" in text and "Mac settings" in text
-                                and re.search(r"Pointers (on|off)", text) is not None)
+        # The close hint distinguishes the strip from the identically named status-card button.
+        state["remote_menu"] = "tv options" in text.casefold() and "back to close" in text.casefold()
+        state["menu_choices"] = menu_choices(rows) if state["remote_menu"] else {}
         return state
 
     def ensure_diagnostics(self):
@@ -938,6 +958,7 @@ class Run:
         self.device.key(4)
         self.device.png("pending")
         self.device.key(23)
+        self.device.png("pending-options")
         self.wait("Options menu while pending", lambda: self.device.screen()["remote_menu"], 10)
         # The pending menu starts on Mac settings. Up/Down must stay on the strip.
         self.device.key(20, 19)
@@ -1139,12 +1160,14 @@ class Run:
 
     def set_choice(self, label, on):
         """With focus on a TV-choice button, presses OK only if needed so it reads On/Off as wanted."""
-        labels = (f"{label} on", "Muted" if label == "Sound" else f"{label} off")
-        want, other = labels if on else labels[::-1]
-        text = self.wait(f"{label} button", lambda: (lambda t: t if want in t or other in t else None)(self.device.screen()["text"]), 10)
-        if want not in text:
+        def visible_choice():
+            choices = self.device.screen()["menu_choices"]
+            return choices if label in choices else None
+
+        state = self.wait(f"{label} button", visible_choice, 10)
+        if state[label] != on:
             self.device.key(23)
-            self.wait(want, lambda: want in self.device.screen()["text"], 10)
+            self.wait(f"{label} {'on' if on else 'off'}", lambda: self.device.screen()["menu_choices"].get(label) is on, 10)
 
     def c_hold(self):
         self.fixture.command("hold")

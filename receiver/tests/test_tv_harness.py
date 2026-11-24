@@ -22,6 +22,11 @@ class DriverTests(unittest.TestCase):
         self.assertEqual(e2e.diagnostic_phase("Phase asking again   admission none"), "asking again")
         self.assertIsNone(e2e.diagnostic_phase("Session Phase live\nPhase unknown"))
 
+    def test_reads_wrapped_options_in_their_own_button_columns(self):
+        rows = [(0.78, [(0.11, "Muted"), (0.38, "Pop-ups"), (0.52, "Pointers")]),
+                (0.835, [(0.41, "off"), (0.565, "on")])]
+        self.assertEqual(e2e.menu_choices(rows), {"Sound": False, "Pop-ups": False, "Pointers": True})
+
     def run_fixture(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
