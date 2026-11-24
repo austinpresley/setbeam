@@ -39,6 +39,12 @@ extension SetbeamProbe {
             gateway.update(session(snapshot))
             gateway.setAccess(approval: true, pointers: false)
             try await runtime.setViewerAccess(approval: true, readers: gateway.desiredReaders)
+            // Enabling approval during a share replaces the audience publisher. Wait for
+            // the new output before the first admitted viewer attempts to decode it.
+            try await waitFor("the audience output under approval") {
+                let current = await runtime.snapshot()
+                return current.audienceAvailable && current.sourceAvailable
+            }
             snapshot = await runtime.snapshot(); gateway.update(session(snapshot))
             publisher.publish(label: label, scope: .thisMacOnly, address: "127.0.0.1")
             try await waitFor("the local address") { publisher.state == .active(label) }
