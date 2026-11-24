@@ -27,7 +27,7 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
     @Published var provenSetup: SourceSetup?
     @Published var preview: PlaybackDescriptor?
     @Published private var viewingBinding: ViewingGatewayBinding?
-    @Published private var viewingGatewayReady = false
+    @Published private var viewingGatewayAttempt: UUID?
     /// Whether to publish a readable `.local` name for the viewing address while sharing.
     @Published private(set) var localAddressEnabled: Bool
     /// The operator's chosen label. The effective name can differ after a conflict.
@@ -1284,30 +1284,38 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
 
     private func clearViewingInvitation(invalidateOperation: Bool = true) {
         if invalidateOperation { networkOperation = UUID() }
-        guard viewingBinding != nil || viewingGatewayReady else { return }
+        integrationSessionFile?.clear()
+        guard viewingBinding != nil || viewingGatewayAttempt != nil else { return }
         viewingBinding = nil
-        viewingGatewayReady = false
+        viewingGatewayAttempt = nil
         if state.sharing { networkChanged = false }
         copiedLink = false; copiedIPLink = false
         retireLocalAddress()
     }
 
     private func refreshViewingGatewayReadiness() {
-        let ready = viewingBinding?.url(currentToken: activeViewingToken, listenerReady: gateway.isRunning) != nil
+        let listener = gateway.readyBinding
+        let isCurrent = listener.map { viewingBinding?.matches($0, currentToken: activeViewingToken) == true } == true
             && viewingNetworkIsCurrent(in: networks)
-        guard ready != viewingGatewayReady else { return }
-        if ready && !viewingNetworkIsCurrent(in: NetworkAddress.available()) { return }
-        viewingGatewayReady = ready
-        if ready {
-            if let last = lastReadyViewingAddress, last.link == viewingLink, last.address != viewerAddress {
-                networkChanged = true
-            }
-            lastReadyViewingAddress = (viewingLink, viewerAddress)
-            updateLocalAddress()
-            writeIntegrationSession()
-        } else {
+        guard isCurrent, let listener else {
+            guard viewingGatewayAttempt != nil else { return }
+            viewingGatewayAttempt = nil
+            retireLocalAddress()
+            return
+        }
+        guard listener.id != viewingGatewayAttempt else { return }
+        if viewingGatewayAttempt != nil {
+            viewingGatewayAttempt = nil
             retireLocalAddress()
         }
+        guard viewingNetworkIsCurrent(in: NetworkAddress.available()) else { return }
+        viewingGatewayAttempt = listener.id
+        if let last = lastReadyViewingAddress, last.link == viewingLink, last.address != listener.address {
+            networkChanged = true
+        }
+        lastReadyViewingAddress = (viewingLink, listener.address)
+        updateLocalAddress()
+        writeIntegrationSession()
     }
     @discardableResult func saveViewingSettings(network: String, ssid: String, password: String) -> Bool {
         let secret = ssid.isEmpty ? "" : password
@@ -1451,15 +1459,21 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
         return available.contains(viewingNetwork)
     }
 
+    private var readyViewingListener: ViewerGateway.Binding? {
+        guard let listener = gateway.readyBinding, listener.id == viewingGatewayAttempt,
+              viewingBinding?.matches(listener, currentToken: activeViewingToken) == true,
+              viewingNetworkIsCurrent(in: networks) else { return nil }
+        return listener
+    }
+
     var viewingInvitation: ViewingInvitation? {
-        guard viewingGatewayReady, viewingNetworkIsCurrent(in: networks) else { return nil }
-        return viewingBinding?.invitation(currentToken: activeViewingToken, listenerReady: gateway.isRunning,
-                                          localLabel: localAddressEnabled ? localAddress.activeLabel : nil)
+        viewingBinding?.invitation(currentToken: activeViewingToken, listener: readyViewingListener,
+                                   localLabel: localAddressEnabled ? localAddress.activeLabel : nil)
     }
 
     /// Actions may run between polls or after a native modal panel has yielded the main run loop.
     func currentViewingInvitation() -> ViewingInvitation? {
-        guard let invitation = viewingInvitation, viewingNetworkIsCurrent(in: NetworkAddress.available()) else { return nil }
+        guard viewingNetworkIsCurrent(in: NetworkAddress.available()), let invitation = viewingInvitation else { return nil }
         guard invitation.localURL != nil, localAddressPublisher.state != localAddress else { return invitation }
         return ViewingInvitation(binding: invitation.binding, ipURL: invitation.ipURL, localURL: nil)
     }
@@ -1512,10 +1526,10 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
         if !shortAddressEnabled || !viewerApproval || !localAddressEnabled || open {
             gateway.setShortAddress(open: open)
         }
-        guard open, let label = localAddress.activeLabel, let port = gatewayPort, let path = gateway.shortAddressPath else {
+        guard open, let label = localAddress.activeLabel, let listener = readyViewingListener, let path = listener.shortAddressPath else {
             shortAddressListener.stop(); return
         }
-        shortAddressListener.serve(.init(address: viewerAddress, hosts: [LocalAddressName.host(label)], port: port, path: path))
+        shortAddressListener.serve(.init(address: listener.address, hosts: [LocalAddressName.host(label)], port: listener.port, path: path))
     }
     func shortAddressChanged(_ value: ShortAddressListener.State) {
         shortAddress = value
@@ -1534,7 +1548,7 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
     private func updateReceiverDiscovery() {
         receiverDiscovery.publish(shuttingDown ? nil : ReceiverAdvertisement.current(
             shortAddressOpen: shortAddressOpen, listener: shortAddressListener.state, localAddress: localAddress,
-            askPath: gateway.shortAddressPath, interface: viewerInterface, installationID: receiverDiscoveryID))
+            askPath: readyViewingListener?.shortAddressPath, interface: viewerInterface, installationID: receiverDiscoveryID))
     }
     func receiverDiscoveryChanged(_ value: ReceiverDiscoveryState) {
         guard value != receiverDiscoveryState else { return }
@@ -1707,9 +1721,8 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
         await runtime.shutdown(); apply(await runtime.snapshot())
     }
     private func writeIntegrationSession() {
-        guard let integrationSessionFile, state.sharing, !stoppingSharing, !shuttingDown,
-              currentRuntime?.source == .sample, viewingGatewayReady,
-              let viewerURL = viewingBinding?.url(currentToken: activeViewingToken, listenerReady: gateway.isRunning) else { return }
+        guard let integrationSessionFile, currentRuntime?.source == .sample,
+              let viewerURL = viewingBinding?.url(currentToken: activeViewingToken, listener: readyViewingListener) else { return }
         do {
             let data = try JSONSerialization.data(withJSONObject: ["viewerURL": viewerURL.absoluteString,
                 "localURL": localViewerURL?.absoluteString ?? "", "pid": ProcessInfo.processInfo.processIdentifier])

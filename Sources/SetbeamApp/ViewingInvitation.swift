@@ -27,18 +27,22 @@ struct ViewingGatewayBinding: Equatable {
         return true
     }
 
-    func url(currentToken: String?, listenerReady: Bool) -> URL? {
-        guard listenerReady, token == currentToken, let port, port != 0 else { return nil }
-        return URL(string: "http://\(address):\(port)/s/\(token)/")
+    func matches(_ listener: ViewerGateway.Binding, currentToken: String?) -> Bool {
+        token == currentToken && address == listener.address && port == listener.port && listener.port != 0
     }
 
-    func invitation(currentToken: String?, listenerReady: Bool, localLabel: String?) -> ViewingInvitation? {
-        guard !address.hasPrefix("127."), let ipURL = url(currentToken: currentToken, listenerReady: listenerReady) else { return nil }
+    func url(currentToken: String?, listener: ViewerGateway.Binding?) -> URL? {
+        guard let listener, matches(listener, currentToken: currentToken) else { return nil }
+        return URL(string: "http://\(address):\(listener.port)/s/\(token)/")
+    }
+
+    func invitation(currentToken: String?, listener: ViewerGateway.Binding?, localLabel: String?) -> ViewingInvitation? {
+        guard !address.hasPrefix("127."), let listener, let ipURL = url(currentToken: currentToken, listener: listener) else { return nil }
         var localURL: URL?
         if let localLabel, var parts = URLComponents(url: ipURL, resolvingAgainstBaseURL: false) {
             parts.host = LocalAddressName.host(localLabel)
             localURL = parts.url
         }
-        return ViewingInvitation(binding: id, ipURL: ipURL, localURL: localURL)
+        return ViewingInvitation(binding: listener.id, ipURL: ipURL, localURL: localURL)
     }
 }
