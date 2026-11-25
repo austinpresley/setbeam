@@ -7,6 +7,21 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>Signed Setbeam updates for Apple Silicon Macs.</description>
     <language>en</language>
     <item>
+      <title>Setbeam 0.3.2 build 44</title>
+      <pubDate>Wed, 25 Nov 2026 03:03:05 GMT</pubDate>
+      <sparkle:version>44</sparkle:version>
+      <sparkle:shortVersionString>0.3.2</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <sparkle:fullReleaseNotesLink>https://github.com/austinpresley/setbeam/releases/tag/v0.3.2-build44</sparkle:fullReleaseNotesLink>
+      <description>&lt;p&gt;Apple Silicon, macOS 14 or later.&lt;/p&gt;
+&lt;ul&gt;&lt;li&gt;Choose a screen, window, camera, wireless source, or labeled sample from the Mac’s monitor. Go Live opens the Wi-Fi and Watch codes. Use the LIVE menu to Hold or Stop Sharing while your Mac keeps monitoring the source.&lt;/li&gt;&lt;li&gt;Hold cuts the outgoing picture and sound sooner and resumes on the same viewing link. The Mac’s outgoing preview switches in the background so its controls stay responsive.&lt;/li&gt;&lt;li&gt;Browser viewers can start watching as soon as the share is ready. When Ask first is on, approve viewers in People. You can also see the resolution, frame rate, and dropped frames each browser reports.&lt;/li&gt;&lt;li&gt;Setbeam uses hardware video decoding for eligible previews and locally captured feeds. It retries with software when the hardware path fails. Preview video also uses less temporary memory.&lt;/li&gt;&lt;li&gt;Highlight my cursor follows your pointer when sharing a screen or window. On phones the viewer’s chat sits below the picture, and on larger screens the controls fade when idle.&lt;/li&gt;&lt;/ul&gt;
+&lt;h3&gt;Install&lt;/h3&gt;
+&lt;p&gt;Open the disk image and drag Setbeam to Applications. Installations on build 41 or later can update from **Setbeam → Check for Updates…**. Builds 40 and earlier need a manual install. A scheduled update appears in the menu while you’re sharing.&lt;/p&gt;
+&lt;p&gt;See the &lt;a href="https://github.com/austinpresley/setbeam/blob/v0.3.2-build44/docs/getting-started.md"&gt;setup guide&lt;/a&gt; and &lt;a href="https://github.com/austinpresley/setbeam/blob/v0.3.2-build44/docs/hardware-tests.md"&gt;physical test record&lt;/a&gt;.&lt;/p&gt;</description>
+      <enclosure url="https://github.com/austinpresley/setbeam/releases/download/v0.3.2-build44/Setbeam-0.3.2-build44.dmg" length="67183861" type="application/octet-stream" sparkle:edSignature="UuOweLiljVlSMrsAAppamDDoyG/Gw6F6MhSyq6Wv2Pkp0i6R4dim5qEKr3WVUnvabckeTftazAAn/T0NCpYNDw=="></enclosure>
+    </item>
+    <item>
       <title>Setbeam 0.3.0 build 41</title>
       <pubDate>Sat, 14 Nov 2026 09:39:07 GMT</pubDate>
       <sparkle:version>41</sparkle:version>
@@ -26,6 +41,6 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     </item>
   </channel>
 </rss><!-- sparkle-signatures:
-edSignature: 4dRoBi0w/Csf0cFLKK8Hal/PHC5SzcZzbhq34CYs590M7RgvsxG1WMO9b1FX83AwdTfywIzudM9wDNhyHOKOCg==
-length: 3619
+edSignature: yYhfKSqDnnO5/f7HWJcMoqYcV0Je0N40hrjyIFNMvEau/KQQ4NAszM92epzZJZunNoqjXSyDjhSCJPBCdz+LBw==
+length: 6190
 -->
