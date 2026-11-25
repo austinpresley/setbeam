@@ -4,21 +4,17 @@ Setbeam receives a computer display or camera feed on your Mac, then shares it w
 
 ## Install the prerelease
 
-[Download Setbeam 0.3.0 build 41](https://github.com/austinpresley/setbeam/releases/tag/v0.3.0-build41) for an Apple Silicon Mac running macOS 14 or later. Open the disk image and drag **Setbeam** to Applications. FFmpeg, MediaMTX, the native preview helper, fixtures, and dependency notices are bundled. You do not need Homebrew to run it.
+[Download Setbeam 0.3.2 build 44](https://github.com/austinpresley/setbeam/releases/tag/v0.3.2-build44) for an Apple Silicon Mac running macOS 14 or later. Open the disk image and drag **Setbeam** to Applications. FFmpeg, MediaMTX, the native preview helper, fixtures, and dependency notices are bundled. You do not need Homebrew to run it.
 
 The app is signed with Developer ID and notarized by Apple, so macOS opens it normally. Setbeam checks for signed updates once a day. Choose **Setbeam → Check for Updates…** to check now, or turn automatic checks off in **Settings → Updates**. Installing an update quits and reopens the app. An update found while you're sharing waits in the menus.
 
-Build 40 and earlier require a manual install of build 41 to receive signed
-updates. After the signature change, macOS may ask again for Screen
+Install build 44 manually if you use build 40 or earlier. After the signature change, macOS may ask again for Screen
 Recording, Camera, Microphone or Location when you use the corresponding
 feature. The Local Network privacy prompt and controls apply on macOS 15
 and later.
 
-The instructions below describe the current source build, 0.3.1 build 43
-by default. Build 41 uses earlier menus. See the [build 41 release notes](releases/0.3.0-build41.md)
-and the [private build 43 validation record](status.md#unified-release-candidate-2026-11-23).
-The development Mac runs macOS 27. Physical verification on older supported
-macOS versions remains open.
+Media and update checks ran on the development Mac with macOS 27. See the
+[build 44 release notes](releases/0.3.2-build44.md).
 
 ## Build from source
 

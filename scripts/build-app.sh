@@ -4,8 +4,8 @@ umask 077
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 CONFIGURATION="${SETBEAM_CONFIGURATION:-release}"
-VERSION="${SETBEAM_VERSION:-0.3.1}"
-BUILD_NUMBER="${SETBEAM_BUILD:-43}"
+VERSION="${SETBEAM_VERSION:-0.3.2}"
+BUILD_NUMBER="${SETBEAM_BUILD:-44}"
 # Only published releases carry the update feed. Developer and QA builds never check for updates.
 UPDATES="${SETBEAM_UPDATES:-0}"
 SPARKLE="$ROOT/.build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework"

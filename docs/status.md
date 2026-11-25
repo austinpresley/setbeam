@@ -1,5 +1,35 @@
 # Setbeam status
 
+## Setbeam 0.3.2 build 44, 2026-11-24
+
+The [public prerelease](https://github.com/austinpresley/setbeam/releases/tag/v0.3.2-build44)
+ships the Simpler v2 workflow, immediate Hold publisher cutoff, background
+retirement of the outgoing preview, earlier browser join, and a bounded
+preview payload reservation. Eligible preview readers and Setbeam-generated
+inputs can decode through VideoToolbox. Failed hardware decoding retries in
+software on the same input and viewing link. Pass-through sharing retains
+software decoding for the audience encode.
+
+Local `scripts/check.sh` passed on macOS 27 with packaged helpers and
+fixtures. It ran 383 XCTest cases with two opt-in skips, 39 Python checks,
+88 Node checks and ten media probes. One unchanged short-address test timed
+out on the first run and passed both in isolation and in the full repeat.
+The signed preview helper matched software frames and audio timing on the
+8-bit hardware test and preserved aspect and BT.709 tags on resize. WebKit
+played the sample, captured a chat attachment and passed seven layouts.
+Quit and Force Quit left no owned media processes in the build 44 QA copies.
+
+Apple accepted and stapled the signed app and DMG from `d5999f3`. A scheduled
+Sparkle update waited in the menu during a live sample share. The interactive
+install asked before ending the share, replaced a disposable build 43, and
+relaunched build 44. Both interactive runs completed. Final replacement on
+Project Vault took several minutes; the system-disk repeat completed promptly.
+The quiet signed update also passed from a disposable build 43. The anonymous
+DMG download and the HTTPS update feed match the staged artifacts. The DMG is
+67,183,861 bytes with SHA-256
+`325607c329367d2ff74d4f505a911a169daae1d7bfb4b7e44f10d7b7538fdb7d`.
+The existing physical-device tests remain open.
+
 ## Simpler v2 implementation, 2026-11-24
 
 Austin approved all six Simpler v2 changes ("Do all"). Three open questions

@@ -3,11 +3,11 @@
   <h1>Setbeam</h1>
   <p><strong>Monitor on your Mac. Share with the set.</strong></p>
   <p>Receive a computer display or camera feed.<br>Give nearby viewers a link to watch in their browser.</p>
-  <p><strong>0.3.0 · Build 41</strong> &nbsp; / &nbsp; Apple Silicon &nbsp; / &nbsp; macOS 14+</p>
+  <p><strong>0.3.2 · Build 44</strong> &nbsp; / &nbsp; Apple Silicon &nbsp; / &nbsp; macOS 14+</p>
   <p>
-    <a href="https://github.com/austinpresley/setbeam/releases/download/v0.3.0-build41/Setbeam-0.3.0-build41.dmg"><strong>Download for Mac</strong></a> &nbsp;·&nbsp;
+    <a href="https://github.com/austinpresley/setbeam/releases/download/v0.3.2-build44/Setbeam-0.3.2-build44.dmg"><strong>Download for Mac</strong></a> &nbsp;·&nbsp;
     <a href="docs/getting-started.md">Setup guide</a> &nbsp;·&nbsp;
-    <a href="docs/releases/0.3.0-build41.md">What's new</a>
+    <a href="docs/releases/0.3.2-build44.md">What's new</a>
   </p>
   <p><sub>Developer prerelease. Notarized by Apple; updates arrive in the app.</sub></p>
 </div>
@@ -20,7 +20,7 @@
 
 <p align="center"><sub>The native Mac app in light and dark appearances. All pictures below use labeled, fictional sample media.</sub></p>
 
-Build 41 installs from a notarized disk image and updates itself. Earlier builds can't update themselves, so install it once by hand. It keeps build 40's memory fix and safer viewer approval. [Read the release notes](docs/releases/0.3.0-build41.md).
+Build 44 adds the Go Live workflow, faster viewer startup and Hold, and lighter video processing. Build 41 and later can update in the app. Install build 44 by hand if you use build 40 or earlier. [Read the release notes](docs/releases/0.3.2-build44.md).
 
 ## Your picture stays on the Mac
 
@@ -53,9 +53,9 @@ Setbeam receives each source once. The main window, floating preview, and shared
 
 ## Up and running
 
-1. [Download build 41](https://github.com/austinpresley/setbeam/releases/tag/v0.3.0-build41), open the disk image, and drag **Setbeam** to Applications.
+1. [Download build 44](https://github.com/austinpresley/setbeam/releases/tag/v0.3.2-build44), open the disk image, and drag **Setbeam** to Applications.
 2. Open Setbeam and choose a source.
-3. Click **Start sharing**, choose a viewing network your audience can reach, and share the QR code or link.
+3. Click **Go Live**, then share the Watch code or link from People.
 
 The app bundles its media runtime and needs no Homebrew installation to run. It is signed with Developer ID and notarized, so macOS opens it normally. Setbeam checks for signed updates daily; see the [installation guide](docs/getting-started.md#install-the-prerelease).
 
@@ -80,10 +80,8 @@ Hosted CI is disabled. Tests, builds, and packaging checks run locally.
 ## Dedicated TV receiver development
 
 The [native Android TV receiver](receiver/README.md) pairs with a Setbeam Mac,
-asks to join automatically, and plays after the operator admits it. Build the
-Mac from this checkout for receiver discovery; the public build 40 does not
-include that discovery service. The existing approval, local-address and
-short-address options must be enabled.
+asks to join automatically, and plays after the operator admits it. Use Setbeam build 44 with the receiver. Enable Ask first, local address and
+short address for assisted pairing.
 
 The receiver includes a [reversible startup setup tool](receiver/docs/startup.md).
 Automatic startup depends on the device's firmware. Physical onn compatibility,
