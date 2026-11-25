@@ -24,7 +24,7 @@ SPARKLE_CODE = {SPARKLE + name for name in (
 LICENSES = (
     "LICENSE", "THIRD_PARTY_NOTICES.md", "runtime-lock.json", "Sparkle-LICENSE.txt", "runtime-provenance.json",
     "FFmpeg-LGPL-2.1.txt", "Opus-BSD.txt", "MediaMTX-MIT.txt", "FFmpeg-build-configuration.txt",
-    "build-runtime.sh", "build-support.py", "patch-avfoundation.py", "build-preview-bridge.sh",
+    "build-runtime.sh", "build-support.py", "patch-avfoundation.py", "patch-video-decode.py", "build-preview-bridge.sh",
     "setbeam-preview.c", "setbeam-preview-build.txt",
 )
 RESOURCES = (
@@ -95,7 +95,8 @@ def runtime_files(contents):
         path = licenses / "Sources" / item["archive"]
         require(path.is_file() and not path.is_symlink() and digest(path) == item["sha256"],
                 f"Source archive differs from the lock: {path.name}")
-    for source in ("runtime-lock.json", "scripts/build-runtime.sh", "scripts/build-support.py", "scripts/patch-avfoundation.py"):
+    for source in ("runtime-lock.json", "scripts/build-runtime.sh", "scripts/build-support.py",
+                   "scripts/patch-avfoundation.py", "scripts/patch-video-decode.py"):
         require(digest(licenses / Path(source).name) == provenance["inputsSHA256"][source],
                 f"Bundled runtime source differs from build provenance: {source}")
 

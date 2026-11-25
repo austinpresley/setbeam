@@ -5,6 +5,7 @@
  */
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
+#include <libavutil/hwcontext.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/pixdesc.h>
 #include <libavutil/channel_layout.h>
@@ -40,9 +41,26 @@ typedef struct Decoder {
     AVCodecContext *codec;
     AVStream *stream;
     int index;
+    int waiting_for_key;
     int64_t next_pts;
 } Decoder;
-static int open_decoder(AVFormatContext *input, enum AVMediaType type, Decoder *out) {
+
+static int is_8bit_420(enum AVPixelFormat format) {
+    return format == AV_PIX_FMT_YUV420P || format == AV_PIX_FMT_YUVJ420P || format == AV_PIX_FMT_NV12;
+}
+
+static enum AVPixelFormat hardware_format(AVCodecContext *ctx, const enum AVPixelFormat *offered) {
+    if (is_8bit_420(ctx->sw_pix_fmt) && !(ctx->width & 1) && !(ctx->height & 1)) {
+        for (const enum AVPixelFormat *format = offered; *format != AV_PIX_FMT_NONE; format++) {
+            if (*format == AV_PIX_FMT_VIDEOTOOLBOX)
+                return *format;
+        }
+    }
+    // Let the owner restart with software if the live format changes.
+    return AV_PIX_FMT_NONE;
+}
+
+static int open_decoder(AVFormatContext *input, enum AVMediaType type, Decoder *out, int prefer_hardware) {
     out->index=av_find_best_stream(input,type,-1,-1,NULL,0);
     if(out->index<0)return out->index;
     out->stream=input->streams[out->index];
@@ -55,6 +73,16 @@ static int open_decoder(AVFormatContext *input, enum AVMediaType type, Decoder *
     out->codec->thread_count=2;
     out->codec->thread_type=FF_THREAD_SLICE;
     out->codec->pkt_timebase=out->stream->time_base;
+    const AVCodecParameters *parameters = out->stream->codecpar;
+    if (prefer_hardware && type == AVMEDIA_TYPE_VIDEO &&
+        (parameters->codec_id == AV_CODEC_ID_H264 || parameters->codec_id == AV_CODEC_ID_HEVC) &&
+        is_8bit_420(parameters->format) && parameters->width > 0 && parameters->height > 0 &&
+        !(parameters->width & 1) && !(parameters->height & 1)) {
+        error = av_hwdevice_ctx_create(&out->codec->hw_device_ctx, AV_HWDEVICE_TYPE_VIDEOTOOLBOX, NULL, NULL, 0);
+        if (error < 0) return error;
+        out->codec->get_format = hardware_format;
+        out->waiting_for_key = 1;
+    }
     return avcodec_open2(out->codec,codec,NULL);
 }
 static int64_t timestamp(Decoder *decoder, const AVFrame *frame, int64_t duration) {
@@ -64,10 +92,11 @@ static int64_t timestamp(Decoder *decoder, const AVFrame *frame, int64_t duratio
     return pts;
 }
 int main(int argc,char **argv) {
-    if(argc<2) { fprintf(stderr,"Usage: setbeam-preview URL [--silent] [--width N] [--fps N]\n");return 2; }
-    int silent=0,max_width=0,max_fps=0;
+    if(argc<2) { fprintf(stderr,"Usage: setbeam-preview URL [--videotoolbox] [--silent] [--width N] [--fps N]\n");return 2; }
+    int silent=0,max_width=0,max_fps=0,prefer_hardware=0;
     for(int i=2;i<argc;i++) {
         if(!strcmp(argv[i],"--silent"))silent=1;
+        else if(!strcmp(argv[i],"--videotoolbox"))prefer_hardware=1;
         else if(!strcmp(argv[i],"--width")&&i+1<argc)max_width=atoi(argv[++i]);
         else if(!strcmp(argv[i],"--fps")&&i+1<argc)max_fps=atoi(argv[++i]);
         else { fprintf(stderr,"Invalid playback option\n");return 2; }
@@ -84,15 +113,15 @@ int main(int argc,char **argv) {
     int result=avformat_open_input(&input,argv[1],NULL,&options);av_dict_free(&options);
     Decoder video={.index=-1},audio={.index=-1};
     struct SwsContext *scale=NULL;SwrContext *resample=NULL;
-    AVFrame *frame=av_frame_alloc();AVPacket *packet=av_packet_alloc();
+    AVFrame *frame=av_frame_alloc(), *host=av_frame_alloc();AVPacket *packet=av_packet_alloc();
     uint8_t *pixels=NULL;int pixels_size=0;int64_t last_video=INT64_MIN,previous_video_pts=AV_NOPTS_VALUE,previous_video_duration=33333;
-    AVChannelLayout audio_layout={0};int audio_rate=0,audio_format=-1,draining=0;
-    if(!frame||!packet){result=AVERROR(ENOMEM);goto finish;}
+    AVChannelLayout audio_layout={0};int audio_rate=0,audio_format=-1,draining=0,reported_hardware=0;
+    if(!frame||!host||!packet){result=AVERROR(ENOMEM);goto finish;}
     if(result<0)goto finish;
     if((result=avformat_find_stream_info(input,NULL))<0)goto finish;
-    if((result=open_decoder(input,AVMEDIA_TYPE_VIDEO,&video))<0)goto finish;
+    if((result=open_decoder(input,AVMEDIA_TYPE_VIDEO,&video,prefer_hardware))<0)goto finish;
     if(!silent) {
-        int audio_result=open_decoder(input,AVMEDIA_TYPE_AUDIO,&audio);
+        int audio_result=open_decoder(input,AVMEDIA_TYPE_AUDIO,&audio,0);
         if(audio_result<0 && audio.index>=0) { result=audio_result;goto finish; }
     }
     result=record(STREAMS,audio.codec?1:0,0,0,0,0,0,0,(AVRational){0,1},0,NULL,0);
@@ -111,10 +140,22 @@ int main(int argc,char **argv) {
             if(!decoder){result=AVERROR_EOF;break;}
         }
         if(!decoder||!decoder->codec){av_packet_unref(packet);continue;}
+        if (!draining && decoder->waiting_for_key) {
+            if (!(packet->flags & AV_PKT_FLAG_KEY) || (packet->flags & AV_PKT_FLAG_CORRUPT)) {
+                av_packet_unref(packet);
+                continue;
+            }
+            decoder->waiting_for_key = 0;
+        }
         result=avcodec_send_packet(decoder->codec,draining?NULL:packet);av_packet_unref(packet);
         if(result<0)goto finish;
         while((result=avcodec_receive_frame(decoder->codec,frame))>=0) {
             if(decoder==&video) {
+                if (frame->format == AV_PIX_FMT_VIDEOTOOLBOX &&
+                    (frame->decode_error_flags || (frame->flags & AV_FRAME_FLAG_CORRUPT))) {
+                    result = AVERROR_INVALIDDATA;
+                    goto finish;
+                }
                 AVRational cadence=av_guess_frame_rate(input,video.stream,frame);
                 /* Decoder frame.duration is not necessarily in the RTSP packet
                  * time base. Actual presentation deltas are the reliable cadence. */
@@ -128,6 +169,23 @@ int main(int argc,char **argv) {
                 previous_video_pts=pts;previous_video_duration=duration;decoder->next_pts=pts+duration;
                 if(max_fps>0&&last_video!=INT64_MIN&&pts>=last_video&&pts-last_video<1000000/max_fps){av_frame_unref(frame);continue;}
                 last_video=pts;
+                if (frame->format == AV_PIX_FMT_VIDEOTOOLBOX) {
+                    result = av_hwframe_map(host, frame, AV_HWFRAME_MAP_READ);
+                    if (result < 0) {
+                        av_frame_unref(host);
+                        result = av_hwframe_transfer_data(host, frame, 0);
+                    }
+                    if (result < 0) goto finish;
+                    if (!is_8bit_420(host->format)) { result = AVERROR_INVALIDDATA; goto finish; }
+                    result = av_frame_copy_props(host, frame);
+                    if (result < 0) goto finish;
+                    av_frame_unref(frame);
+                    av_frame_move_ref(frame, host);
+                    if (!reported_hardware) {
+                        fputs("Local playback: VideoToolbox video active.\n", stderr);
+                        reported_hardware = 1;
+                    }
+                }
                 int width=frame->width,height=frame->height;
                 if(max_width>0&&width>max_width){height=(int)((int64_t)height*max_width/width);width=max_width;}
                 width=(width+1)&~1;height=(height+1)&~1;
@@ -189,7 +247,7 @@ int main(int argc,char **argv) {
     }
 finish:
     if(result<0&&!stopping&&result!=AVERROR_EOF){char message[AV_ERROR_MAX_STRING_SIZE];av_strerror(result,message,sizeof(message));fprintf(stderr,"Local playback decoder: %s\n",message);}
-    av_freep(&pixels);sws_freeContext(scale);swr_free(&resample);av_channel_layout_uninit(&audio_layout);av_frame_free(&frame);av_packet_free(&packet);
+    av_freep(&pixels);sws_freeContext(scale);swr_free(&resample);av_channel_layout_uninit(&audio_layout);av_frame_free(&frame);av_frame_free(&host);av_packet_free(&packet);
     avcodec_free_context(&video.codec);avcodec_free_context(&audio.codec);avformat_close_input(&input);avformat_network_deinit();
     return stopping||result==AVERROR_EOF?0:result<0?1:0;
 }

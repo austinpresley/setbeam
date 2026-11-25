@@ -35,6 +35,7 @@ unset CFLAGS CPPFLAGS CXXFLAGS LDFLAGS CPATH LIBRARY_PATH PKG_CONFIG_SYSROOT_DIR
   make install
 ) > build/logs/opus-build.log 2>&1 || { tail -n 70 build/logs/opus-build.log; exit 1; }
 python3 scripts/patch-avfoundation.py "$scratch/sources/ffmpeg-9.0.2"
+python3 scripts/patch-video-decode.py "$scratch/sources/ffmpeg-9.0.2"
 (
     cd "$scratch/sources/ffmpeg-9.0.2"
     export PKG_CONFIG_LIBDIR="$scratch/opus/lib/pkgconfig" PKG_CONFIG_PATH=""
@@ -43,6 +44,7 @@ python3 scripts/patch-avfoundation.py "$scratch/sources/ffmpeg-9.0.2"
       --disable-shared --enable-static --disable-doc --disable-debug --disable-ffplay \
       --enable-ffmpeg --enable-ffprobe --enable-pthreads --enable-avfoundation \
       --enable-videotoolbox --enable-libopus --enable-zlib --pkg-config-flags=--static \
+      --enable-hwaccel=h264_videotoolbox,hevc_videotoolbox \
       --enable-indev=lavfi,avfoundation \
       --enable-demuxer=rtsp,rtp,sdp,mov,matroska,rawvideo,image2,image2pipe,h264,hevc,aac \
       --enable-muxer=rtsp,rtp,mov,mp4,flv,matroska,image2,image2pipe,null,framecrc,framemd5,pcm_s16le \
@@ -60,7 +62,7 @@ cp "$scratch/sources/mediamtx/mediamtx" "$scratch/bin/"
 cp "$scratch/sources/mediamtx/LICENSE" "$scratch/licenses/MediaMTX-MIT.txt"
 cp "$scratch/sources/opus-1.6.1/COPYING" "$scratch/licenses/Opus-BSD.txt"
 cp "$scratch/sources/ffmpeg-9.0.2/COPYING.LGPLv2.1" "$scratch/licenses/FFmpeg-LGPL-2.1.txt"
-cp scripts/build-runtime.sh scripts/build-support.py scripts/patch-avfoundation.py "$scratch/licenses/"
+cp scripts/build-runtime.sh scripts/build-support.py scripts/patch-avfoundation.py scripts/patch-video-decode.py "$scratch/licenses/"
 if grep -q 'was built for newer.*version' build/logs/ffmpeg-build.log; then
   echo 'Mixed deployment targets in the media runtime.' >&2
   exit 1

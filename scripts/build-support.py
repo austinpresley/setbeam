@@ -17,13 +17,15 @@ ROOT = Path(__file__).resolve().parent.parent
 RUNTIME = ROOT / "Vendor"
 CACHE = RUNTIME / "cache"
 STAMP = RUNTIME / "runtime-provenance.json"
-INPUTS = ("runtime-lock.json", "scripts/build-runtime.sh", "scripts/build-support.py", "scripts/patch-avfoundation.py")
+INPUTS = ("runtime-lock.json", "scripts/build-runtime.sh", "scripts/build-support.py",
+          "scripts/patch-avfoundation.py", "scripts/patch-video-decode.py")
 OUTPUTS = ("bin/ffmpeg", "bin/ffprobe", "bin/mediamtx", "opus/lib/libopus.a",
-           "licenses/build-runtime.sh", "licenses/build-support.py", "licenses/patch-avfoundation.py",
+           "licenses/build-runtime.sh", "licenses/build-support.py", "licenses/patch-avfoundation.py", "licenses/patch-video-decode.py",
            "sources/ffmpeg-9.0.2/libavformat/libavformat.a", "sources/ffmpeg-9.0.2/libavcodec/libavcodec.a",
            "sources/ffmpeg-9.0.2/libswscale/libswscale.a", "sources/ffmpeg-9.0.2/libswresample/libswresample.a",
            "sources/ffmpeg-9.0.2/libavutil/libavutil.a", "sources/ffmpeg-9.0.2/libavutil/avconfig.h",
-           "sources/ffmpeg-9.0.2/libavdevice/avfoundation.m", "licenses/FFmpeg-build-configuration.txt",
+           "sources/ffmpeg-9.0.2/libavdevice/avfoundation.m", "sources/ffmpeg-9.0.2/fftools/ffmpeg_dec.c",
+           "licenses/FFmpeg-build-configuration.txt",
            "licenses/FFmpeg-LGPL-2.1.txt", "licenses/Opus-BSD.txt", "licenses/MediaMTX-MIT.txt")
 
 

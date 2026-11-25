@@ -64,7 +64,7 @@ cp Sources/SetbeamApp/Resources/reader.js Sources/SetbeamApp/Resources/viewer.ht
 cp Fixtures/Demo.mp4 Fixtures/Hold.mp4 "$APP/Contents/Resources/Fixtures/"
 cp Fixtures/Compatibility-*.mp4 Fixtures/compatibility-notes.txt "$APP/Contents/Resources/Fixtures/"
 for name in MediaMTX-MIT.txt Opus-BSD.txt FFmpeg-LGPL-2.1.txt FFmpeg-build-configuration.txt \
-  build-runtime.sh build-support.py patch-avfoundation.py setbeam-preview.c build-preview-bridge.sh setbeam-preview-build.txt; do
+  build-runtime.sh build-support.py patch-avfoundation.py patch-video-decode.py setbeam-preview.c build-preview-bridge.sh setbeam-preview-build.txt; do
   cp "Vendor/licenses/$name" "$APP/Contents/Resources/Licenses/"
 done
 cp Vendor/runtime-provenance.json "$APP/Contents/Resources/Licenses/"

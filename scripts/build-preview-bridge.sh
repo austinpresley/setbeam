@@ -30,7 +30,7 @@ cp scripts/build-preview-bridge.sh Vendor/licenses/build-preview-bridge.sh
 {
   echo 'setbeam-preview is a separate executable statically linked to the pinned LGPL FFmpeg and BSD Opus libraries.'
   echo 'Its complete MIT bridge source is setbeam-preview.c. Put that file at Sources/SetbeamPreviewBridge/main.c.'
-  echo 'Put both build scripts, build-support.py and patch-avfoundation.py in scripts/, runtime-lock.json in the project root, and the matching source archives in Vendor/cache/.'
+  echo 'Put both build scripts, build-support.py, patch-avfoundation.py and patch-video-decode.py in scripts/, runtime-lock.json in the project root, and the matching source archives in Vendor/cache/.'
   echo 'Run scripts/build-preview-bridge.sh to rebuild or relink against modified compatible FFmpeg libraries. Replace Contents/Helpers/setbeam-preview and re-sign the app for local use.'
   echo 'The app communicates with this executable through stdout; FFmpeg is not linked into the Swift app.'
   xcrun clang --version

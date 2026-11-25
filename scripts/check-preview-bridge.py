@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Actual decoded protocol checks, using generated local media and owned children."""
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import struct
@@ -14,6 +15,7 @@ from preview_timing import validate_live_timing
 parser = argparse.ArgumentParser()
 parser.add_argument("--tools", type=Path, default=Path("Vendor/bin"))
 parser.add_argument("--check-color-metadata", action="store_true", help="Exercise video flags added after build 43.")
+parser.add_argument("--check-hardware", action="store_true", help="Compare the actual VideoToolbox preview with software output.")
 args = parser.parse_args()
 tools = args.tools.resolve()
 
@@ -43,9 +45,15 @@ with tempfile.TemporaryDirectory(prefix="Setbeam-preview-check-") as temporary:
                 payload = child.stdout.read(size)
                 assert len(payload) == size, "truncated payload"
                 records.append(dict(kind=kind, flags=flags, pts=pts, duration=duration, width=width, height=height, channels=channels, rate=rate, size=size, sar_n=sar_n, sar_d=sar_d, matrix=matrix))
+                if args.check_hardware and kind == 1:
+                    records[-1]["checksum"] = hashlib.sha256(payload).hexdigest()
                 if maximum_video and sum(record["kind"] == 1 for record in records) >= maximum_video:
                     child.terminate(); break
-            assert child.wait(timeout=10) == 0, child.stderr.read().decode()
+            exit_code = child.wait(timeout=10)
+            errors = child.stderr.read().decode()
+            assert exit_code == 0, errors
+            if "--videotoolbox" in options:
+                assert "VideoToolbox video active" in errors, errors
         finally:
             timeout.cancel()
             if child.poll() is None:
@@ -63,6 +71,10 @@ with tempfile.TemporaryDirectory(prefix="Setbeam-preview-check-") as temporary:
     assert all(record["channels"] == 2 and record["rate"] == 48000 and record["size"] % 8 == 0 for record in audio)
     assert len(audio) > 40 and abs(video[0]["pts"] - audio[0]["pts"]) < 50_000
     assert abs(video[-1]["pts"] - audio[-1]["pts"]) < 100_000
+    if args.check_hardware:
+        accelerated = decode(["--videotoolbox"])
+        assert accelerated == records, "8-bit VideoToolbox preview changed frame pixels, timing, aspects, color, or audio metadata"
+        print("PASS: VideoToolbox preview preserves every tested 8-bit frame and the audio clock")
     thumbnail = decode(["--silent", "--width", "384", "--fps", "8"])
     small = [record for record in thumbnail if record["kind"] == 1]
     assert 7 <= len(small) <= 8 and all(record["width"] == 384 and record["height"] == 216 for record in small)
@@ -108,7 +120,7 @@ with tempfile.TemporaryDirectory(prefix="Setbeam-preview-check-") as temporary:
             "-map", "0:v:0", "-map", "0:a:0", "-c:v", "copy", "-c:a", "libopus", "-rtsp_transport", "tcp", "-f", "rtsp", address],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd=temporary)
         time.sleep(0.3)
-        live = decode([], source=address, maximum_video=90)
+        live = decode(["--videotoolbox"] if args.check_hardware else [], source=address, maximum_video=90)
         live_video = [record for record in live if record["kind"] == 1]
         live_audio = [record for record in live if record["kind"] == 2]
         assert len(live_video) == 90 and live_audio

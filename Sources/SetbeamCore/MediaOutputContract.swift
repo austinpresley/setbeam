@@ -34,13 +34,15 @@ public enum VideoFrameRate: Int, CaseIterable, Sendable {
 /// sees the source rather than a second generation. Only the audience output is normalized
 /// for browsers. Raw capture input is encoded once, for fidelity, before the private relay.
 public enum MediaOutputContract {
-    public static func audienceVideoArguments(_ quality: AudienceQuality = .best, frameRate: VideoFrameRate = .source) -> [String] {
+    public static func audienceVideoArguments(_ quality: AudienceQuality = .best, frameRate: VideoFrameRate = .source,
+                                              directVideoToolbox: Bool = false) -> [String] {
         // Select at most one frame per time bucket before encoding. Actual timestamps keep
         // slow/variable sources slow even when RTSP reports an unknown or implausible rate.
         // Rounding buckets tolerates capture-clock jitter without dropping alternate 1 fps frames.
         let rate = frameRate == .source ? VideoFrameRate.maximum : frameRate.rawValue
-        let cadence = "select='isnan(prev_selected_t)+gt(floor((t-start_t)*\(rate)+0.5),floor((prev_selected_t-start_t)*\(rate)+0.5))',"
-        return ["-vf", cadence + "scale=ceil(iw/2)*2:ceil(ih/2)*2,format=yuv420p",
+        let cadence = "select='isnan(prev_selected_t)+gt(floor((t-start_t)*\(rate)+0.5),floor((prev_selected_t-start_t)*\(rate)+0.5))'"
+        let filter = directVideoToolbox ? cadence : cadence + ",scale=ceil(iw/2)*2:ceil(ih/2)*2,format=yuv420p"
+        return ["-vf", filter,
          // VideoToolbox overshoots an average for keyframe-only low cadences. Its one-second limit
          // keeps the allowance real and each 4K picture small enough for browsers to assemble.
          "-c:v", "h264_videotoolbox", "-realtime", "1", "-b:v", "\(quality.kilobits)k", "-maxrate", "\(quality.kilobits)k",

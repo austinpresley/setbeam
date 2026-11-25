@@ -3,15 +3,17 @@ import Darwin
 @testable import SetbeamCore
 
 final class RuntimeOwnershipTests: XCTestCase {
-    private func runtime() throws -> MediaRuntime {
+    private func runtimePaths() throws -> RuntimePaths {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         let tools = ProcessInfo.processInfo.environment["SETBEAM_TEST_TOOLS"].map { URL(fileURLWithPath: $0) } ?? root.appendingPathComponent("Vendor/bin")
         let fixtures = ProcessInfo.processInfo.environment["SETBEAM_TEST_FIXTURES"].map { URL(fileURLWithPath: $0) } ?? root.appendingPathComponent("Fixtures")
         guard FileManager.default.isExecutableFile(atPath: tools.appendingPathComponent("ffmpeg").path) else {
             throw XCTSkip("Bundled media tools are required for runtime ownership checks.")
         }
-        return MediaRuntime(paths: RuntimePaths(tools: tools, fixtures: fixtures))
+        return RuntimePaths(tools: tools, fixtures: fixtures)
     }
+
+    private func runtime() throws -> MediaRuntime { try MediaRuntime(paths: runtimePaths()) }
 
     func testSourceRecoversWithoutStatusReads() async throws {
         let runtime = try runtime()
@@ -70,6 +72,55 @@ final class RuntimeOwnershipTests: XCTestCase {
             XCTAssertEqual(held.guestToken, live.guestToken)
             let current = await runtime.processIDs()
             XCTAssertEqual(current.prefix(2), owned.prefix(2), "Hold must preserve the server and private publisher.")
+            await runtime.shutdown()
+        } catch { await runtime.shutdown(); throw error }
+    }
+
+    func testAudienceRetriesInSoftwareWithoutRotatingItsLink() async throws {
+        let paths = try runtimePaths()
+        let directory = try FileManager.default.url(for: .itemReplacementDirectory, in: .userDomainMask,
+                                                   appropriateFor: FileManager.default.temporaryDirectory, create: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        for name in ["mediamtx", "ffprobe", "setbeam-supervisor"] {
+            let helper = paths.tools.appendingPathComponent(name)
+            if FileManager.default.isExecutableFile(atPath: helper.path) {
+                try FileManager.default.createSymbolicLink(at: directory.appendingPathComponent(name), withDestinationURL: helper)
+            }
+        }
+        func quoted(_ path: String) -> String { "'" + path.replacingOccurrences(of: "'", with: "'\\''") + "'" }
+        let marker = directory.appendingPathComponent("hardware-attempts")
+        let wrapper = directory.appendingPathComponent("ffmpeg")
+        try """
+        #!/bin/sh
+        for option in "$@"; do
+          if [ "$option" = '-hwaccel' ]; then
+            printf '\\n' >> \(quoted(marker.path))
+            exit 1
+          fi
+        done
+        exec \(quoted(paths.tools.appendingPathComponent("ffmpeg").path)) "$@"
+        """.write(to: wrapper, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: wrapper.path)
+        let runtime = MediaRuntime(paths: RuntimePaths(tools: directory, fixtures: paths.fixtures))
+        do {
+            _ = try await runtime.prepare(source: .sample, viewerAddress: "127.0.0.1")
+            let privateProcesses = await runtime.processIDs()
+            let attempted = try await runtime.startSharing()
+            let deadline = ContinuousClock.now + .seconds(15)
+            var recovered = await runtime.snapshot()
+            while !recovered.audienceAvailable && ContinuousClock.now < deadline {
+                try await Task.sleep(for: .milliseconds(50))
+                recovered = await runtime.snapshot()
+            }
+            XCTAssertTrue(recovered.audienceAvailable)
+            XCTAssertGreaterThan(recovered.audienceRevision, attempted.audienceRevision)
+            XCTAssertEqual(recovered.guestToken, attempted.guestToken)
+            let current = await runtime.processIDs()
+            XCTAssertEqual(current.prefix(2), privateProcesses.prefix(2))
+            let diagnostics = await runtime.diagnosticStatus()
+            XCTAssertEqual(diagnostics["audienceVideoToolbox"] as? Bool, false)
+            await runtime.setVideoSettings(quality: .light)
+            XCTAssertEqual(try Data(contentsOf: marker).count, 1, "A settings restart must retain the software fallback for this input.")
             await runtime.shutdown()
         } catch { await runtime.shutdown(); throw error }
     }

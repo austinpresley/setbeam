@@ -38,6 +38,8 @@ public actor MediaRuntime {
     private let screenRetirement = ScreenCaptureRetirement()
     private var sourcePublisher: ManagedChild?
     private var audiencePublisher: ManagedChild?
+    private var audienceUsesVideoToolbox = false
+    private var audienceNeedsSoftware = false
     private var source: VideoSource = .sample
     private var sourceNeedsConfiguration = false
     private let beforeSourceConfigurationStep: @Sendable (SourceConfigurationStep) async throws -> Void
@@ -504,6 +506,7 @@ public actor MediaRuntime {
         sourceNeedsConfiguration = true
         presenterCursorHighlight = false
         source = validated
+        audienceNeedsSoftware = false
         if let inputAddress { self.inputAddress = inputAddress }
         sourceFailures = 0
         nextSourceRetry = Date().addingTimeInterval(2)
@@ -567,19 +570,27 @@ public actor MediaRuntime {
     private func launchAudience() throws {
         guard sharing else { return }
         var args = commonFFmpegArguments
+        // These inputs use Setbeam's own even-size 8-bit H.264 private publisher or fixture.
+        // Relayed streams can change codec, bit depth and geometry on the same address.
+        let directVideoToolbox = !holding && !audienceNeedsSoftware && (source == .sample || source.isMacCapture || source.isCapture)
         if holding {
             args += ["-re", "-stream_loop", "-1", "-i", paths.fixtures.appendingPathComponent("Hold.mp4").path,
                      "-c:v", "copy", "-c:a", "libopus", "-b:a", "64k", "-ar", "48000", "-ac", "2"]
         } else {
+            if directVideoToolbox {
+                args += ["-xerror", "-hwaccel", "videotoolbox", "-hwaccel_output_format", "videotoolbox_vld"]
+            }
             // Frame-threaded decoding can buffer a core-count's worth of pictures. At
             // 1 fps that can exceed the publisher watchdog before producing its first frame.
             args += ["-analyzeduration", "2000000", "-fpsprobesize", "0", "-max_ts_probe", "0", "-probesize", "1000000",
                      "-threads:v", "2", "-thread_type:v", "slice", "-rtsp_transport", "tcp", "-i", publisherURL("local"),
                      "-map", "0:v:0", "-map", "0:a:0?"]
             // Every source, including the sample, honors viewer bitrate and cadence settings.
-            args += MediaOutputContract.audienceVideoArguments(audienceQuality, frameRate: audienceFrameRate) + ["-c:a", "copy"]
+            args += MediaOutputContract.audienceVideoArguments(audienceQuality, frameRate: audienceFrameRate,
+                                                                directVideoToolbox: directVideoToolbox) + ["-c:a", "copy"]
         }
         audiencePublisher = try child(holding ? "Audience holding output" : "Audience relay", "ffmpeg", args + publishArguments("live"))
+        audienceUsesVideoToolbox = directVideoToolbox
         audienceStartedAt = Date(); audienceRevision += 1
     }
     /// Applies to the next audience encode. An active, unheld audience reconnects at the new rate.
@@ -861,8 +872,13 @@ public actor MediaRuntime {
             let generation = audienceGeneration
             if (try? await applyCredentials()) != nil, generation == audienceGeneration { viewerAccessNeedsUpdate = false }
         }
-        let audienceStalled = Date().timeIntervalSince(audiencePublisher?.lastVideoFrameAt ?? audienceStartedAt) > 12
+        let audienceFrame = audiencePublisher?.lastVideoFrameAt
+        let audienceStalled = Date().timeIntervalSince(audienceFrame ?? audienceStartedAt) > (audienceUsesVideoToolbox && audienceFrame == nil ? 6 : 12)
         if !replacingSource, sharing, mediaServer?.isRunning == true, (audiencePublisher?.isRunning != true || audienceStalled), Date() >= nextAudienceRetry {
+            if audienceUsesVideoToolbox {
+                audienceNeedsSoftware = true
+                log.record("audience.publisher.software-retry")
+            }
             audienceFailures += 1; nextAudienceRetry = Date().addingTimeInterval(min(10, pow(1.6, Double(audienceFailures))))
             log.record("audience.restart", ["reason": audiencePublisher?.isRunning != true ? "exited" : "stalled", "failures": audienceFailures,
                                             "holding": holding, "error": String((audiencePublisher?.recentError ?? "").suffix(300))])
@@ -948,6 +964,7 @@ public actor MediaRuntime {
         let value = snapshot()
         return ["source": source.label, "sourceAvailable": value.sourceAvailable, "connectionStage": value.connectionStage.rawValue, "sharing": sharing, "holding": holding,
                 "viewerQuality": audienceQuality.rawValue, "viewerFPS": audienceFrameRate.rawValue, "screenFPS": screenFrameRate.rawValue,
+                "audienceVideoToolbox": audiencePublisher != nil && audienceUsesVideoToolbox,
                 "audienceError": Redaction.text(audiencePublisher?.recentError ?? ""),
                 "audienceProgress": audiencePublisher?.capturedOutput.suffix(1200).description ?? "",
                 "sourceFrameAge": sourcePublisher?.lastVideoFrameAt.map { Date().timeIntervalSince($0) } ?? -1,
@@ -975,6 +992,7 @@ public actor MediaRuntime {
         incomingRelay.stop()
         lifetime = UUID(); healthTask?.cancel(); healthTask = nil
         controllerFailures = 0
+        audienceNeedsSoftware = false; audienceUsesVideoToolbox = false
         sessionState.end(); observedFrameAt = nil; observedStage = .preparingMonitor
         observedSourceAudio = false; observedAudienceAudio = false; observedProblem = nil
         accsoonReceiver.stop(); accsoonDiscovery.stop()

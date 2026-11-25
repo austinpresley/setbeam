@@ -10,6 +10,7 @@ import SetbeamCore
     private let retirementQueue = DispatchQueue(label: "app.setbeam.preview-retirement")
     private var playback: PreviewPlayback?
     private var url: String?
+    private var softwareFallbackURL: String?
     private var directory: URL?
     // Observe this separately from the publisher revision. An automatic restart can
     // replace the decoder while the publisher and viewer link are still the same.
@@ -45,6 +46,7 @@ import SetbeamCore
 
     func start(url: String) throws {
         stop()
+        if softwareFallbackURL != url { softwareFallbackURL = nil }
         let run = FileManager.default.temporaryDirectory.appendingPathComponent("Setbeam-preview-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: run, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         directory = run; self.url = url
@@ -70,7 +72,7 @@ import SetbeamCore
 
     private func startDecoder(url: String, directory: URL) throws {
         decoderGeneration = nil
-        playback?.stop(); decoder?.stop(); decoder = nil
+        playback?.stop(); decoder?.stop(timeout: 0); decoder = nil
         lastFrameAt = .distantPast; pictureGeneration = nil; decoderStartedAt = Date()
         soundRequestedAt = muted ? nil : Date(); soundFailureReported = false
         let current = UUID()
@@ -82,6 +84,7 @@ import SetbeamCore
         }
         playback = output
         var arguments = [url]
+        if softwareFallbackURL != url { arguments.append("--videotoolbox") }
         if !audioEnabled { arguments.append("--silent") }
         if width > 0 { arguments += ["--width", String(width)] }
         if frameRate > 0 { arguments += ["--fps", String(frameRate)] }
@@ -108,7 +111,13 @@ import SetbeamCore
         }
         writeTelemetry(stats: stats, playing: playing)
         if sourceReady, (decoder?.isRunning != true || Date().timeIntervalSince(max(lastFrameAt, decoderStartedAt)) > 8 || stats.error != nil),
-           Date() >= nextRetry { retry() }
+           Date() >= nextRetry {
+            if let url, softwareFallbackURL != url {
+                softwareFallbackURL = url
+                SessionLog.shared.record("native.playback.software-retry")
+            }
+            retry()
+        }
     }
     private func writeTelemetry(stats: PreviewPlaybackStats, playing: Bool) {
         let args = CommandLine.arguments

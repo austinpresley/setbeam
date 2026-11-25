@@ -149,6 +149,49 @@ final class PreviewPlaybackTests: XCTestCase {
         XCTAssertLessThanOrEqual(PreviewPlaybackTiming.playoutDelay(for: frame), 0.04)
     }
 
+    @MainActor func testFailedHardwarePreviewRetriesInSoftwareForTheSameStream() async throws {
+        let tools = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tools, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tools) }
+        let marker = tools.appendingPathComponent("attempts")
+        let helper = tools.appendingPathComponent("setbeam-preview")
+        let escapedPath = marker.path.replacingOccurrences(of: "'", with: "'\\''")
+        try """
+        #!/bin/sh
+        for option in "$@"; do
+          if [ "$option" = '--videotoolbox' ]; then
+            echo hardware >> '\(escapedPath)'
+            exit 1
+          fi
+        done
+        echo software >> '\(escapedPath)'
+        exec /bin/sleep 30
+        """.write(to: helper, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: helper.path)
+        let player = NativePreview(tools: tools)
+        defer { player.stop() }
+        func waitForAttempts(_ count: Int) async throws -> [String] {
+            let deadline = ContinuousClock.now + .seconds(5)
+            var attempts: [String] = []
+            while ContinuousClock.now < deadline {
+                attempts = (try? String(contentsOf: marker, encoding: .utf8))?.split(separator: "\n").map(String.init) ?? []
+                if attempts.count >= count { break }
+                try await Task.sleep(for: .milliseconds(25))
+            }
+            return attempts
+        }
+        let url = "rtsp://127.0.0.1:1/local"
+        try player.start(url: url)
+        let original = try XCTUnwrap(player.decoderGeneration)
+        player.checkHealth(sourceAvailable: true)
+        let initial = try await waitForAttempts(2)
+        XCTAssertEqual(initial, ["hardware", "software"])
+        XCTAssertNotEqual(player.decoderGeneration, original)
+        try player.start(url: url)
+        let restarted = try await waitForAttempts(3)
+        XCTAssertEqual(restarted, ["hardware", "software", "software"])
+    }
+
     @MainActor func testNativePlaybackClockAndCadenceThroughActualPrivateRTSPRelay() async throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         let environment = ProcessInfo.processInfo.environment
