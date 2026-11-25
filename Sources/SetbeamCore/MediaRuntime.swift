@@ -464,7 +464,8 @@ public actor MediaRuntime {
         try sessionState.setHold(enabled); sessionState.updateAudience(available: false)
         log.record(enabled ? "hold.on" : "hold.off")
         publishSnapshot()
-        audiencePublisher?.stop(); audiencePublisher = nil
+        // The old publisher is still sending source media as Hold begins.
+        audiencePublisher?.stop(timeout: enabled ? 0 : 2); audiencePublisher = nil
         resetAudienceRetry()
         try launchAudience()
         _ = await refreshSnapshot()

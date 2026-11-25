@@ -841,12 +841,14 @@
       stateSequence = sequence;
     } else if (stateSequence !== undefined || pushesBefore !== undefined && pushes !== pushesBefore) return;
 
+    const waitingForInitialState = !stateKnown && !pass && !asking && !viewerName;
     const changedMedia = mode !== state.state || revision !== state.revision || approval !== (state.approval === true);
     mode = state.state; revision = state.revision;
     approval = state.approval === true; pointersOn = state.pointers === true; stateKnown = true;
     describe(state);
     if (mode === 'stopped') { terminate(); return; }
     if (changedMedia) resetMedia();
+    if (waitingForInitialState) join();
     reconcile();
   }
   function openEvents() {

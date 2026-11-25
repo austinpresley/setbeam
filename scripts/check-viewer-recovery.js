@@ -486,9 +486,9 @@ async function sample(b, stats) {
 }
 
 test('with approval off a new tab plays first and names itself only when it wants to', async () => {
-  const b = browser({storage: {}}); await b.settle(); await b.tick();
+  const b = browser({storage: {}}); await b.settle();
   assert.equal(joinVisible(b), false, 'The picture comes first');
-  assert.equal(b.count('join'), 1, 'The tab joins without a name');
+  assert.equal(b.count('join'), 1, 'The tab joins without a name before the first timer tick');
   assert.equal(b.joins[0].name, undefined); assert.equal(b.joins[0].ask, undefined);
   assert.equal(b.readers.length, 1, 'The picture plays without a name');
   await b.track(); await b.tick(3000);
@@ -512,6 +512,19 @@ test('with approval off a new tab plays first and names itself only when it want
   const reload = browser({storage: Object.fromEntries(b.storage)}); await reload.settle();
   assert.equal(joinVisible(reload), false, 'A reload keeps the identity without asking');
   assert.deepEqual({name: reload.joins[0].name, color: reload.joins[0].color}, {name: named.name, color: 'teal'});
+});
+
+test('the first state does not repeat a saved-pass resume that already returned pending', async () => {
+  const g = gateway();
+  const b = browser({tabClaims: true, join: g.join, storage: {'setbeam-pass:': pass, 'setbeam-viewer-name': 'Known person'}});
+  const initial = b.defer('state.json', {state: 'live', title: 'Startup fixture', revision: 1, sequence: 10, approval: true});
+  await b.tick(200);
+  assert.equal(b.el('state').textContent, 'Waiting to join');
+  assert.equal(b.count('join'), 1);
+  await initial.release();
+  assert.equal(b.count('join'), 1);
+  assert.equal(b.count('config.json'), 0);
+  assert.equal(g.requests, 0);
 });
 
 test('an empty name is not sent, and shared pointers are named in the hint', async () => {

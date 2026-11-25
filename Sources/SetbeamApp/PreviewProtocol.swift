@@ -50,6 +50,8 @@ final class PreviewPacketParser {
                 }
                 guard let size = payloadSize else { return }
                 let count = min(size - payload.count, data.endIndex - offset)
+                // Allocate once for a validated record when its payload starts arriving.
+                if payload.isEmpty, count > 0 { payload.reserveCapacity(size) }
                 payload.append(data[offset..<(offset + count)])
                 offset += count
                 guard payload.count == size else { return }

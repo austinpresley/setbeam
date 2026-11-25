@@ -42,6 +42,38 @@ final class RuntimeOwnershipTests: XCTestCase {
         } catch { await runtime.shutdown(); throw error }
     }
 
+    func testHoldCutsPausedPublisherWithoutWaitingForItsGracePeriod() async throws {
+        let runtime = try runtime()
+        do {
+            _ = try await runtime.prepare(source: .sample, viewerAddress: "127.0.0.1")
+            _ = try await runtime.startSharing()
+            let readyBy = ContinuousClock.now + .seconds(15)
+            while !(await runtime.snapshot()).audienceAvailable && ContinuousClock.now < readyBy {
+                try await Task.sleep(for: .milliseconds(50))
+            }
+            let live = await runtime.snapshot()
+            XCTAssertTrue(live.audienceAvailable)
+            let owned = await runtime.processIDs()
+            let publisher = try XCTUnwrap(owned.count == 3 ? owned.last : nil)
+            guard kill(-publisher, SIGSTOP) == 0 else {
+                throw SetbeamError.runtime("Could not pause the owned audience publisher.")
+            }
+            let cutBy = ContinuousClock.now + .milliseconds(1750)
+            let hold = Task { try await runtime.setHold(true) }
+            while kill(publisher, 0) == 0 && ContinuousClock.now < cutBy {
+                try await Task.sleep(for: .milliseconds(25))
+            }
+            XCTAssertNotEqual(kill(publisher, 0), 0, "Hold must cut a paused publisher without waiting for TERM.")
+            try await hold.value
+            let held = await runtime.snapshot()
+            XCTAssertTrue(held.session.holding)
+            XCTAssertEqual(held.guestToken, live.guestToken)
+            let current = await runtime.processIDs()
+            XCTAssertEqual(current.prefix(2), owned.prefix(2), "Hold must preserve the server and private publisher.")
+            await runtime.shutdown()
+        } catch { await runtime.shutdown(); throw error }
+    }
+
     func testLiveButUnresponsiveControllerIsReplacedAndKeepsHeldShare() async throws {
         let runtime = try runtime()
         do {

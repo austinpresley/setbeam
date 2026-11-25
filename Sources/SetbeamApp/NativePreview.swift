@@ -7,6 +7,7 @@ import SetbeamCore
 @MainActor final class NativePreview: ObservableObject {
     @Published private(set) var picture: PreviewPicture?
     private var decoder: ManagedChild?
+    private let retirementQueue = DispatchQueue(label: "app.setbeam.preview-retirement")
     private var playback: PreviewPlayback?
     private var url: String?
     private var directory: URL?
@@ -147,13 +148,25 @@ import SetbeamCore
         do { try startDecoder(url: url, directory: directory) }
         catch { onPlaybackState?(false, Redaction.text(error.localizedDescription)) }
     }
-    func stop() {
+    func stop(retireInBackground: Bool = false) {
         watchdog?.cancel(); watchdog = nil
         decoderGeneration = nil; pictureGeneration = nil
         nextRetry = .distantPast
-        playback?.stop(); playback = nil; decoder?.stop(); decoder = nil
-        if let directory { try? FileManager.default.removeItem(at: directory) }
+        let retiredDecoder = decoder, retiredDirectory = directory
+        playback?.stop(); playback = nil; decoder = nil
         directory = nil; url = nil; picture = nil; lastFrameAt = .distantPast; sourceReady = false
+        let retire: @Sendable () -> Void = {
+            retiredDecoder?.stop()
+            if let retiredDirectory { try? FileManager.default.removeItem(at: retiredDirectory) }
+        }
+        if retireInBackground { retirementQueue.async(execute: retire) }
+        else { retire() }
+    }
+
+    func waitForRetirement() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            retirementQueue.async { continuation.resume() }
+        }
     }
 }
 

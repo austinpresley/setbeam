@@ -677,8 +677,11 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
         stopAudiencePreview()
         audiencePreviewTarget = target
         audiencePreviewStart = Task { [weak self, runtime] in
+            guard let self else { return }
+            await self.audiencePlayer.waitForRetirement()
+            guard !Task.isCancelled, self.audiencePreviewTarget == target else { return }
             let url = await runtime.audiencePreviewURL(generation: target.generation, revision: target.revision)
-            guard !Task.isCancelled, let self, self.audiencePreviewTarget == target else { return }
+            guard !Task.isCancelled, self.audiencePreviewTarget == target else { return }
             self.audiencePreviewStart = nil
             guard let url else { self.audiencePreviewTarget = nil; return }
             do {
@@ -695,7 +698,7 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
         guard audiencePreviewTarget != nil || audiencePreviewPlaying else { return }
         audiencePreviewTarget = nil
         audiencePreviewStart?.cancel(); audiencePreviewStart = nil
-        audiencePlayer.stop(); audiencePreviewPlaying = false
+        audiencePlayer.stop(retireInBackground: true); audiencePreviewPlaying = false
     }
 
     private var freshOutgoingPicture: PreviewPicture? {
@@ -1754,7 +1757,9 @@ enum AppSheet: String, Identifiable { case connection, sourceDetails, networkSou
         if let displayObserver { NotificationCenter.default.removeObserver(displayObserver) }
         floating.close(); sourceDisplayPointers.close(); joinCodeWindow.close(); joinRequests.close(); localPlayer.stop(); stopAudiencePreview(); gateway.stop(); retireLocalAddress(); sharingPower.hold(false); displayPower.hold(false)
         SessionLog.shared.record("app.quit", ["sharing": state.sharing])
-        await runtime.shutdown(); apply(await runtime.snapshot())
+        await runtime.shutdown()
+        await audiencePlayer.waitForRetirement()
+        apply(await runtime.snapshot())
     }
     private func writeIntegrationSession() {
         guard let integrationSessionFile, currentRuntime?.source == .sample,
